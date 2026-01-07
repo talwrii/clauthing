@@ -870,12 +870,16 @@ set -g automatic-rename off
 set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename-session #{{@session_id}} \\"%%\\"'"
-# Style the status bar for better visibility
+# Multiline status bar (3 lines) for more window visibility
+set -g status 3
 set -g status-style bg=colour235,fg=colour248
-set -g status-left-length 30
-set -g status-left "[kitty-claude] "
-set -g status-right-length 60
-set -g status-right "#{{pane_current_path}} "
+# Top line: kitty-claude label
+set -g status-format[0] '#[bg=colour235,fg=colour248] [kitty-claude]'
+# Middle line: window list (this is where all windows show)
+set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{W:#{E:window-status-format},#{E:window-status-current-format}}'
+# Bottom line: current path
+set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{pane_current_path} '
+# Window status styling
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
@@ -998,12 +1002,16 @@ set -g automatic-rename off
 set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename-session #{{@session_id}} \\"%%\\"'"
-# Style the status bar for better visibility
+# Multiline status bar (3 lines) for more window visibility
+set -g status 3
 set -g status-style bg=colour235,fg=colour248
-set -g status-left-length 30
-set -g status-left "[kitty-claude] "
-set -g status-right-length 60
-set -g status-right "#{{pane_current_path}} "
+# Top line: kitty-claude label
+set -g status-format[0] '#[bg=colour235,fg=colour248] [kitty-claude]'
+# Middle line: window list (this is where all windows show)
+set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{W:#{E:window-status-format},#{E:window-status-current-format}}'
+# Bottom line: current path
+set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{pane_current_path} '
+# Window status styling
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
