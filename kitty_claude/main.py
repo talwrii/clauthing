@@ -737,6 +737,73 @@ def find_and_focus_window():
         print(f"Warning: Could not search for window: {e}")
         return False
 
+def open_session_notes():
+    """Open session notes in vim via tmux popup."""
+    config_dir = Path.home() / ".config" / "kitty-claude"
+    state_file = config_dir / "window-state.json"
+
+    # Get current window index
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", "kitty-claude", "display-message", "-p", "#{window_index}"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        window_index = result.stdout.strip()
+    except:
+        subprocess.run(
+            ["tmux", "-L", "kitty-claude", "display-message", "Could not get window index"],
+            stderr=subprocess.DEVNULL
+        )
+        return
+
+    # Load state to get session ID
+    if not state_file.exists():
+        subprocess.run(
+            ["tmux", "-L", "kitty-claude", "display-message", "No session found"],
+            stderr=subprocess.DEVNULL
+        )
+        return
+
+    try:
+        state = json.loads(state_file.read_text())
+        windows = state.get("windows", {})
+        window_data = windows.get(window_index)
+
+        if not window_data:
+            subprocess.run(
+                ["tmux", "-L", "kitty-claude", "display-message", "No session data for this window"],
+                stderr=subprocess.DEVNULL
+            )
+            return
+
+        session_id = window_data.get("session_id")
+        if not session_id:
+            subprocess.run(
+                ["tmux", "-L", "kitty-claude", "display-message", "No session ID found"],
+                stderr=subprocess.DEVNULL
+            )
+            return
+
+        # Create notes file path
+        notes_dir = config_dir / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        notes_file = notes_dir / f"{session_id}.md"
+
+        # Open vim in tmux popup
+        subprocess.run([
+            "tmux", "-L", "kitty-claude",
+            "display-popup", "-E", "-w", "80%", "-h", "80%",
+            f"vim {notes_file}"
+        ])
+
+    except Exception as e:
+        subprocess.run(
+            ["tmux", "-L", "kitty-claude", "display-message", f"Error opening notes: {str(e)}"],
+            stderr=subprocess.DEVNULL
+        )
+
 def main():
     parser = argparse.ArgumentParser(description="Launch Claude Code in isolated kitty+tmux environment")
     parser.add_argument("--reinstall", action="store_true", help="Remove all config except credentials and exit")
@@ -749,10 +816,16 @@ def main():
     parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
     parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
     parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
+    parser.add_argument("--notes", action="store_true", help="Open session notes in vim popup")
     args = parser.parse_args()
 
     config_dir = Path.home() / ".config" / "kitty-claude"
     claude_data_dir = config_dir / "claude-data"
+
+    # Handle notes command
+    if args.notes:
+        open_session_notes()
+        sys.exit(0)
 
     # Handle user prompt submit hook
     if args.user_prompt_submit:
@@ -856,6 +929,8 @@ bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "dis
 bind -n C-v send-keys C-v
 # Alt-r to restart kitty-claude
 bind -n M-r run-shell "kitty-claude --restart"
+# Alt-e to open session notes
+bind -n M-e run-shell "kitty-claude --notes"
 # Some sensible defaults
 set -g mouse on
 set -g history-limit 10000
@@ -988,6 +1063,8 @@ bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "dis
 bind -n C-v send-keys C-v
 # Alt-r to restart kitty-claude
 bind -n M-r run-shell "kitty-claude --restart"
+# Alt-e to open session notes
+bind -n M-e run-shell "kitty-claude --notes"
 # Some sensible defaults
 set -g mouse on
 set -g history-limit 10000
