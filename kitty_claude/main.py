@@ -20,6 +20,96 @@ def send_tmux_message(message):
     except:
         pass
 
+def get_state_dir():
+    """Get the XDG state directory for kitty-claude."""
+    xdg_state = os.environ.get('XDG_STATE_HOME')
+    if xdg_state:
+        state_dir = Path(xdg_state) / "kitty-claude"
+    else:
+        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
+def save_request_start_time(session_id):
+    """Save timestamp when request starts for a specific session."""
+    import time
+    state_dir = get_state_dir()
+    timing_dir = state_dir / "timing"
+    timing_dir.mkdir(exist_ok=True)
+    timing_file = timing_dir / f"{session_id}.json"
+
+    timing_data = {
+        "start_time": time.time()
+    }
+    timing_file.write_text(json.dumps(timing_data))
+
+def save_response_duration(session_id):
+    """Calculate and save the duration of the last response for a specific session."""
+    import time
+    state_dir = get_state_dir()
+    timing_dir = state_dir / "timing"
+    timing_file = timing_dir / f"{session_id}.json"
+
+    if not timing_file.exists():
+        return
+
+    try:
+        timing_data = json.loads(timing_file.read_text())
+        start_time = timing_data.get("start_time")
+
+        if start_time:
+            duration = time.time() - start_time
+            timing_data["duration"] = duration
+            timing_data["timestamp"] = time.time()
+            timing_file.write_text(json.dumps(timing_data))
+    except:
+        pass
+
+def get_last_response_duration(session_id):
+    """Get the duration of the last response in seconds for a specific session."""
+    state_dir = get_state_dir()
+    timing_dir = state_dir / "timing"
+    timing_file = timing_dir / f"{session_id}.json"
+
+    if not timing_file.exists():
+        return None
+
+    try:
+        timing_data = json.loads(timing_file.read_text())
+        return timing_data.get("duration")
+    except:
+        return None
+
+def save_session_metadata(session_id, name, path):
+    """Save session metadata to state directory."""
+    state_dir = get_state_dir()
+    sessions_dir = state_dir / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+
+    metadata_file = sessions_dir / f"{session_id}.json"
+    metadata = {
+        "name": name,
+        "path": path,
+        "created": subprocess.run(["date", "-Iseconds"], capture_output=True, text=True).stdout.strip()
+    }
+
+    metadata_file.write_text(json.dumps(metadata, indent=2))
+
+def get_session_name(session_id):
+    """Get session name from metadata, or return session_id if not found."""
+    state_dir = get_state_dir()
+    metadata_file = state_dir / "sessions" / f"{session_id}.json"
+
+    if metadata_file.exists():
+        try:
+            metadata = json.loads(metadata_file.read_text())
+            return metadata.get("name", session_id)
+        except:
+            pass
+
+    return session_id
+
 def handle_user_prompt_submit(claude_data_dir=None):
     """Handle UserPromptSubmit hook - process custom commands like :cd and :fork"""
     try:
@@ -189,15 +279,48 @@ def handle_user_prompt_submit(claude_data_dir=None):
             print(json.dumps(response))
             return
 
+        # Check for :time command
+        if prompt == ':time':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                send_tmux_message("⏱ No session ID available")
+                response = {"continue": False, "stopReason": "⏱ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            duration = get_last_response_duration(session_id)
+
+            if duration is None:
+                send_tmux_message("⏱ No timing data available yet")
+                response = {"continue": False, "stopReason": "⏱ No timing data available yet"}
+                print(json.dumps(response))
+                return
+
+            # Format duration nicely
+            if duration < 1:
+                duration_str = f"{duration * 1000:.0f}ms"
+            elif duration < 60:
+                duration_str = f"{duration:.1f}s"
+            else:
+                minutes = int(duration // 60)
+                seconds = duration % 60
+                duration_str = f"{minutes}m {seconds:.1f}s"
+
+            message = f"⏱ Last response took: {duration_str}"
+            send_tmux_message(message)
+            response = {"continue": False, "stopReason": message}
+            print(json.dumps(response))
+            return
+
         # Check for :cd command
         if prompt.startswith(':cd '):
             target_dir = prompt[4:].strip()
             current_dir = input_data.get('cwd', os.getcwd())
-            
+
             # Encode paths
             encoded_current = current_dir.replace('/', '-')
             encoded_target = target_dir.replace('/', '-')
-            
+
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
@@ -208,7 +331,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 }
                 print(json.dumps(response))
                 return
-            
+
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
                 send_tmux_message("❌ No session found in current directory")
@@ -218,30 +341,67 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 }
                 print(json.dumps(response))
                 return
-            
+
             session_id = session_files[0].stem
-            
-            # Clone session
+
+            # Get current window ID before creating new window
+            try:
+                result = subprocess.run(
+                    ["tmux", "-L", "kitty-claude", "display-message", "-p", "#{window_id}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                current_window_id = result.stdout.strip()
+            except:
+                current_window_id = None
+
+            # Clone session to target directory
             target_projects_dir = claude_data_dir / "projects" / encoded_target
             target_projects_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(session_files[0], target_projects_dir / f"{session_id}.jsonl")
-            
-            # Open new tmux window
+
+            # Update session metadata with new path
+            save_session_metadata(session_id, get_session_name(session_id), target_dir)
+
+            # Get kitty-claude executable path
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
+            # Open new tmux window using kitty-claude indirection
             subprocess.run([
                 "tmux", "-L", "kitty-claude",
                 "new-window", "-c", target_dir,
-                f"claude --resume {session_id}"
+                f"{kitty_claude_path} --new-window --resume-session {session_id}"
             ])
-            
-            send_tmux_message(f"✓ Opened new window in {target_dir}")
+
+            # Schedule closing the current window after verifying new window exists
+            if current_window_id:
+                # Script that waits, checks if new window exists with our session ID, then closes old window
+                close_script = f"""
+sleep 2
+# Check if a window exists with the session ID we just created
+if tmux -L kitty-claude list-windows -F '#{{@session_id}}' 2>/dev/null | grep -q '^{session_id}$'; then
+    # New window exists, safe to close old window
+    tmux -L kitty-claude kill-window -t {current_window_id} 2>/dev/null || true
+fi
+"""
+                subprocess.Popen([
+                    "sh", "-c",
+                    close_script
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            send_tmux_message(f"✓ Moving to {target_dir}")
             response = {
                 "continue": False,
-                "stopReason": f"✓ Opened new window in {target_dir}"
+                "stopReason": f"✓ Moving to {target_dir}"
             }
             print(json.dumps(response))
             return
         
-        # Not a custom command, pass through
+        # Not a custom command, save start time and pass through
+        session_id = input_data.get('session_id')
+        if session_id:
+            save_request_start_time(session_id)
         print(prompt)
         
     except Exception as e:
@@ -256,6 +416,20 @@ def handle_user_prompt_submit(claude_data_dir=None):
             print(input_data.get('prompt', ''))
         except:
             pass
+
+def handle_stop():
+    """Handle Stop hook - calculate and save response duration."""
+    try:
+        # Read JSON from stdin
+        input_data = json.loads(sys.stdin.read())
+        session_id = input_data.get('session_id')
+
+        if session_id:
+            save_response_duration(session_id)
+    except Exception as e:
+        # Log error silently
+        with open("/tmp/kitty-claude-stop-hook-error.log", "a") as f:
+            f.write(f"Stop hook error: {str(e)}\n")
 
 def setup_claude_config(config_dir):
     """Set up isolated Claude Code configuration on first run."""
@@ -276,12 +450,12 @@ def setup_claude_config(config_dir):
         except Exception as e:
             print(f"Warning: Could not link credentials: {e}")
     
-    # Create settings.json with UserPromptSubmit hook
+    # Create settings.json with UserPromptSubmit and Stop hooks
     settings_file = claude_data_dir / "settings.json"
     if not settings_file.exists():
         # Get the kitty-claude executable path
         kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-        
+
         settings_file.write_text(json.dumps({
             "hooks": {
                 "UserPromptSubmit": [
@@ -293,10 +467,20 @@ def setup_claude_config(config_dir):
                             }
                         ]
                     }
+                ],
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{kitty_claude_path} --stop"
+                            }
+                        ]
+                    }
                 ]
             }
         }, indent=2))
-        print(f"Created settings with UserPromptSubmit hook at {settings_file}")
+        print(f"Created settings with UserPromptSubmit and Stop hooks at {settings_file}")
     
     return claude_data_dir
 
@@ -317,8 +501,12 @@ def setup_jail_directory():
     
     return jail_dir
 
-def new_window():
-    """Create a new Claude window with session tracking."""
+def new_window(resume_session_id=None):
+    """Create a new Claude window with session tracking.
+
+    Args:
+        resume_session_id: Optional session ID to resume instead of creating new
+    """
     config_dir = Path.home() / ".config" / "kitty-claude"
     state_file = config_dir / "window-state.json"
 
@@ -355,20 +543,52 @@ def new_window():
                     for win_index, window_data in sorted_windows[1:]:
                         path = window_data.get("path", str(jail_dir))
                         sess_id = window_data.get("session_id")
+                        win_name = window_data.get("name")
 
                         if sess_id:
+                            # Create window
                             subprocess.run(
-                                ["tmux", "-L", "kitty-claude", "new-window", "-c", str(path), "claude", "--resume", sess_id],
+                                ["tmux", "-L", "kitty-claude", "new-window", "-c", str(path), "-n", win_name or get_session_name(sess_id), "claude", "--resume", sess_id],
+                                stderr=subprocess.DEVNULL
+                            )
+                            # Set session ID in window option
+                            subprocess.run(
+                                ["tmux", "-L", "kitty-claude", "set-option", "-w", "-t", f":{win_index}", "@session_id", sess_id],
                                 stderr=subprocess.DEVNULL
                             )
         except Exception as e:
             print(f"Warning: Could not restore state: {e}", file=sys.stderr)
 
-    # Generate new session ID
-    session_id = str(uuid.uuid4())
+    # Use provided session ID or generate new one
+    if resume_session_id:
+        session_id = resume_session_id
+    else:
+        session_id = str(uuid.uuid4())
 
     # Get current path
     current_path = os.getcwd()
+
+    # Get session name from metadata if resuming, otherwise generate from path
+    if resume_session_id:
+        default_name = get_session_name(session_id)
+    else:
+        # Generate default session name from path
+        default_name = Path(current_path).name or "claude"
+        # Save session metadata with default name
+        save_session_metadata(session_id, default_name, current_path)
+
+    # Set window name to default and store session ID in window option
+    try:
+        subprocess.run(
+            ["tmux", "-L", "kitty-claude", "rename-window", default_name],
+            stderr=subprocess.DEVNULL
+        )
+        subprocess.run(
+            ["tmux", "-L", "kitty-claude", "set-option", "-w", f"@session_id", session_id],
+            stderr=subprocess.DEVNULL
+        )
+    except:
+        pass
 
     # Update state file
     try:
@@ -379,7 +599,8 @@ def new_window():
 
         state["windows"][window_index] = {
             "session_id": session_id,
-            "path": current_path
+            "path": current_path,
+            "name": default_name
         }
 
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -387,8 +608,11 @@ def new_window():
     except Exception as e:
         print(f"Warning: Could not update state: {e}", file=sys.stderr)
 
-    # Launch claude with the new session ID
-    os.execvp("claude", ["claude", "--session-id", session_id])
+    # Launch claude with the session ID (resume if provided, otherwise use --session-id)
+    if resume_session_id:
+        os.execvp("claude", ["claude", "--resume", session_id])
+    else:
+        os.execvp("claude", ["claude", "--session-id", session_id])
 
 def save_state():
     """State is maintained automatically by new_window()."""
@@ -517,10 +741,14 @@ def main():
     parser = argparse.ArgumentParser(description="Launch Claude Code in isolated kitty+tmux environment")
     parser.add_argument("--reinstall", action="store_true", help="Remove all config except credentials and exit")
     parser.add_argument("--user-prompt-submit", action="store_true", help="Handle UserPromptSubmit hook (internal use)")
+    parser.add_argument("--stop", action="store_true", help="Handle Stop hook (internal use)")
     parser.add_argument("--new-window", action="store_true", help="Create new window with session tracking (internal use)")
+    parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
     parser.add_argument("--restart", action="store_true", help="Restart kitty-claude with state preservation")
     parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
     parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
+    parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
+    parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
     args = parser.parse_args()
 
     config_dir = Path.home() / ".config" / "kitty-claude"
@@ -531,14 +759,59 @@ def main():
         handle_user_prompt_submit()
         sys.exit(0)
 
+    # Handle stop hook
+    if args.stop:
+        handle_stop()
+        sys.exit(0)
+
     # Handle new window command
     if args.new_window:
-        new_window()
+        new_window(resume_session_id=args.resume_session)
         sys.exit(0)
 
     # Handle restart command
     if args.restart:
         restart()
+        sys.exit(0)
+
+    # Handle rename-session command
+    if args.rename_session:
+        session_id, new_name = args.rename_session
+
+        # Update session metadata
+        state_dir = get_state_dir()
+        metadata_file = state_dir / "sessions" / f"{session_id}.json"
+
+        if metadata_file.exists():
+            try:
+                metadata = json.loads(metadata_file.read_text())
+                metadata["name"] = new_name
+                metadata_file.write_text(json.dumps(metadata, indent=2))
+            except:
+                pass
+
+        # Update window state
+        state_file = config_dir / "window-state.json"
+        if state_file.exists():
+            try:
+                state = json.loads(state_file.read_text())
+                for window_index, window_data in state.get("windows", {}).items():
+                    if window_data.get("session_id") == session_id:
+                        window_data["name"] = new_name
+                        break
+                state_file.write_text(json.dumps(state, indent=2))
+            except:
+                pass
+
+        # Rename current tmux window
+        try:
+            subprocess.run(
+                ["tmux", "-L", "kitty-claude", "rename-window", new_name],
+                check=True
+            )
+        except:
+            pass
+
         sys.exit(0)
 
     # Handle update-config command
@@ -592,8 +865,17 @@ setw -g pane-base-index 1
 bind -n C-j previous-window
 bind -n C-k next-window
 bind -n M-o last-window
+# Disable automatic window renaming (we manage names manually)
+set -g automatic-rename off
+set -g allow-rename off
+# Bind M-n to prompt for window name and update session metadata
+bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename-session #{{@session_id}} \\"%%\\"'"
 # Style the status bar for better visibility
 set -g status-style bg=colour235,fg=colour248
+set -g status-left-length 30
+set -g status-left "[kitty-claude] "
+set -g status-right-length 60
+set -g status-right "#{{pane_current_path}} "
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
@@ -631,17 +913,51 @@ set -g window-status-current-format " #I:#W "
         print("Error: claude not found. Please install Claude Code first.")
         sys.exit(1)
     
+    # Handle --no-kitty mode (run tmux directly for testing)
+    if args.no_kitty:
+        # Set up isolated Claude config
+        claude_data_dir = setup_claude_config(config_dir)
+
+        # Set up jail directory
+        jail_dir = setup_jail_directory()
+
+        # Create tmux config
+        tmux_config_path = config_dir / "tmux.conf"
+        if not tmux_config_path.exists():
+            config_dir.mkdir(parents=True, exist_ok=True)
+            tmux_config_path.write_text(f"""\
+# kitty-claude tmux config (isolated server)
+# Kill session when kitty window closes
+set -g destroy-unattached on
+# Set CLAUDE_CONFIG_DIR for isolated Claude data
+set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
+# Default command is claude wrapper for session tracking
+set -g default-command "kitty-claude --new-window"
+# Some sensible defaults
+set -g mouse on
+set -g history-limit 10000
+set -g base-index 1
+setw -g pane-base-index 1
+""")
+
+        # Launch tmux directly
+        os.execvp("tmux", [
+            "tmux", "-L", "kitty-claude", "-f", str(tmux_config_path),
+            "new-session", "-As", "kitty-claude-test", "-c", str(jail_dir),
+            "kitty-claude", "--new-window"
+        ])
+
     # Try to find and focus existing window (unless --force-new is set)
     if not args.force_new and find_and_focus_window():
         sys.exit(0)
-    
+
     # Window doesn't exist, create config and launch
     kitty_config_path = config_dir / "kitty.conf"
     tmux_config_path = config_dir / "tmux.conf"
-    
+
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
-    
+
     # Set up jail directory
     jail_dir = setup_jail_directory()
     
@@ -677,8 +993,17 @@ setw -g pane-base-index 1
 bind -n C-j previous-window
 bind -n C-k next-window
 bind -n M-o last-window
+# Disable automatic window renaming (we manage names manually)
+set -g automatic-rename off
+set -g allow-rename off
+# Bind M-n to prompt for window name and update session metadata
+bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename-session #{{@session_id}} \\"%%\\"'"
 # Style the status bar for better visibility
 set -g status-style bg=colour235,fg=colour248
+set -g status-left-length 30
+set -g status-left "[kitty-claude] "
+set -g status-right-length 60
+set -g status-right "#{{pane_current_path}} "
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
