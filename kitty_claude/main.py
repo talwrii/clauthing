@@ -951,9 +951,9 @@ set -g status-style bg=colour235,fg=colour248
 # Top line: kitty-claude label
 set -g status-format[0] '#[bg=colour235,fg=colour248] [kitty-claude]'
 # Middle line: window list (this is where all windows show)
-set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{W:#{E:window-status-format},#{E:window-status-current-format}}'
+set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{{W:#{{E:window-status-format}},#{{E:window-status-current-format}}}}'
 # Bottom line: current path
-set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{pane_current_path} '
+set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{{pane_current_path}} '
 # Window status styling
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
@@ -1085,9 +1085,9 @@ set -g status-style bg=colour235,fg=colour248
 # Top line: kitty-claude label
 set -g status-format[0] '#[bg=colour235,fg=colour248] [kitty-claude]'
 # Middle line: window list (this is where all windows show)
-set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{W:#{E:window-status-format},#{E:window-status-current-format}}'
+set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{{W:#{{E:window-status-format}},#{{E:window-status-current-format}}}}'
 # Bottom line: current path
-set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{pane_current_path} '
+set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{{pane_current_path}} '
 # Window status styling
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
