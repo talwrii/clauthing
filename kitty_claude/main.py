@@ -10,11 +10,11 @@ import uuid
 import shlex
 from pathlib import Path
 
-def send_tmux_message(message):
+def send_tmux_message(message, socket="kitty-claude"):
     """Send a message via tmux display-message"""
     try:
         subprocess.run([
-            "tmux", "-L", "kitty-claude",
+            "tmux", "-L", socket,
             "display-message", message
         ], stderr=subprocess.DEVNULL)
     except:
@@ -817,10 +817,59 @@ def main():
     parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
     parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
     parser.add_argument("--notes", action="store_true", help="Open session notes in vim popup")
+    parser.add_argument("--profile", type=str, help="Use specific profile (required for non-internal commands)")
+    parser.add_argument("--copy-profile", nargs=2, metavar=("SOURCE", "DEST"), help="Copy profile SOURCE to DEST")
     args = parser.parse_args()
 
-    config_dir = Path.home() / ".config" / "kitty-claude"
+    # Determine profile name
+    profile = args.profile or os.environ.get('KITTY_CLAUDE_PROFILE')
+
+    # Set up directories based on profile
+    if profile:
+        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        tmux_socket = f"kitty-claude-{profile}"
+        kitty_claude_cmd = f"kitty-claude --profile {profile} --new-window"
+    else:
+        config_dir = Path.home() / ".config" / "kitty-claude"
+        tmux_socket = "kitty-claude"
+        kitty_claude_cmd = "kitty-claude --new-window"
+
     claude_data_dir = config_dir / "claude-data"
+
+    # Handle copy-profile command
+    if args.copy_profile:
+        source_profile, dest_profile = args.copy_profile
+
+        # Source: if "default", use base config dir, otherwise other-profiles
+        if source_profile == "default":
+            source_dir = Path.home() / ".config" / "kitty-claude"
+        else:
+            source_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / source_profile
+
+        # Dest: always in other-profiles
+        dest_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / dest_profile
+
+        if not source_dir.exists():
+            print(f"Error: Source profile '{source_profile}' does not exist at {source_dir}")
+            sys.exit(1)
+
+        if dest_dir.exists():
+            print(f"Error: Destination profile '{dest_profile}' already exists at {dest_dir}")
+            sys.exit(1)
+
+        print(f"Copying profile '{source_profile}' to '{dest_profile}'...")
+
+        # Exclude config files (they'll be regenerated) and other directories
+        def ignore_configs(directory, contents):
+            ignored = []
+            if directory == str(source_dir):
+                # Exclude these from root of source
+                ignored.extend(['other-profiles', 'worktrees', 'kitty.conf', 'tmux.conf', 'window-state.json'])
+            return ignored
+
+        shutil.copytree(source_dir, dest_dir, ignore=ignore_configs)
+        print(f"✓ Profile '{dest_profile}' created at {dest_dir}")
+        sys.exit(0)
 
     # Handle notes command
     if args.notes:
@@ -918,11 +967,11 @@ set -g destroy-unattached on
 # Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 # Default command is claude wrapper for session tracking
-set -g default-command "kitty-claude --new-window"
+set -g default-command "{kitty_claude_cmd}"
 # Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" kitty-claude --new-window
+bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
 # Also override default C-b c
-bind c new-window -c "{jail_dir}" kitty-claude --new-window
+bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
 # C-w closes current window, but not the last one
 bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
 # C-v passthrough for paste
@@ -965,7 +1014,7 @@ set -g window-status-current-format " #I:#W "
         # Regenerate kitty config
         kitty_config_path.write_text(
             f"include {Path.home()}/.config/kitty/kitty.conf\n"
-            f"shell tmux -L kitty-claude -f {tmux_config_path} new-session -As kitty-claude -c {jail_dir} kitty-claude --new-window\n"
+            f"shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {kitty_claude_cmd}\n"
         )
         print(f"✓ Created {kitty_config_path}")
 
@@ -1026,8 +1075,8 @@ setw -g pane-base-index 1
             "kitty-claude", "--new-window"
         ])
 
-    # Try to find and focus existing window (unless --force-new is set)
-    if not args.force_new and find_and_focus_window():
+    # Try to find and focus existing window (unless --force-new or --profile is set)
+    if not args.force_new and not profile and find_and_focus_window():
         sys.exit(0)
 
     # Window doesn't exist, create config and launch
@@ -1043,20 +1092,25 @@ setw -g pane-base-index 1
     # Create config dir if it doesn't exist
     config_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create tmux config if it doesn't exist
-    if not tmux_config_path.exists():
-        tmux_config_path.write_text(f"""\
+    # Always regenerate tmux config (it's ephemeral, not user-editable)
+    tmux_config_path.write_text(f"""\
+# ============================================================================
+# DO NOT MODIFY THIS FILE - IT IS AUTO-GENERATED ON EVERY LAUNCH
+# This file is regenerated each time kitty-claude starts
+# To customize: Use hooks or environment variables (future feature)
+# ============================================================================
+#
 # kitty-claude tmux config (isolated server)
 # Kill session when kitty window closes
 set -g destroy-unattached on
 # Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 # Default command is claude wrapper for session tracking
-set -g default-command "kitty-claude --new-window"
+set -g default-command "{kitty_claude_cmd}"
 # Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" kitty-claude --new-window
+bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
 # Also override default C-b c
-bind c new-window -c "{jail_dir}" kitty-claude --new-window
+bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
 # C-w closes current window, but not the last one
 bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
 # C-v passthrough for paste
@@ -1094,15 +1148,19 @@ set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
 set -g window-status-current-format " #I:#W "
 """)
-        print(f"Created tmux config at {tmux_config_path}")
-    
-    # Create kitty config if it doesn't exist
-    if not kitty_config_path.exists():
-        kitty_config_path.write_text(
-            f"include {Path.home()}/.config/kitty/kitty.conf\n"
-            f"shell tmux -L kitty-claude -f {tmux_config_path} new-session -As kitty-claude -c {jail_dir} kitty-claude --new-window\n"
-        )
-        print(f"Created kitty config at {kitty_config_path}")
+    tmux_config_path.chmod(0o444)  # Read-only
+    print(f"Created tmux config at {tmux_config_path}")
+
+    # Always regenerate kitty config (it's ephemeral, not user-editable)
+    kitty_config_path.write_text(f"""\
+# ============================================================================
+# DO NOT MODIFY THIS FILE - IT IS AUTO-GENERATED ON EVERY LAUNCH
+# ============================================================================
+include {Path.home()}/.config/kitty/kitty.conf
+shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {kitty_claude_cmd}
+""")
+    kitty_config_path.chmod(0o444)  # Read-only
+    print(f"Created kitty config at {kitty_config_path}")
 
     # Launch kitty
     os.execvp("kitty", [

@@ -23,3 +23,6 @@ kitty-claude = "kitty_claude.main:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/kitty-claude"
+
+[tool.setuptools.packages.find]
+exclude = ["worktrees*"]
