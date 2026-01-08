@@ -488,7 +488,7 @@ def setup_jail_directory():
     """Create and return the jail directory path."""
     uid = os.getuid()
     jail_dir = Path(f"/var/run/{uid}/kitty-claude")
-    
+
     # Create the jail directory if it doesn't exist
     try:
         jail_dir.mkdir(parents=True, exist_ok=True)
@@ -498,8 +498,27 @@ def setup_jail_directory():
         jail_dir = Path(f"/tmp/kitty-claude-{uid}")
         jail_dir.mkdir(parents=True, exist_ok=True)
         print(f"Using fallback jail directory: {jail_dir}")
-    
+
     return jail_dir
+
+def get_runtime_state_file(profile=None):
+    """Get the runtime window state file path."""
+    uid = os.getuid()
+
+    # Try /var/run first
+    try:
+        runtime_dir = Path(f"/var/run/{uid}/kitty-claude")
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # Fallback to /tmp
+        runtime_dir = Path(f"/tmp/kitty-claude-{uid}")
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use profile-specific state file if profile is set
+    if profile:
+        return runtime_dir / f"window-state-{profile}.json"
+    else:
+        return runtime_dir / "window-state.json"
 
 def new_window(resume_session_id=None):
     """Create a new Claude window with session tracking.
@@ -507,8 +526,8 @@ def new_window(resume_session_id=None):
     Args:
         resume_session_id: Optional session ID to resume instead of creating new
     """
-    config_dir = Path.home() / ".config" / "kitty-claude"
-    state_file = config_dir / "window-state.json"
+    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    state_file = get_runtime_state_file(profile)
 
     # Get current window index
     try:
@@ -603,7 +622,8 @@ def new_window(resume_session_id=None):
             "name": default_name
         }
 
-        config_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists
+        state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(json.dumps(state, indent=2))
     except Exception as e:
         print(f"Warning: Could not update state: {e}", file=sys.stderr)
@@ -616,8 +636,8 @@ def new_window(resume_session_id=None):
 
 def save_state():
     """State is maintained automatically by new_window()."""
-    config_dir = Path.home() / ".config" / "kitty-claude"
-    state_file = config_dir / "window-state.json"
+    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    state_file = get_runtime_state_file(profile)
 
     if state_file.exists():
         try:
@@ -631,8 +651,8 @@ def save_state():
 
 def restore_state(jail_dir):
     """Restore tmux windows from saved state."""
-    config_dir = Path.home() / ".config" / "kitty-claude"
-    state_file = config_dir / "window-state.json"
+    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    state_file = get_runtime_state_file(profile)
 
     if not state_file.exists():
         return
@@ -739,8 +759,12 @@ def find_and_focus_window():
 
 def open_session_notes():
     """Open session notes in vim via tmux popup."""
-    config_dir = Path.home() / ".config" / "kitty-claude"
-    state_file = config_dir / "window-state.json"
+    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    if profile:
+        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "kitty-claude"
+    state_file = get_runtime_state_file(profile)
 
     # Get current window index
     try:
@@ -804,6 +828,24 @@ def open_session_notes():
             stderr=subprocess.DEVNULL
         )
 
+def get_log_file(profile=None):
+    """Get the log file path for the given profile."""
+    if profile:
+        return Path(f"/tmp/kitty-claude-{profile}.log")
+    else:
+        return Path("/tmp/kitty-claude.log")
+
+def log(message, profile=None):
+    """Log a message to the profile-specific log file."""
+    log_file = get_log_file(profile)
+    try:
+        with open(log_file, "a") as f:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{timestamp}] {message}\n")
+    except:
+        pass
+
 def main():
     parser = argparse.ArgumentParser(description="Launch Claude Code in isolated kitty+tmux environment")
     parser.add_argument("--reinstall", action="store_true", help="Remove all config except credentials and exit")
@@ -815,14 +857,20 @@ def main():
     parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
     parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
     parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
+    parser.add_argument("--rename", type=str, metavar="NAME", help="Rename current window's session (looks up session ID automatically)")
     parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
     parser.add_argument("--notes", action="store_true", help="Open session notes in vim popup")
     parser.add_argument("--profile", type=str, help="Use specific profile (required for non-internal commands)")
     parser.add_argument("--copy-profile", nargs=2, metavar=("SOURCE", "DEST"), help="Copy profile SOURCE to DEST")
+    parser.add_argument("--follow-logs", action="store_true", help="Follow log file for current profile")
     args = parser.parse_args()
 
     # Determine profile name
     profile = args.profile or os.environ.get('KITTY_CLAUDE_PROFILE')
+
+    # Log this invocation
+    import sys as sys_module
+    log(f"=== COMMAND: {' '.join(sys_module.argv)} ===", profile)
 
     # Set up directories based on profile
     if profile:
@@ -835,6 +883,28 @@ def main():
         kitty_claude_cmd = "kitty-claude --new-window"
 
     claude_data_dir = config_dir / "claude-data"
+
+    # Handle follow-logs command
+    if args.follow_logs:
+        log_file = get_log_file(profile)
+        if not log_file.exists():
+            print(f"Log file does not exist: {log_file}")
+            print("Run some kitty-claude commands first to generate logs")
+            sys.exit(1)
+
+        # Print last 80 lines
+        try:
+            with open(log_file, "r") as f:
+                lines = f.readlines()
+                start = max(0, len(lines) - 80)
+                for line in lines[start:]:
+                    print(line, end='')
+        except Exception as e:
+            print(f"Error reading log file: {e}")
+
+        # Follow the log file
+        print(f"\n--- Following {log_file} ---")
+        os.execvp("tail", ["tail", "-f", str(log_file)])
 
     # Handle copy-profile command
     if args.copy_profile:
@@ -864,7 +934,7 @@ def main():
             ignored = []
             if directory == str(source_dir):
                 # Exclude these from root of source
-                ignored.extend(['other-profiles', 'worktrees', 'kitty.conf', 'tmux.conf', 'window-state.json'])
+                ignored.extend(['other-profiles', 'worktrees', 'kitty.conf', 'tmux.conf'])
             return ignored
 
         shutil.copytree(source_dir, dest_dir, ignore=ignore_configs)
@@ -896,43 +966,82 @@ def main():
         restart()
         sys.exit(0)
 
+    # Handle rename command (looks up session ID automatically)
+    if args.rename:
+        new_name = args.rename
+        log(f"Rename request: new_name={new_name}, profile={profile}, tmux_socket={tmux_socket}", profile)
+
+        # Get session ID from tmux window option
+        try:
+            cmd = ["tmux", "-L", tmux_socket, "display-message", "-p", "#{@session_id}"]
+            log(f"Running: {' '.join(cmd)}", profile)
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            session_id = result.stdout.strip()
+            log(f"Got session_id='{session_id}', stdout='{result.stdout}', stderr='{result.stderr}'", profile)
+        except Exception as e:
+            log(f"Error getting session ID: {e}", profile)
+            print("Error: Could not get session ID from tmux", file=sys.stderr)
+            sys.exit(1)
+
+        if not session_id:
+            log("ERROR: Session ID is empty", profile)
+            print("Error: No session ID set for this window", file=sys.stderr)
+            sys.exit(1)
+
+        # Now call the rename logic with the looked-up session ID
+        args.rename_session = (session_id, new_name)
+        # Fall through to rename-session handler below
+
     # Handle rename-session command
     if args.rename_session:
         session_id, new_name = args.rename_session
+        log(f"Rename session handler: session_id={session_id}, new_name={new_name}", profile)
 
         # Update session metadata
         state_dir = get_state_dir()
         metadata_file = state_dir / "sessions" / f"{session_id}.json"
+        log(f"Metadata file: {metadata_file}, exists={metadata_file.exists()}", profile)
 
         if metadata_file.exists():
             try:
                 metadata = json.loads(metadata_file.read_text())
                 metadata["name"] = new_name
                 metadata_file.write_text(json.dumps(metadata, indent=2))
-            except:
-                pass
+                log("Updated metadata file", profile)
+            except Exception as e:
+                log(f"Error updating metadata: {e}", profile)
 
         # Update window state
-        state_file = config_dir / "window-state.json"
+        state_file = get_runtime_state_file(profile)
+        log(f"State file: {state_file}, exists={state_file.exists()}", profile)
+
         if state_file.exists():
             try:
                 state = json.loads(state_file.read_text())
                 for window_index, window_data in state.get("windows", {}).items():
                     if window_data.get("session_id") == session_id:
                         window_data["name"] = new_name
+                        log(f"Updated window {window_index} name", profile)
                         break
                 state_file.write_text(json.dumps(state, indent=2))
-            except:
-                pass
+            except Exception as e:
+                log(f"Error updating state: {e}", profile)
 
         # Rename current tmux window
         try:
-            subprocess.run(
-                ["tmux", "-L", "kitty-claude", "rename-window", new_name],
-                check=True
-            )
-        except:
-            pass
+            cmd = ["tmux", "-L", tmux_socket, "rename-window", new_name]
+            log(f"Running: {' '.join(cmd)}", profile)
+
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            log(f"Rename successful, stdout='{result.stdout}', stderr='{result.stderr}'", profile)
+        except Exception as e:
+            log(f"Error renaming window: {e}", profile)
 
         sys.exit(0)
 
@@ -993,7 +1102,7 @@ bind -n M-o last-window
 set -g automatic-rename off
 set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename-session #{{@session_id}} \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename \\"%%\\"'"
 # Multiline status bar (3 lines) for more window visibility
 set -g status 3
 set -g status-style bg=colour235,fg=colour248
@@ -1091,7 +1200,13 @@ setw -g pane-base-index 1
     
     # Create config dir if it doesn't exist
     config_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Remove old config files if they exist (they're read-only)
+    if tmux_config_path.exists():
+        tmux_config_path.unlink()
+    if kitty_config_path.exists():
+        kitty_config_path.unlink()
+
     # Always regenerate tmux config (it's ephemeral, not user-editable)
     tmux_config_path.write_text(f"""\
 # ============================================================================
@@ -1132,7 +1247,7 @@ bind -n M-o last-window
 set -g automatic-rename off
 set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename-session #{{@session_id}} \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude --rename \\"%%\\"'"
 # Multiline status bar (3 lines) for more window visibility
 set -g status 3
 set -g status-style bg=colour235,fg=colour248
@@ -1161,6 +1276,12 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
 """)
     kitty_config_path.chmod(0o444)  # Read-only
     print(f"Created kitty config at {kitty_config_path}")
+
+    # Clear runtime window state (fresh start for each launch)
+    state_file = get_runtime_state_file(profile)
+    if state_file.exists():
+        state_file.unlink()
+        print(f"Cleared runtime state: {state_file}")
 
     # Launch kitty
     os.execvp("kitty", [
