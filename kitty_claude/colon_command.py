@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Colon command handlers for kitty-claude (:cd, :fork, :time, etc)."""
+import os
+import sys
+import json
+import shutil
+import subprocess
+import uuid
+import shlex
+from pathlib import Path
+
+from kitty_claude.logging import log, run
+from kitty_claude.colon_commands.time import (
+    save_request_start_time,
+    save_response_duration,
+    get_last_response_duration
+)
+from kitty_claude.session import (
+    get_session_name,
+    save_session_metadata,
+    remove_open_session
+)
+
+
+def send_tmux_message(message, socket="kitty-claude"):
+    """Send a message via tmux display-message"""
+    try:
+        run([
+            "tmux", "-L", socket,
+            "display-message", message
+        ], stderr=subprocess.DEVNULL)
+    except:
+        pass
+
+def get_state_dir():
+    """Get the XDG state directory for kitty-claude."""
+    xdg_state = os.environ.get('XDG_STATE_HOME')
+    if xdg_state:
+        state_dir = Path(xdg_state) / "kitty-claude"
+    else:
+        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
+def save_session_metadata(session_id, name, path):
+    """Save session metadata to state directory."""
+    state_dir = get_state_dir()
+    sessions_dir = state_dir / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+
+    metadata_file = sessions_dir / f"{session_id}.json"
+    metadata = {
+        "name": name,
+        "path": path,
+        "created": run(["date", "-Iseconds"], capture_output=True, text=True).stdout.strip()
+    }
+
+    metadata_file.write_text(json.dumps(metadata, indent=2))
+
+def handle_user_prompt_submit(claude_data_dir=None):
+    """Handle UserPromptSubmit hook - process custom commands like :cd and :fork"""
+    try:
+        # Get claude data dir from environment variable if not provided
+        if claude_data_dir is None:
+            config_env = os.environ.get('CLAUDE_CONFIG_DIR')
+            if config_env:
+                claude_data_dir = Path(config_env)
+            else:
+                # Fallback to default
+                claude_data_dir = Path.home() / ".config" / "kitty-claude" / "claude-data"
+        
+        # Read JSON from stdin
+        input_data = json.loads(sys.stdin.read())
+        prompt = input_data.get('prompt', '').strip()
+        
+        # Check for :fork command
+        if prompt.startswith(':fork'):
+            current_dir = input_data.get('cwd', os.getcwd())
+            session_id = input_data.get('session_id')
+            
+            # Encode path
+            encoded_current = current_dir.replace('/', '-')
+            
+            # Find current session file
+            projects_dir = claude_data_dir / "projects" / encoded_current
+            if not projects_dir.exists():
+                send_tmux_message("❌ No session found")
+                response = {"continue": False, "stopReason": "❌ No session found"}
+                print(json.dumps(response))
+                return
+            
+            session_files = sorted(projects_dir.glob("*.jsonl"), 
+                                 key=lambda p: p.stat().st_mtime, reverse=True)
+            if not session_files:
+                send_tmux_message("❌ No session found")
+                response = {"continue": False, "stopReason": "❌ No session found"}
+                print(json.dumps(response))
+                return
+            
+            # Generate new fork session ID
+            fork_session_id = str(uuid.uuid4())
+            
+            # Clone session to fork
+            fork_file = projects_dir / f"{fork_session_id}.jsonl"
+            shutil.copy2(session_files[0], fork_file)
+            
+            send_tmux_message("🔀 Opening fork in popup...")
+            
+            # Open fork in popup (blocking call)
+            run([
+                "tmux", "-L", "kitty-claude",
+                "display-popup", "-E", "-w", "90%", "-h", "90%",
+                f"claude --resume {fork_session_id}"
+            ])
+            
+            # Popup closed - get last assistant message from fork
+            try:
+                last_message = None
+                with open(fork_file, 'r') as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line.strip())
+                            if entry.get('type') == 'assistant':
+                                message = entry.get('message', {})
+                                content = message.get('content', [])
+                                # Extract text from content blocks
+                                text_parts = [
+                                    block.get('text', '') 
+                                    for block in content 
+                                    if isinstance(block, dict) and block.get('type') == 'text'
+                                ]
+                                if text_parts:
+                                    last_message = '\n'.join(text_parts)
+                        except json.JSONDecodeError:
+                            continue
+                
+                if last_message:
+                    send_tmux_message("✓ Fork completed, injecting response")
+                    
+                    # Escape the message for shell safety
+                    fork_message = f"Fork result:\n\n{last_message}"
+                    escaped_message = shlex.quote(fork_message)
+                    
+                    # Background process: sleep then type the fork result
+                    subprocess.Popen([
+                        "sh", "-c",
+                        f"sleep 0.5 && tmux -L kitty-claude send-keys -l {escaped_message} && tmux -L kitty-claude send-keys Enter"
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                    # Return immediately to unblock the hook
+                    response = {"continue": False, "stopReason": ""}
+                    print(json.dumps(response))
+                else:
+                    send_tmux_message("⚠ Fork had no assistant messages")
+                    response = {"continue": False, "stopReason": "Fork had no responses"}
+                    print(json.dumps(response))
+                
+            except Exception as e:
+                send_tmux_message(f"❌ Error reading fork: {str(e)}")
+                response = {"continue": False, "stopReason": f"Fork error: {str(e)}"}
+                print(json.dumps(response))
+            
+            return
+        
+        # Check for :cd-tmux command
+        if prompt == ':cd-tmux':
+            # Get current directory from main tmux session "0"
+            try:
+                result = run(
+                    ["tmux", "display-message", "-p", "-t", "0", "#{pane_current_path}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                target_dir = result.stdout.strip()
+
+                if not target_dir:
+                    send_tmux_message("❌ Could not get directory from tmux session 0")
+                    response = {"continue": False, "stopReason": "❌ Could not get directory from tmux session 0"}
+                    print(json.dumps(response))
+                    return
+
+            except subprocess.CalledProcessError:
+                send_tmux_message("❌ Could not access tmux session 0")
+                response = {"continue": False, "stopReason": "❌ Could not access tmux session 0"}
+                print(json.dumps(response))
+                return
+
+            current_dir = input_data.get('cwd', os.getcwd())
+
+            # Encode paths
+            encoded_current = current_dir.replace('/', '-')
+            encoded_target = target_dir.replace('/', '-')
+
+            # Find current session
+            projects_dir = claude_data_dir / "projects" / encoded_current
+            if not projects_dir.exists():
+                send_tmux_message("❌ No session found in current directory")
+                response = {"continue": False, "stopReason": "❌ No session found in current directory"}
+                print(json.dumps(response))
+                return
+
+            session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not session_files:
+                send_tmux_message("❌ No session found in current directory")
+                response = {"continue": False, "stopReason": "❌ No session found in current directory"}
+                print(json.dumps(response))
+                return
+
+            session_id = session_files[0].stem
+
+            # Clone session
+            target_projects_dir = claude_data_dir / "projects" / encoded_target
+            target_projects_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(session_files[0], target_projects_dir / f"{session_id}.jsonl")
+
+            # Open new tmux window
+            run([
+                "tmux", "-L", "kitty-claude",
+                "new-window", "-c", target_dir,
+                f"claude --resume {session_id}"
+            ])
+
+            send_tmux_message(f"✓ Opened new window in {target_dir}")
+            response = {"continue": False, "stopReason": f"✓ Opened new window in {target_dir}"}
+            print(json.dumps(response))
+            return
+
+        # Check for :time command
+        if prompt == ':time':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                send_tmux_message("⏱ No session ID available")
+                response = {"continue": False, "stopReason": "⏱ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            duration = get_last_response_duration(session_id)
+
+            if duration is None:
+                send_tmux_message("⏱ No timing data available yet")
+                response = {"continue": False, "stopReason": "⏱ No timing data available yet"}
+                print(json.dumps(response))
+                return
+
+            # Format duration nicely
+            if duration < 1:
+                duration_str = f"{duration * 1000:.0f}ms"
+            elif duration < 60:
+                duration_str = f"{duration:.1f}s"
+            else:
+                minutes = int(duration // 60)
+                seconds = duration % 60
+                duration_str = f"{minutes}m {seconds:.1f}s"
+
+            message = f"⏱ Last response took: {duration_str}"
+            send_tmux_message(message)
+            response = {"continue": False, "stopReason": message}
+            print(json.dumps(response))
+            return
+
+        # Check for :cd command
+        if prompt.startswith(':cd '):
+            target_dir = prompt[4:].strip()
+            current_dir = input_data.get('cwd', os.getcwd())
+
+            # Encode paths
+            encoded_current = current_dir.replace('/', '-')
+            encoded_target = target_dir.replace('/', '-')
+
+            # Find current session
+            projects_dir = claude_data_dir / "projects" / encoded_current
+            if not projects_dir.exists():
+                send_tmux_message("❌ No session found in current directory")
+                response = {
+                    "continue": False,
+                    "stopReason": "❌ No session found in current directory"
+                }
+                print(json.dumps(response))
+                return
+
+            session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not session_files:
+                send_tmux_message("❌ No session found in current directory")
+                response = {
+                    "continue": False,
+                    "stopReason": "❌ No session found in current directory"
+                }
+                print(json.dumps(response))
+                return
+
+            session_id = session_files[0].stem
+
+            # Get current window ID before creating new window
+            try:
+                result = run(
+                    ["tmux", "-L", "kitty-claude", "display-message", "-p", "#{window_id}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                current_window_id = result.stdout.strip()
+            except:
+                current_window_id = None
+
+            # Clone session to target directory
+            target_projects_dir = claude_data_dir / "projects" / encoded_target
+            target_projects_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(session_files[0], target_projects_dir / f"{session_id}.jsonl")
+
+            # Update session metadata with new path
+            save_session_metadata(session_id, get_session_name(session_id), target_dir)
+
+            # Get kitty-claude executable path
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
+            # Open new tmux window using kitty-claude indirection
+            run([
+                "tmux", "-L", "kitty-claude",
+                "new-window", "-c", target_dir,
+                f"{kitty_claude_path} --new-window --resume-session {session_id}"
+            ])
+
+            # Schedule closing the current window after verifying new window exists
+            if current_window_id:
+                # Script that waits, checks if new window exists with our session ID, then closes old window
+                close_script = f"""
+sleep 2
+# Check if a window exists with the session ID we just created
+if tmux -L kitty-claude list-windows -F '#{{@session_id}}' 2>/dev/null | grep -q '^{session_id}$'; then
+    # New window exists, safe to close old window
+    tmux -L kitty-claude kill-window -t {current_window_id} 2>/dev/null || true
+fi
+"""
+                subprocess.Popen([
+                    "sh", "-c",
+                    close_script
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            send_tmux_message(f"✓ Moving to {target_dir}")
+            response = {
+                "continue": False,
+                "stopReason": f"✓ Moving to {target_dir}"
+            }
+            print(json.dumps(response))
+            return
+        
+        # Not a custom command, save start time and pass through
+        session_id = input_data.get('session_id')
+        if session_id:
+            save_request_start_time(session_id)
+        print(prompt)
+        
+    except Exception as e:
+        # Log error and send notification
+        error_msg = f"Hook error: {str(e)}"
+        send_tmux_message(f"❌ {error_msg}")
+        with open("/tmp/kitty-claude-hook-error.log", "a") as f:
+            f.write(f"{error_msg}\n")
+        # Pass through the original prompt on error
+        try:
+            input_data = json.loads(sys.stdin.read()) if 'input_data' not in locals() else input_data
+            print(input_data.get('prompt', ''))
+        except:
+            pass
+
+
+def handle_stop():
+    """Handle Stop hook - calculate and save response duration."""
+    try:
+        # Read JSON from stdin
+        input_data = json.loads(sys.stdin.read())
+        session_id = input_data.get('session_id')
+
+        if session_id:
+            save_response_duration(session_id)
+            # Remove from open sessions list
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            remove_open_session(session_id, profile)
+    except Exception as e:
+        # Log error silently
+        with open("/tmp/kitty-claude-stop-hook-error.log", "a") as f:
+            f.write(f"Stop hook error: {str(e)}\n")
+

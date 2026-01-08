@@ -24,3 +24,6 @@ However, I will likely still want to use a terminal even with claude code and I 
   - Alt+r - Restart kitty-claude
 
 
+## Session Storage
+
+Session metadata is stored in `~/.local/state/kitty-claude/sessions/` and open sessions are tracked in `~/.config/kitty-claude/open-sessions.json` (for debugging purposes only - liable to change).
