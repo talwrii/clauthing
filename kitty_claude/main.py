@@ -19,9 +19,9 @@ from kitty_claude.window_utils import (
 )
 from kitty_claude.tmux import (
     send_tmux_message,
-    new_window,
     get_runtime_tmux_state_file
 )
+from kitty_claude.claude import new_window
 from kitty_claude.colon_command import (
     handle_user_prompt_submit,
     handle_stop
@@ -34,6 +34,7 @@ from kitty_claude.session import (
     remove_open_session,
     get_open_sessions
 )
+from kitty_claude.tmux_status import handle_tmux_status
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -207,6 +208,68 @@ def reinstall(config_dir):
         credentials_file.write_bytes(credentials_backup)
         print(f"✓ Restored credentials")
 
+def handle_list_sessions(profile):
+    """List all open sessions with their metadata."""
+    open_sessions = get_open_sessions(profile)
+    
+    if not open_sessions:
+        print("No open sessions found.")
+        return
+    
+    print(f"\n{'='*80}")
+    print(f"Open Sessions ({len(open_sessions)})")
+    print(f"{'='*80}\n")
+    
+    state_dir = get_state_dir()
+    
+    # Get Claude data directory to check for conversation files
+    if profile:
+        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "kitty-claude"
+    claude_data_dir = config_dir / "claude-data"
+    projects_dir = claude_data_dir / "projects"
+    
+    for i, session_id in enumerate(open_sessions, 1):
+        # Load metadata
+        metadata_file = state_dir / "sessions" / f"{session_id}.json"
+        
+        if metadata_file.exists():
+            try:
+                metadata = json.loads(metadata_file.read_text())
+                name = metadata.get("name", "Unknown")
+                path = metadata.get("path", "Unknown")
+                created = metadata.get("created", "Unknown")
+                
+                print(f"{i}. {name}")
+                print(f"   Session ID: {session_id}")
+                print(f"   Path: {path}")
+                print(f"   Created: {created}")
+            except Exception as e:
+                print(f"{i}. {session_id}")
+                print(f"   Error reading metadata: {e}")
+        else:
+            print(f"{i}. {session_id}")
+            print(f"   No metadata found")
+        
+        # Look for conversation file
+        conv_file = None
+        if projects_dir.exists():
+            for project_path in projects_dir.iterdir():
+                session_file = project_path / f"{session_id}.jsonl"
+                if session_file.exists():
+                    conv_file = session_file
+                    break
+        
+        if conv_file:
+            print(f"   Conversation: {conv_file} ✓")
+        else:
+            print(f"   Conversation: Not found ✗")
+        
+        print()
+    
+    print(f"{'='*80}\n")
+
 # ============================================================================
 # COMMAND HANDLERS
 # ============================================================================
@@ -363,6 +426,10 @@ def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd,
         kitty_config_path.unlink()
         print(f"Removed old {kitty_config_path}")
     
+    # Get kitty-claude executable for status bar
+    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    profile_arg = f"--profile {profile} " if profile else ""
+    
     # Regenerate tmux config
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
@@ -413,20 +480,23 @@ set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
 
-# Multiline status bar (3 lines) for more window visibility
+# 3-line status bar with custom window display
+set -g status-interval 5
 set -g status 3
 set -g status-style bg=colour235,fg=colour248
 
-# Top line: kitty-claude label
-set -g status-format[0] '#[bg=colour235,fg=colour248] [kitty-claude]'
+# Line 0: label (left) and path (right)
+set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [kitty-claude] #[align=right]#{{pane_current_path}} '
 
-# Middle line: window list (this is where all windows show)
-set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{{W:#{{E:window-status-format}},#{{E:window-status-current-format}}}}'
+# Lines 1 & 2: windows (split across two lines)
+set -g status-format[1] '#({kitty_claude_path} {profile_arg}--tmux-status 1)'
+set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
 
-# Bottom line: current path
-set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{{pane_current_path}} '
+# Refresh status bar on window changes
+set-hook -g after-select-window 'refresh-client -S'
+set-hook -g window-renamed 'refresh-client -S'
 
-# Window status styling
+# Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
@@ -530,6 +600,10 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
     if kitty_config_path.exists():
         kitty_config_path.unlink()
     
+    # Get kitty-claude executable for status bar
+    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    profile_arg = f"--profile {profile} " if profile else ""
+    
     # Always regenerate tmux config (it's ephemeral, not user-editable)
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
@@ -586,20 +660,23 @@ set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
 
-# Multiline status bar (3 lines) for more window visibility
+# 3-line status bar with custom window display
+set -g status-interval 5
 set -g status 3
 set -g status-style bg=colour235,fg=colour248
 
-# Top line: kitty-claude label
-set -g status-format[0] '#[bg=colour235,fg=colour248] [kitty-claude]'
+# Line 0: label (left) and path (right)
+set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [kitty-claude] #[align=right]#{{pane_current_path}} '
 
-# Middle line: window list (this is where all windows show)
-set -g status-format[1] '#[bg=colour235,fg=colour248,align=left]#{{W:#{{E:window-status-format}},#{{E:window-status-current-format}}}}'
+# Lines 1 & 2: windows (split across two lines)
+set -g status-format[1] '#({kitty_claude_path} {profile_arg}--tmux-status 1)'
+set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
 
-# Bottom line: current path
-set -g status-format[2] '#[bg=colour235,fg=colour248,align=right] #{{pane_current_path}} '
+# Refresh status bar on window changes
+set-hook -g after-select-window 'refresh-client -S'
+set-hook -g window-renamed 'refresh-client -S'
 
-# Window status styling
+# Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
 set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
@@ -693,9 +770,17 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                             path = str(jail_dir)
                         
                         log(f"Restore: Creating window for session {sess_id} at {path}", profile)
+                        
+                        # Build wrapper command (FIXED - use indirection)
+                        cmd_parts = [kitty_claude_path]
+                        if profile:
+                            cmd_parts.extend(["--profile", profile])
+                        cmd_parts.extend(["--new-window", "--resume-session", sess_id])
+                        cmd_str = " ".join(cmd_parts)
+                        
                         run(
                             ["tmux", "-L", tmux_socket, "new-window", "-t", tmux_socket,
-                             "-c", path, "-n", win_name, "claude", "--resume", sess_id],
+                             "-c", path, "-n", win_name, cmd_str],
                             capture_output=True,
                             text=True,
                             profile=profile
@@ -734,6 +819,8 @@ def main():
         parser.add_argument("--follow-logs", action="store_true", help="Follow log file for current profile")
         parser.add_argument("--last-logs", action="store_true", help="Show all logs from last run")
         parser.add_argument("--remain", action="store_true", help="Keep panes open after command exits (for debugging)")
+        parser.add_argument("--tmux-status", type=int, metavar="LINE", choices=[1, 2], help="Display tmux status line (1 or 2) - internal use")
+        parser.add_argument("--list-sessions", action="store_true", help="List all open sessions with metadata")
         
         args = parser.parse_args()
         
@@ -756,6 +843,14 @@ def main():
         claude_data_dir = config_dir / "claude-data"
         
         # Dispatch to command handlers
+        if args.list_sessions:
+            handle_list_sessions(profile)
+            sys.exit(0)
+        
+        if args.tmux_status:
+            handle_tmux_status(args.tmux_status, profile)
+            sys.exit(0)
+        
         if args.last_logs:
             handle_last_logs(profile)
         

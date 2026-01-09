@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Colon command handlers for kitty-claude (:cd, :fork, :time, etc)."""
+
 import os
 import sys
 import json
@@ -21,7 +22,6 @@ from kitty_claude.session import (
     remove_open_session
 )
 
-
 def send_tmux_message(message, socket="kitty-claude"):
     """Send a message via tmux display-message"""
     try:
@@ -39,7 +39,6 @@ def get_state_dir():
         state_dir = Path(xdg_state) / "kitty-claude"
     else:
         state_dir = Path.home() / ".local" / "state" / "kitty-claude"
-
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
 
@@ -48,14 +47,13 @@ def save_session_metadata(session_id, name, path):
     state_dir = get_state_dir()
     sessions_dir = state_dir / "sessions"
     sessions_dir.mkdir(exist_ok=True)
-
+    
     metadata_file = sessions_dir / f"{session_id}.json"
     metadata = {
         "name": name,
         "path": path,
         "created": run(["date", "-Iseconds"], capture_output=True, text=True).stdout.strip()
     }
-
     metadata_file.write_text(json.dumps(metadata, indent=2))
 
 def handle_user_prompt_submit(claude_data_dir=None):
@@ -174,25 +172,23 @@ def handle_user_prompt_submit(claude_data_dir=None):
                     check=True
                 )
                 target_dir = result.stdout.strip()
-
                 if not target_dir:
                     send_tmux_message("❌ Could not get directory from tmux session 0")
                     response = {"continue": False, "stopReason": "❌ Could not get directory from tmux session 0"}
                     print(json.dumps(response))
                     return
-
             except subprocess.CalledProcessError:
                 send_tmux_message("❌ Could not access tmux session 0")
                 response = {"continue": False, "stopReason": "❌ Could not access tmux session 0"}
                 print(json.dumps(response))
                 return
-
+            
             current_dir = input_data.get('cwd', os.getcwd())
-
+            
             # Encode paths
             encoded_current = current_dir.replace('/', '-')
             encoded_target = target_dir.replace('/', '-')
-
+            
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
@@ -200,33 +196,33 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 response = {"continue": False, "stopReason": "❌ No session found in current directory"}
                 print(json.dumps(response))
                 return
-
+            
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
                 send_tmux_message("❌ No session found in current directory")
                 response = {"continue": False, "stopReason": "❌ No session found in current directory"}
                 print(json.dumps(response))
                 return
-
+            
             session_id = session_files[0].stem
-
+            
             # Clone session
             target_projects_dir = claude_data_dir / "projects" / encoded_target
             target_projects_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(session_files[0], target_projects_dir / f"{session_id}.jsonl")
-
+            
             # Open new tmux window
             run([
                 "tmux", "-L", "kitty-claude",
                 "new-window", "-c", target_dir,
                 f"claude --resume {session_id}"
             ])
-
+            
             send_tmux_message(f"✓ Opened new window in {target_dir}")
             response = {"continue": False, "stopReason": f"✓ Opened new window in {target_dir}"}
             print(json.dumps(response))
             return
-
+        
         # Check for :time command
         if prompt == ':time':
             session_id = input_data.get('session_id')
@@ -235,15 +231,14 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 response = {"continue": False, "stopReason": "⏱ No session ID available"}
                 print(json.dumps(response))
                 return
-
+            
             duration = get_last_response_duration(session_id)
-
             if duration is None:
                 send_tmux_message("⏱ No timing data available yet")
                 response = {"continue": False, "stopReason": "⏱ No timing data available yet"}
                 print(json.dumps(response))
                 return
-
+            
             # Format duration nicely
             if duration < 1:
                 duration_str = f"{duration * 1000:.0f}ms"
@@ -253,22 +248,26 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 minutes = int(duration // 60)
                 seconds = duration % 60
                 duration_str = f"{minutes}m {seconds:.1f}s"
-
+            
             message = f"⏱ Last response took: {duration_str}"
             send_tmux_message(message)
             response = {"continue": False, "stopReason": message}
             print(json.dumps(response))
             return
-
+        
         # Check for :cd command
         if prompt.startswith(':cd '):
             target_dir = prompt[4:].strip()
+            
+            # Convert to absolute path
+            target_dir = str(Path(target_dir).expanduser().resolve())
+            
             current_dir = input_data.get('cwd', os.getcwd())
-
+            
             # Encode paths
             encoded_current = current_dir.replace('/', '-')
             encoded_target = target_dir.replace('/', '-')
-
+            
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
@@ -279,7 +278,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 }
                 print(json.dumps(response))
                 return
-
+            
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
                 send_tmux_message("❌ No session found in current directory")
@@ -289,9 +288,12 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 }
                 print(json.dumps(response))
                 return
-
-            session_id = session_files[0].stem
-
+            
+            old_session_id = session_files[0].stem
+            
+            # Generate NEW session ID for the target directory
+            new_session_id = str(uuid.uuid4())
+            
             # Get current window ID before creating new window
             try:
                 result = run(
@@ -303,32 +305,32 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 current_window_id = result.stdout.strip()
             except:
                 current_window_id = None
-
-            # Clone session to target directory
+            
+            # Clone session to target directory with NEW session ID
             target_projects_dir = claude_data_dir / "projects" / encoded_target
             target_projects_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(session_files[0], target_projects_dir / f"{session_id}.jsonl")
-
-            # Update session metadata with new path
-            save_session_metadata(session_id, get_session_name(session_id), target_dir)
-
+            shutil.copy2(session_files[0], target_projects_dir / f"{new_session_id}.jsonl")
+            
+            # Update session metadata with NEW session ID and path
+            save_session_metadata(new_session_id, get_session_name(old_session_id), target_dir)
+            
             # Get kitty-claude executable path
             kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-
-            # Open new tmux window using kitty-claude indirection
+            
+            # Open new tmux window using kitty-claude indirection with NEW session ID
             run([
                 "tmux", "-L", "kitty-claude",
                 "new-window", "-c", target_dir,
-                f"{kitty_claude_path} --new-window --resume-session {session_id}"
+                f"{kitty_claude_path} --new-window --resume-session {new_session_id}"
             ])
-
+            
             # Schedule closing the current window after verifying new window exists
             if current_window_id:
                 # Script that waits, checks if new window exists with our session ID, then closes old window
                 close_script = f"""
 sleep 2
 # Check if a window exists with the session ID we just created
-if tmux -L kitty-claude list-windows -F '#{{@session_id}}' 2>/dev/null | grep -q '^{session_id}$'; then
+if tmux -L kitty-claude list-windows -F '#{{@session_id}}' 2>/dev/null | grep -q '^{new_session_id}$'; then
     # New window exists, safe to close old window
     tmux -L kitty-claude kill-window -t {current_window_id} 2>/dev/null || true
 fi
@@ -337,7 +339,7 @@ fi
                     "sh", "-c",
                     close_script
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
+            
             send_tmux_message(f"✓ Moving to {target_dir}")
             response = {
                 "continue": False,
@@ -365,14 +367,13 @@ fi
         except:
             pass
 
-
 def handle_stop():
     """Handle Stop hook - calculate and save response duration."""
     try:
         # Read JSON from stdin
         input_data = json.loads(sys.stdin.read())
         session_id = input_data.get('session_id')
-
+        
         if session_id:
             save_response_duration(session_id)
             # Remove from open sessions list
@@ -382,4 +383,3 @@ def handle_stop():
         # Log error silently
         with open("/tmp/kitty-claude-stop-hook-error.log", "a") as f:
             f.write(f"Stop hook error: {str(e)}\n")
-
