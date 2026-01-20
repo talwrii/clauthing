@@ -81,6 +81,32 @@ def save_session_metadata(session_id, name, path):
     metadata_file.write_text(json.dumps(metadata, indent=2))
 
 
+def session_has_messages(session_file):
+    """Check if a session file has any actual user/assistant messages.
+    
+    Args:
+        session_file: Path to the JSONL session file
+        
+    Returns:
+        True if the session has at least one user or assistant message
+    """
+    try:
+        with open(session_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get('type') in ('user', 'assistant'):
+                        return True
+                except json.JSONDecodeError:
+                    continue
+        return False
+    except Exception:
+        return False
+
+
 def handle_user_prompt_submit(claude_data_dir=None):
     """Handle UserPromptSubmit hook - process custom commands like :cd and :fork"""
     socket = get_tmux_socket()
@@ -219,15 +245,15 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
-                send_tmux_message("❌ No session found in current directory", socket)
-                response = {"continue": False, "stopReason": "❌ No session found in current directory"}
+                send_tmux_message("❌ Claude cannot resume without a message. Send one first.", socket)
+                response = {"continue": False, "stopReason": "❌ Claude cannot resume without a message. Send one first."}
                 print(json.dumps(response))
                 return
             
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
-                send_tmux_message("❌ No session found in current directory", socket)
-                response = {"continue": False, "stopReason": "❌ No session found in current directory"}
+                send_tmux_message("❌ Claude cannot resume without a message. Send one first.", socket)
+                response = {"continue": False, "stopReason": "❌ Claude cannot resume without a message. Send one first."}
                 print(json.dumps(response))
                 return
             
@@ -298,31 +324,31 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
-                send_tmux_message("❌ No session found in current directory", socket)
+                send_tmux_message("❌ Claude cannot resume without a message. Send one first.", socket)
                 response = {
                     "continue": False,
-                    "stopReason": "❌ No session found in current directory"
+                    "stopReason": "❌ Claude cannot resume without a message. Send one first."
                 }
                 print(json.dumps(response))
                 return
             
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
-                send_tmux_message("❌ No session found in current directory", socket)
+                send_tmux_message("❌ Claude cannot resume without a message. Send one first.", socket)
                 response = {
                     "continue": False,
-                    "stopReason": "❌ No session found in current directory"
+                    "stopReason": "❌ Claude cannot resume without a message. Send one first."
                 }
                 print(json.dumps(response))
                 return
             
-            # Check if session has any messages (file needs content to resume)
+            # Check if session has any messages (not just metadata)
             source_file = session_files[0]
-            if source_file.stat().st_size < 50:  # Empty or just metadata
-                send_tmux_message("❌ Send a message first before using :cd", socket)
+            if not session_has_messages(source_file):
+                send_tmux_message("❌ Claude cannot resume without a message. Send one first.", socket)
                 response = {
                     "continue": False,
-                    "stopReason": "❌ Send a message first before using :cd"
+                    "stopReason": "❌ Claude cannot resume without a message. Send one first."
                 }
                 print(json.dumps(response))
                 return
