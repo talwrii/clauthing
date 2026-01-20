@@ -208,6 +208,211 @@ def reinstall(config_dir):
         credentials_file.write_bytes(credentials_backup)
         print(f"✓ Restored credentials")
 
+def handle_session_picker(profile, socket="kitty-claude"):
+    """Fuzzy find and switch to an open session."""
+    open_sessions = get_open_sessions(profile)
+    
+    if not open_sessions:
+        print("No open sessions.")
+        return
+    
+    # Build list with session info
+    items = []
+    state_dir = get_state_dir()
+    
+    for session_id in open_sessions:
+        name = get_session_name(session_id)
+        
+        # Get path from metadata
+        metadata_file = state_dir / "sessions" / f"{session_id}.json"
+        if metadata_file.exists():
+            try:
+                metadata = json.loads(metadata_file.read_text())
+                path = metadata.get("path", "Unknown")
+            except:
+                path = "Unknown"
+        else:
+            path = "Unknown"
+        
+        items.append(f"{name} | {path} | {session_id}")
+    
+    # Pipe to fzf (works in tmux popup)
+    try:
+        result = subprocess.run(
+            ["fzf", "--height=100%", "--reverse", "--prompt=Switch to session: "],
+            input="\n".join(items),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            # Extract session_id
+            selected = result.stdout.strip()
+            print(f"Selected: {selected}")
+            
+            session_id = selected.split(" | ")[-1]
+            print(f"Session ID: {session_id}")
+            
+            # Find window with this session
+            cmd = ["tmux", "-L", socket, "list-windows", "-F", "#{window_index} #{@session_id}"]
+            print(f"Running: {' '.join(cmd)}")
+            
+            windows = run(
+                cmd,
+                capture_output=True,
+                text=True,
+                profile=profile
+            )
+            
+            print(f"Windows found:")
+            for line in windows.stdout.strip().split("\n"):
+                print(f"  {line}")
+            
+            for line in windows.stdout.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == session_id:
+                    print(f"Match! Window {parts[0]} has session {session_id}")
+                    switch_cmd = ["tmux", "-L", socket, "select-window", "-t", parts[0]]
+                    print(f"Running: {' '.join(switch_cmd)}")
+                    run(switch_cmd, profile=profile)
+                    print("Done!")
+                    return
+            
+            print(f"No window found with session {session_id}, opening new window...")
+            # Not found? Open new window
+            kitty_claude_cmd = ["kitty-claude"]
+            if profile:
+                kitty_claude_cmd.extend(["--profile", profile])
+            kitty_claude_cmd.extend(["--new-window", "--resume-session", session_id])
+            print(f"Running: {' '.join(kitty_claude_cmd)}")
+            subprocess.Popen(kitty_claude_cmd)
+        else:
+            print("Cancelled or no selection")
+            
+    except FileNotFoundError:
+        print("Error: fzf not found. Install: sudo apt install fzf")
+
+def handle_one_tab(config_dir, profile, remain_on_exit=False):
+    """Launch kitty-claude in single-tab mode.
+    
+    Uses tmux but disables new tab creation and skips session restoration.
+    Each invocation creates a completely independent instance.
+    """
+    import time
+    
+    # Unique ID for this instance
+    instance_id = f"{int(time.time())}-{os.getpid()}"
+    
+    # Put ephemeral configs in temp directory
+    tmp_config_dir = Path(f"/tmp/kitty-claude-one-tab-{os.getuid()}")
+    tmp_config_dir.mkdir(parents=True, exist_ok=True)
+    
+    kitty_config_path = tmp_config_dir / f"kitty-{instance_id}.conf"
+    tmux_config_path = tmp_config_dir / f"tmux-{instance_id}.conf"
+    
+    # Unique socket and session name for each instance
+    if profile:
+        tmux_socket = f"kc1-{profile}-{instance_id}"
+    else:
+        tmux_socket = f"kc1-{instance_id}"
+    
+    # Set up isolated Claude config
+    claude_data_dir = setup_claude_config(config_dir)
+    
+    # Set up jail directory
+    jail_dir = setup_jail_directory()
+    
+    config_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Start logging
+    log_dir = get_log_dir(profile)
+    log_dir.mkdir(exist_ok=True)
+    cleanup_old_run_logs(profile, keep=5)
+    
+    # Create new run ID
+    run_id_file = log_dir / "current-run-id"
+    existing_runs = sorted(log_dir.glob("run-*.log"))
+    if existing_runs:
+        last_num = int(existing_runs[-1].stem.split("-")[1])
+        run_num = last_num + 1
+    else:
+        run_num = 1
+    run_id_file.write_text(str(run_num))
+    log(f"=== ONE-TAB MODE (run {run_num}, instance {instance_id}) ===", profile)
+    
+    remain_config = "set -g remain-on-exit on\n" if remain_on_exit else ""
+    
+    # Simplified tmux config - NO C-n, NO session restoration hooks
+    tmux_config_path.write_text(f"""\
+# kitty-claude tmux config (ONE-TAB MODE)
+# No new tabs, no session management
+set -g destroy-unattached on
+{remain_config}
+# Set CLAUDE_CONFIG_DIR for isolated Claude data
+set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
+
+# Set tmux socket name so hooks can find it
+set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+
+# Default command is just claude
+set -g default-command "claude"
+
+# DISABLED: C-n does nothing in one-tab mode
+bind -n C-n display-message "New tabs disabled in --one-tab mode"
+
+# C-w closes window (will exit since it's the only one)
+bind -n C-w kill-window
+
+# C-v passthrough for paste
+bind -n C-v send-keys C-v
+
+# Some sensible defaults
+set -g mouse on
+set -g history-limit 10000
+set -g base-index 1
+setw -g pane-base-index 1
+
+# Quick escape time
+set -sg escape-time 0
+
+# Simple status bar
+set -g status on
+set -g status-style bg=colour235,fg=colour248
+set -g status-left " [one-tab] "
+set -g status-right " #{{pane_current_path}} "
+""")
+    tmux_config_path.chmod(0o444)
+    log(f"Created one-tab tmux config at {tmux_config_path}", profile)
+    
+    # Kitty config
+    kitty_config_path.write_text(f"""\
+# kitty-claude config (ONE-TAB MODE)
+include {Path.home()}/.config/kitty/kitty.conf
+shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir}
+""")
+    kitty_config_path.chmod(0o444)
+    log(f"Created one-tab kitty config at {kitty_config_path}", profile)
+    
+    # Check dependencies
+    if not shutil.which("tmux"):
+        print("Error: tmux not found.")
+        sys.exit(1)
+    if not shutil.which("kitty"):
+        print("Error: kitty not found.")
+        sys.exit(1)
+    if not shutil.which("claude"):
+        print("Error: claude not found.")
+        sys.exit(1)
+    
+    # Launch kitty - NO session restoration, just start fresh
+    log(f"Launching kitty in one-tab mode", profile)
+    os.execvp("kitty", [
+        "kitty",
+        "--class=kitty-claude",
+        f"--config={kitty_config_path}"
+    ])
+
 def handle_list_sessions(profile):
     """List all open sessions with their metadata."""
     open_sessions = get_open_sessions(profile)
@@ -269,6 +474,7 @@ def handle_list_sessions(profile):
         print()
     
     print(f"{'='*80}\n")
+
 
 # ============================================================================
 # COMMAND HANDLERS
@@ -434,12 +640,13 @@ def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd,
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
 # kitty-claude tmux config (isolated server)
-
 # Kill session when kitty window closes
 set -g destroy-unattached on
-
 {remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
+
+# Set tmux socket name so hooks can find it
+set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -461,6 +668,9 @@ bind -n M-r run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}
 
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
+
+# C-p for session picker (fuzzy find with popup)
+bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} ' if profile else ''}--picker"
 
 # Some sensible defaults
 set -g mouse on
@@ -529,12 +739,13 @@ def handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_o
         remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
         tmux_config_path.write_text(f"""\
 # kitty-claude tmux config (isolated server)
-
 # Kill session when kitty window closes
 set -g destroy-unattached on
-
 {remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
+
+# Set tmux socket name so hooks can find it
+set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -614,12 +825,13 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
 # ============================================================================
 #
 # kitty-claude tmux config (isolated server)
-
 # Kill session when kitty window closes
 set -g destroy-unattached on
-
 {remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
+
+# Set tmux socket name so hooks can find it
+set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -641,6 +853,9 @@ bind -n M-r run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}
 
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
+
+# C-p for session picker (fuzzy find) - use popup for interactive fzf
+bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} ' if profile else ''}--picker"
 
 # Some sensible defaults
 set -g mouse on
@@ -795,6 +1010,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
         f"--config={kitty_config_path}"
     ])
 
+
 # ============================================================================
 # MAIN FUNCTION
 # ============================================================================
@@ -821,6 +1037,8 @@ def main():
         parser.add_argument("--remain", action="store_true", help="Keep panes open after command exits (for debugging)")
         parser.add_argument("--tmux-status", type=int, metavar="LINE", choices=[1, 2], help="Display tmux status line (1 or 2) - internal use")
         parser.add_argument("--list-sessions", action="store_true", help="List all open sessions with metadata")
+        parser.add_argument("--picker", action="store_true", help="Fuzzy find and switch to a session (internal use)")
+        parser.add_argument("--one-tab", action="store_true", help="Single-tab mode - no session restoration, no new tabs")
         
         args = parser.parse_args()
         
@@ -843,6 +1061,15 @@ def main():
         claude_data_dir = config_dir / "claude-data"
         
         # Dispatch to command handlers
+        if args.picker:
+            handle_session_picker(profile, tmux_socket)
+            sys.exit(0)
+        
+        if args.one_tab:
+            handle_one_tab(config_dir, profile, args.remain)
+            # execvp doesn't return
+            sys.exit(0)
+        
         if args.list_sessions:
             handle_list_sessions(profile)
             sys.exit(0)

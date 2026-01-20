@@ -22,8 +22,30 @@ from kitty_claude.session import (
     remove_open_session
 )
 
-def send_tmux_message(message, socket="kitty-claude"):
+
+def get_tmux_socket():
+    """Get the tmux socket name from environment or default."""
+    # First try our explicit variable
+    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+    if socket:
+        return socket
+    
+    # Fallback: parse TMUX variable (format: /tmp/tmux-1000/socketname,pid,window)
+    tmux_var = os.environ.get('TMUX', '')
+    if tmux_var:
+        # Extract socket name from path
+        socket_path = tmux_var.split(',')[0]
+        socket_name = os.path.basename(socket_path)
+        if socket_name:
+            return socket_name
+    
+    return 'kitty-claude'  # default
+
+
+def send_tmux_message(message, socket=None):
     """Send a message via tmux display-message"""
+    if socket is None:
+        socket = get_tmux_socket()
     try:
         run([
             "tmux", "-L", socket,
@@ -31,6 +53,7 @@ def send_tmux_message(message, socket="kitty-claude"):
         ], stderr=subprocess.DEVNULL)
     except:
         pass
+
 
 def get_state_dir():
     """Get the XDG state directory for kitty-claude."""
@@ -41,6 +64,7 @@ def get_state_dir():
         state_dir = Path.home() / ".local" / "state" / "kitty-claude"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
+
 
 def save_session_metadata(session_id, name, path):
     """Save session metadata to state directory."""
@@ -56,8 +80,11 @@ def save_session_metadata(session_id, name, path):
     }
     metadata_file.write_text(json.dumps(metadata, indent=2))
 
+
 def handle_user_prompt_submit(claude_data_dir=None):
     """Handle UserPromptSubmit hook - process custom commands like :cd and :fork"""
+    socket = get_tmux_socket()
+    
     try:
         # Get claude data dir from environment variable if not provided
         if claude_data_dir is None:
@@ -83,7 +110,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Find current session file
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
-                send_tmux_message("❌ No session found")
+                send_tmux_message("❌ No session found", socket)
                 response = {"continue": False, "stopReason": "❌ No session found"}
                 print(json.dumps(response))
                 return
@@ -91,7 +118,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             session_files = sorted(projects_dir.glob("*.jsonl"), 
                                  key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
-                send_tmux_message("❌ No session found")
+                send_tmux_message("❌ No session found", socket)
                 response = {"continue": False, "stopReason": "❌ No session found"}
                 print(json.dumps(response))
                 return
@@ -103,11 +130,11 @@ def handle_user_prompt_submit(claude_data_dir=None):
             fork_file = projects_dir / f"{fork_session_id}.jsonl"
             shutil.copy2(session_files[0], fork_file)
             
-            send_tmux_message("🔀 Opening fork in popup...")
+            send_tmux_message("🔀 Opening fork in popup...", socket)
             
             # Open fork in popup (blocking call)
             run([
-                "tmux", "-L", "kitty-claude",
+                "tmux", "-L", socket,
                 "display-popup", "-E", "-w", "90%", "-h", "90%",
                 f"claude --resume {fork_session_id}"
             ])
@@ -134,7 +161,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
                             continue
                 
                 if last_message:
-                    send_tmux_message("✓ Fork completed, injecting response")
+                    send_tmux_message("✓ Fork completed, injecting response", socket)
                     
                     # Escape the message for shell safety
                     fork_message = f"Fork result:\n\n{last_message}"
@@ -143,19 +170,19 @@ def handle_user_prompt_submit(claude_data_dir=None):
                     # Background process: sleep then type the fork result
                     subprocess.Popen([
                         "sh", "-c",
-                        f"sleep 0.5 && tmux -L kitty-claude send-keys -l {escaped_message} && tmux -L kitty-claude send-keys Enter"
+                        f"sleep 0.5 && tmux -L {socket} send-keys -l {escaped_message} && tmux -L {socket} send-keys Enter"
                     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
                     # Return immediately to unblock the hook
                     response = {"continue": False, "stopReason": ""}
                     print(json.dumps(response))
                 else:
-                    send_tmux_message("⚠ Fork had no assistant messages")
+                    send_tmux_message("⚠ Fork had no assistant messages", socket)
                     response = {"continue": False, "stopReason": "Fork had no responses"}
                     print(json.dumps(response))
                 
             except Exception as e:
-                send_tmux_message(f"❌ Error reading fork: {str(e)}")
+                send_tmux_message(f"❌ Error reading fork: {str(e)}", socket)
                 response = {"continue": False, "stopReason": f"Fork error: {str(e)}"}
                 print(json.dumps(response))
             
@@ -173,12 +200,12 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 )
                 target_dir = result.stdout.strip()
                 if not target_dir:
-                    send_tmux_message("❌ Could not get directory from tmux session 0")
+                    send_tmux_message("❌ Could not get directory from tmux session 0", socket)
                     response = {"continue": False, "stopReason": "❌ Could not get directory from tmux session 0"}
                     print(json.dumps(response))
                     return
             except subprocess.CalledProcessError:
-                send_tmux_message("❌ Could not access tmux session 0")
+                send_tmux_message("❌ Could not access tmux session 0", socket)
                 response = {"continue": False, "stopReason": "❌ Could not access tmux session 0"}
                 print(json.dumps(response))
                 return
@@ -192,14 +219,14 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
-                send_tmux_message("❌ No session found in current directory")
+                send_tmux_message("❌ No session found in current directory", socket)
                 response = {"continue": False, "stopReason": "❌ No session found in current directory"}
                 print(json.dumps(response))
                 return
             
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
-                send_tmux_message("❌ No session found in current directory")
+                send_tmux_message("❌ No session found in current directory", socket)
                 response = {"continue": False, "stopReason": "❌ No session found in current directory"}
                 print(json.dumps(response))
                 return
@@ -213,12 +240,12 @@ def handle_user_prompt_submit(claude_data_dir=None):
             
             # Open new tmux window
             run([
-                "tmux", "-L", "kitty-claude",
+                "tmux", "-L", socket,
                 "new-window", "-c", target_dir,
                 f"claude --resume {session_id}"
             ])
             
-            send_tmux_message(f"✓ Opened new window in {target_dir}")
+            send_tmux_message(f"✓ Opened new window in {target_dir}", socket)
             response = {"continue": False, "stopReason": f"✓ Opened new window in {target_dir}"}
             print(json.dumps(response))
             return
@@ -227,14 +254,14 @@ def handle_user_prompt_submit(claude_data_dir=None):
         if prompt == ':time':
             session_id = input_data.get('session_id')
             if not session_id:
-                send_tmux_message("⏱ No session ID available")
+                send_tmux_message("⏱ No session ID available", socket)
                 response = {"continue": False, "stopReason": "⏱ No session ID available"}
                 print(json.dumps(response))
                 return
             
             duration = get_last_response_duration(session_id)
             if duration is None:
-                send_tmux_message("⏱ No timing data available yet")
+                send_tmux_message("⏱ No timing data available yet", socket)
                 response = {"continue": False, "stopReason": "⏱ No timing data available yet"}
                 print(json.dumps(response))
                 return
@@ -250,7 +277,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 duration_str = f"{minutes}m {seconds:.1f}s"
             
             message = f"⏱ Last response took: {duration_str}"
-            send_tmux_message(message)
+            send_tmux_message(message, socket)
             response = {"continue": False, "stopReason": message}
             print(json.dumps(response))
             return
@@ -271,7 +298,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Find current session
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
-                send_tmux_message("❌ No session found in current directory")
+                send_tmux_message("❌ No session found in current directory", socket)
                 response = {
                     "continue": False,
                     "stopReason": "❌ No session found in current directory"
@@ -281,7 +308,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             
             session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
-                send_tmux_message("❌ No session found in current directory")
+                send_tmux_message("❌ No session found in current directory", socket)
                 response = {
                     "continue": False,
                     "stopReason": "❌ No session found in current directory"
@@ -289,7 +316,18 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 print(json.dumps(response))
                 return
             
-            old_session_id = session_files[0].stem
+            # Check if session has any messages (file needs content to resume)
+            source_file = session_files[0]
+            if source_file.stat().st_size < 50:  # Empty or just metadata
+                send_tmux_message("❌ Send a message first before using :cd", socket)
+                response = {
+                    "continue": False,
+                    "stopReason": "❌ Send a message first before using :cd"
+                }
+                print(json.dumps(response))
+                return
+            
+            old_session_id = source_file.stem
             
             # Generate NEW session ID for the target directory
             new_session_id = str(uuid.uuid4())
@@ -297,7 +335,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Get current window ID before creating new window
             try:
                 result = run(
-                    ["tmux", "-L", "kitty-claude", "display-message", "-p", "#{window_id}"],
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
                     capture_output=True,
                     text=True,
                     check=True
@@ -317,11 +355,55 @@ def handle_user_prompt_submit(claude_data_dir=None):
             # Get kitty-claude executable path
             kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
             
-            # Open new tmux window using kitty-claude indirection with NEW session ID
+            # Check if we're in one-tab mode (socket starts with kc1-)
+            if socket.startswith("kc1-"):
+                # One-tab mode: use a temp launcher script to avoid shell quoting issues
+                # The script sets CLAUDE_CONFIG_DIR and runs claude
+                
+                claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
+                
+                # Log for debugging
+                log(f"one-tab :cd - config={claude_config}, session={new_session_id}, target={target_dir}")
+                session_file = target_projects_dir / f"{new_session_id}.jsonl"
+                log(f"one-tab :cd - session file exists: {session_file.exists()}")
+                
+                # Write a launcher script (avoids all tmux shell quoting issues)
+                uid = os.getuid()
+                launcher = Path(f"/tmp/kc-cd-{uid}-{new_session_id[:8]}.sh")
+                launcher.write_text(f'''#!/bin/sh
+export CLAUDE_CONFIG_DIR="{claude_config}"
+cd "{target_dir}"
+exec claude --resume {new_session_id}
+''')
+                launcher.chmod(0o755)
+                log(f"one-tab :cd - launcher script: {launcher}")
+                
+                # Schedule respawn after delay (gives hook time to return)
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                send_tmux_message(f"✓ Changing to {target_dir}...", socket)
+                response = {
+                    "continue": False,
+                    "stopReason": f"✓ Changing to {target_dir}"
+                }
+                print(json.dumps(response))
+                return
+            
+            # Regular multi-tab mode: Open new tmux window using kitty-claude indirection with NEW session ID
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            cmd_parts = [kitty_claude_path]
+            if profile:
+                cmd_parts.extend(["--profile", profile])
+            cmd_parts.extend(["--new-window", "--resume-session", new_session_id])
+            cmd_str = " ".join(cmd_parts)
+            
             run([
-                "tmux", "-L", "kitty-claude",
+                "tmux", "-L", socket,
                 "new-window", "-c", target_dir,
-                f"{kitty_claude_path} --new-window --resume-session {new_session_id}"
+                cmd_str
             ])
             
             # Schedule closing the current window after verifying new window exists
@@ -330,9 +412,9 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 close_script = f"""
 sleep 2
 # Check if a window exists with the session ID we just created
-if tmux -L kitty-claude list-windows -F '#{{@session_id}}' 2>/dev/null | grep -q '^{new_session_id}$'; then
+if tmux -L {socket} list-windows -F '#{{@session_id}}' 2>/dev/null | grep -q '^{new_session_id}$'; then
     # New window exists, safe to close old window
-    tmux -L kitty-claude kill-window -t {current_window_id} 2>/dev/null || true
+    tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true
 fi
 """
                 subprocess.Popen([
@@ -340,7 +422,7 @@ fi
                     close_script
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            send_tmux_message(f"✓ Moving to {target_dir}")
+            send_tmux_message(f"✓ Moving to {target_dir}", socket)
             response = {
                 "continue": False,
                 "stopReason": f"✓ Moving to {target_dir}"
@@ -357,7 +439,7 @@ fi
     except Exception as e:
         # Log error and send notification
         error_msg = f"Hook error: {str(e)}"
-        send_tmux_message(f"❌ {error_msg}")
+        send_tmux_message(f"❌ {error_msg}", socket)
         with open("/tmp/kitty-claude-hook-error.log", "a") as f:
             f.write(f"{error_msg}\n")
         # Pass through the original prompt on error
@@ -366,6 +448,7 @@ fi
             print(input_data.get('prompt', ''))
         except:
             pass
+
 
 def handle_stop():
     """Handle Stop hook - calculate and save response duration."""
