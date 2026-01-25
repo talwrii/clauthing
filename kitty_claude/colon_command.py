@@ -125,6 +125,61 @@ def handle_user_prompt_submit(claude_data_dir=None):
         input_data = json.loads(sys.stdin.read())
         prompt = input_data.get('prompt', '').strip()
         
+        # Check for :help command
+        if prompt == ':help':
+            help_text = """kitty-claude colon commands:
+
+:help           Show this help message
+:list           List available slash commands (skills)
+:restart        Restart Claude with fresh session
+:cd <path>      Change directory and move session
+:cd-tmux        Change to directory of tmux session 0
+:fork           Open a fork in a popup window
+:time           Show duration of last response
+
+Examples:
+  :cd ~/projects/myapp
+  :restart
+  :list
+"""
+            send_tmux_message("📖 See console for help", socket)
+            response = {"continue": False, "stopReason": help_text}
+            print(json.dumps(response))
+            return
+
+        # Check for :list command
+        if prompt == ':list':
+            skills_dir = claude_data_dir / "skills"
+
+            if not skills_dir.exists() or not any(skills_dir.iterdir()):
+                message = "No skills installed.\n\nSkills can be added to .claude/skills/ in your project."
+                send_tmux_message("📋 No skills found", socket)
+                response = {"continue": False, "stopReason": message}
+                print(json.dumps(response))
+                return
+
+            # List all skill directories
+            skills = []
+            for skill_dir in sorted(skills_dir.iterdir()):
+                if skill_dir.is_dir():
+                    skill_name = skill_dir.name
+                    # Check if it's a symlink (project skill)
+                    if skill_dir.is_symlink():
+                        skills.append(f"  /{skill_name} (project)")
+                    else:
+                        skills.append(f"  /{skill_name}")
+
+            if skills:
+                skills_text = "Available slash commands:\n\n" + "\n".join(skills)
+                send_tmux_message(f"📋 Found {len(skills)} skills", socket)
+            else:
+                skills_text = "No skills found."
+                send_tmux_message("📋 No skills found", socket)
+
+            response = {"continue": False, "stopReason": skills_text}
+            print(json.dumps(response))
+            return
+
         # Check for :fork command
         if prompt.startswith(':fork'):
             current_dir = input_data.get('cwd', os.getcwd())
@@ -308,13 +363,112 @@ def handle_user_prompt_submit(claude_data_dir=None):
             print(json.dumps(response))
             return
         
+        # Check for :restart command
+        if prompt == ':restart':
+            current_dir = input_data.get('cwd', os.getcwd())
+
+            # Get kitty-claude executable path
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
+            # Check if we're in one-tab mode
+            if socket.startswith("kc1-"):
+                # One-tab mode: respawn with fresh session
+                claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
+
+                uid = os.getuid()
+                launcher = Path(f"/tmp/kc-restart-{uid}.sh")
+                launcher.write_text(f'''#!/bin/sh
+export CLAUDE_CONFIG_DIR="{claude_config}"
+cd "{current_dir}"
+exec claude
+''')
+                launcher.chmod(0o755)
+
+                # Schedule respawn after delay
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                send_tmux_message("✓ Restarting...", socket)
+                response = {
+                    "continue": False,
+                    "stopReason": "✓ Restarting..."
+                }
+                print(json.dumps(response))
+                return
+
+            # Multi-tab mode: kill window and open new one
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                current_window_id = result.stdout.strip()
+            except:
+                current_window_id = None
+
+            # Get current window name
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                window_name = result.stdout.strip()
+            except:
+                window_name = None
+
+            # Open new window with fresh session
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            cmd_parts = [kitty_claude_path]
+            if profile:
+                cmd_parts.extend(["--profile", profile])
+            cmd_parts.append("--new-window")
+            cmd_str = " ".join(cmd_parts)
+
+            new_window_cmd = ["tmux", "-L", socket, "new-window"]
+            if window_name:
+                new_window_cmd.extend(["-n", window_name])
+            new_window_cmd.extend(["-c", current_dir, cmd_str])
+
+            run(new_window_cmd)
+
+            # Close old window after delay
+            if current_window_id:
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 2 && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            send_tmux_message("✓ Restarting with fresh session", socket)
+            response = {
+                "continue": False,
+                "stopReason": "✓ Restarting with fresh session"
+            }
+            print(json.dumps(response))
+            return
+
         # Check for :cd command
         if prompt.startswith(':cd '):
             target_dir = prompt[4:].strip()
-            
+
             # Convert to absolute path
             target_dir = str(Path(target_dir).expanduser().resolve())
-            
+
+            # Check if directory exists
+            if not os.path.isdir(target_dir):
+                send_tmux_message(f"❌ Directory does not exist: {target_dir}", socket)
+                response = {
+                    "continue": False,
+                    "stopReason": f"❌ Directory does not exist: {target_dir}"
+                }
+                print(json.dumps(response))
+                return
+
             current_dir = input_data.get('cwd', os.getcwd())
             
             # Encode paths
