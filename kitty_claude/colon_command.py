@@ -312,7 +312,8 @@ def handle_user_prompt_submit(claude_data_dir=None):
 
 :help           Show this help message
 :list           List available slash commands (skills)
-:restart        Restart Claude with fresh session
+:clear          Clear session and start fresh
+:reload         Reload Claude (same session, pick up config changes)
 :cd <path>      Change directory and move session
 :cd-tmux        Change to directory of tmux session 0
 :fork           Open a fork in a popup window
@@ -324,7 +325,8 @@ Examples:
   :cd ~/projects/myapp
   :checkpoint
   :rollback
-  :restart
+  :clear
+  :reload
   :list
 """
             send_tmux_message("📖 See console for help", socket)
@@ -676,8 +678,104 @@ fi
             print(json.dumps(response))
             return
         
-        # Check for :restart command
-        if prompt == ':restart':
+        # Check for :reload command
+        if prompt == ':reload':
+            current_dir = input_data.get('cwd', os.getcwd())
+            session_id = input_data.get('session_id')
+
+            if not session_id:
+                send_tmux_message("❌ No session ID available", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            # Get kitty-claude executable path
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
+            # Check if we're in one-tab mode
+            if socket.startswith("kc1-"):
+                # One-tab mode: respawn with same session
+                claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
+
+                uid = os.getuid()
+                launcher = Path(f"/tmp/kc-reload-{uid}.sh")
+                launcher.write_text(f'''#!/bin/sh
+export CLAUDE_CONFIG_DIR="{claude_config}"
+cd "{current_dir}"
+exec claude --resume {session_id}
+''')
+                launcher.chmod(0o755)
+
+                # Schedule respawn after delay
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                send_tmux_message("✓ Reloading...", socket)
+                response = {
+                    "continue": False,
+                    "stopReason": "✓ Reloading..."
+                }
+                print(json.dumps(response))
+                return
+
+            # Multi-tab mode: kill window and open new one with same session
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                current_window_id = result.stdout.strip()
+            except:
+                current_window_id = None
+
+            # Get current window name
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                window_name = result.stdout.strip()
+            except:
+                window_name = None
+
+            # Open new window with same session
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            cmd_parts = [kitty_claude_path]
+            if profile:
+                cmd_parts.extend(["--profile", profile])
+            cmd_parts.extend(["--new-window", "--resume-session", session_id])
+            cmd_str = " ".join(cmd_parts)
+
+            new_window_cmd = ["tmux", "-L", socket, "new-window"]
+            if window_name:
+                new_window_cmd.extend(["-n", window_name])
+            new_window_cmd.extend(["-c", current_dir, cmd_str])
+
+            run(new_window_cmd)
+
+            # Close old window after delay
+            if current_window_id:
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 2 && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            send_tmux_message("✓ Reloaded with same session", socket)
+            response = {
+                "continue": False,
+                "stopReason": "✓ Reloaded with same session"
+            }
+            print(json.dumps(response))
+            return
+
+        # Check for :clear command (formerly :restart)
+        if prompt == ':clear':
             current_dir = input_data.get('cwd', os.getcwd())
 
             # Get kitty-claude executable path
@@ -689,7 +787,7 @@ fi
                 claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
 
                 uid = os.getuid()
-                launcher = Path(f"/tmp/kc-restart-{uid}.sh")
+                launcher = Path(f"/tmp/kc-clear-{uid}.sh")
                 launcher.write_text(f'''#!/bin/sh
 export CLAUDE_CONFIG_DIR="{claude_config}"
 cd "{current_dir}"
@@ -703,10 +801,10 @@ exec claude
                     f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                send_tmux_message("✓ Restarting...", socket)
+                send_tmux_message("✓ Clearing session...", socket)
                 response = {
                     "continue": False,
-                    "stopReason": "✓ Restarting..."
+                    "stopReason": "✓ Clearing session..."
                 }
                 print(json.dumps(response))
                 return
@@ -757,10 +855,10 @@ exec claude
                     f"sleep 2 && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            send_tmux_message("✓ Restarting with fresh session", socket)
+            send_tmux_message("✓ Starting fresh session", socket)
             response = {
                 "continue": False,
-                "stopReason": "✓ Restarting with fresh session"
+                "stopReason": "✓ Starting fresh session"
             }
             print(json.dumps(response))
             return
