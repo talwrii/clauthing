@@ -368,6 +368,9 @@ bind -n C-w kill-window
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
 
+# M-e opens session notes in vim popup
+bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
+
 # Some sensible defaults
 set -g mouse on
 set -g history-limit 10000

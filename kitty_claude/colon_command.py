@@ -21,6 +21,8 @@ from kitty_claude.session import (
     save_session_metadata,
     remove_open_session
 )
+from kitty_claude.window_utils import open_session_notes
+from kitty_claude.tmux import get_runtime_tmux_state_file
 
 
 def get_tmux_socket():
@@ -888,7 +890,20 @@ exec claude
             )
             print(json.dumps(response))
             return
-        
+
+        # Check for :note command
+        if prompt == ':note' or prompt.startswith(':note '):
+            session_id = input_data.get('session_id')
+            try:
+                open_session_notes(get_runtime_tmux_state_file, session_id=session_id)
+                response = {"continue": False, "stopReason": "📝 Opening session notes..."}
+            except Exception as e:
+                send_tmux_message(f"❌ Error opening notes: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
         # Not a custom command, save start time and pass through
         session_id = input_data.get('session_id')
         if session_id:
