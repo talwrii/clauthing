@@ -312,18 +312,28 @@ def handle_user_prompt_submit(claude_data_dir=None):
         if prompt == ':help':
             help_text = """kitty-claude colon commands:
 
-:help           Show this help message
-:list           List available slash commands (skills)
-:clear          Clear session and start fresh
-:reload         Reload Claude (same session, pick up config changes)
-:cd <path>      Change directory and move session
-:cd-tmux        Change to directory of tmux session 0
-:fork           Open a fork in a popup window
-:time           Show duration of last response
-:checkpoint     Save a checkpoint in the current session
-:rollback       Rollback to the last checkpoint (clones session)
+:help              Show this help message
+:list              List available slash commands (skills)
+:note              Open session notes in vim
+:skill <name>      Create/edit a global Claude skill
+:rule <name>       Create/edit a global rule
+::skill <name>     Create/edit a kitty-claude skill
+::<skill> [prompt] Run kitty-claude skill (injects context)
+:clear             Clear session and start fresh
+:reload            Reload Claude (same session, pick up config changes)
+:cd <path>         Change directory and move session
+:cd-tmux           Change to directory of tmux session 0
+:fork              Open a fork in a popup window
+:time              Show duration of last response
+:checkpoint        Save a checkpoint in the current session
+:rollback          Rollback to the last checkpoint (clones session)
 
 Examples:
+  :note
+  :skill my-skill
+  :rule my-rule
+  ::skill context
+  ::context what should I do?
   :cd ~/projects/myapp
   :checkpoint
   :rollback
@@ -891,6 +901,114 @@ exec claude
             print(json.dumps(response))
             return
 
+        # Check for ::skill command (create/edit kitty-claude skill)
+        if prompt.startswith('::skill '):
+            skill_name = prompt[8:].strip()
+
+            if not skill_name:
+                send_tmux_message("❌ Usage: ::skill <name>", socket)
+                response = {"continue": False, "stopReason": "❌ Usage: ::skill <name>"}
+                print(json.dumps(response))
+                return
+
+            # Validate skill name (alphanumeric, dash, underscore only)
+            if not all(c.isalnum() or c in '-_' for c in skill_name):
+                send_tmux_message("❌ Skill name can only contain letters, numbers, dash, underscore", socket)
+                response = {"continue": False, "stopReason": "❌ Invalid skill name"}
+                print(json.dumps(response))
+                return
+
+            try:
+                # Determine config directory based on profile
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+
+                # Create kc-skills directory
+                kc_skills_dir = config_dir / "kc-skills"
+                kc_skills_dir.mkdir(parents=True, exist_ok=True)
+
+                skill_file = kc_skills_dir / f"{skill_name}.md"
+
+                # Create template if file doesn't exist
+                if not skill_file.exists():
+                    template = f"""# {skill_name}
+
+Add your kitty-claude skill content here.
+This will be injected as context when you run ::{skill_name}
+"""
+                    skill_file.write_text(template)
+
+                # Open vim in tmux popup
+                result = subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "80%", "-h", "80%",
+                    f"vim {skill_file}"
+                ])
+
+                send_tmux_message(f"✓ KC skill '{skill_name}' saved", socket)
+                response = {"continue": False, "stopReason": f"✓ KC skill '{skill_name}' saved"}
+            except Exception as e:
+                send_tmux_message(f"❌ Error editing KC skill: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # Check for :: command (run kitty-claude skill)
+        if prompt.startswith('::') and not prompt.startswith('::skill '):
+            # Extract skill name (everything after :: up to first space or end)
+            rest = prompt[2:]
+            parts = rest.split(None, 1)
+            skill_name = parts[0] if parts else ""
+            rest_of_prompt = parts[1] if len(parts) > 1 else ""
+
+            if not skill_name:
+                send_tmux_message("❌ Usage: ::skill-name [your prompt]", socket)
+                response = {"continue": False, "stopReason": "❌ Usage: ::skill-name [your prompt]"}
+                print(json.dumps(response))
+                return
+
+            try:
+                # Determine config directory based on profile
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+
+                kc_skills_dir = config_dir / "kc-skills"
+                skill_file = kc_skills_dir / f"{skill_name}.md"
+
+                if not skill_file.exists():
+                    send_tmux_message(f"❌ KC skill '{skill_name}' not found", socket)
+                    response = {"continue": False, "stopReason": f"❌ KC skill '{skill_name}' not found. Create it with ::skill {skill_name}"}
+                    print(json.dumps(response))
+                    return
+
+                # Load skill content
+                skill_content = skill_file.read_text().strip()
+
+                # Inject context and continue
+                send_tmux_message(f"📖 Loading KC skill '{skill_name}'...", socket)
+
+                if rest_of_prompt:
+                    modified_prompt = f"{rest_of_prompt}\n\n[Kitty-Claude Skill: {skill_name}]\n{skill_content}"
+                else:
+                    modified_prompt = f"[Kitty-Claude Skill: {skill_name}]\n{skill_content}"
+
+                # Print modified prompt (goes to Claude) and return WITHOUT json response
+                print(modified_prompt)
+                return
+
+            except Exception as e:
+                send_tmux_message(f"❌ Error loading KC skill: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+                print(json.dumps(response))
+                return
+
         # Check for :note command
         if prompt == ':note' or prompt.startswith(':note '):
             session_id = input_data.get('session_id')
@@ -899,6 +1017,112 @@ exec claude
                 response = {"continue": False, "stopReason": "📝 Opening session notes..."}
             except Exception as e:
                 send_tmux_message(f"❌ Error opening notes: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # Check for :skill command
+        if prompt.startswith(':skill '):
+            skill_name = prompt[7:].strip()
+
+            if not skill_name:
+                send_tmux_message("❌ Usage: :skill <name>", socket)
+                response = {"continue": False, "stopReason": "❌ Usage: :skill <name>"}
+                print(json.dumps(response))
+                return
+
+            # Validate skill name (alphanumeric, dash, underscore only)
+            if not all(c.isalnum() or c in '-_' for c in skill_name):
+                send_tmux_message("❌ Skill name can only contain letters, numbers, dash, underscore", socket)
+                response = {"continue": False, "stopReason": "❌ Invalid skill name"}
+                print(json.dumps(response))
+                return
+
+            try:
+                # Create skill directory
+                skills_dir = claude_data_dir / "skills" / skill_name
+                skills_dir.mkdir(parents=True, exist_ok=True)
+
+                skill_file = skills_dir / "SKILL.md"
+
+                # Create template if file doesn't exist
+                if not skill_file.exists():
+                    template = f"""---
+name: {skill_name}
+description: Execute {skill_name}
+---
+
+Add your skill content here.
+"""
+                    skill_file.write_text(template)
+
+                # Open vim in tmux popup
+                result = subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "80%", "-h", "80%",
+                    f"vim {skill_file}"
+                ])
+
+                send_tmux_message(f"✓ Skill '{skill_name}' saved", socket)
+                response = {"continue": False, "stopReason": f"✓ Skill '{skill_name}' saved"}
+            except Exception as e:
+                send_tmux_message(f"❌ Error editing skill: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # Check for :rule command
+        if prompt.startswith(':rule '):
+            rule_name = prompt[6:].strip()
+
+            if not rule_name:
+                send_tmux_message("❌ Usage: :rule <name>", socket)
+                response = {"continue": False, "stopReason": "❌ Usage: :rule <name>"}
+                print(json.dumps(response))
+                return
+
+            # Validate rule name (alphanumeric, dash, underscore only)
+            if not all(c.isalnum() or c in '-_' for c in rule_name):
+                send_tmux_message("❌ Rule name can only contain letters, numbers, dash, underscore", socket)
+                response = {"continue": False, "stopReason": "❌ Invalid rule name"}
+                print(json.dumps(response))
+                return
+
+            try:
+                # Determine config directory based on profile
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+
+                # Create rules directory
+                rules_dir = config_dir / "rules"
+                rules_dir.mkdir(parents=True, exist_ok=True)
+
+                rule_file = rules_dir / f"{rule_name}.md"
+
+                # Create template if file doesn't exist
+                if not rule_file.exists():
+                    template = f"""# {rule_name}
+
+Add your rule content here. This will be included in CLAUDE.md.
+"""
+                    rule_file.write_text(template)
+
+                # Open vim in tmux popup
+                result = subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "80%", "-h", "80%",
+                    f"vim {rule_file}"
+                ])
+
+                send_tmux_message(f"✓ Rule '{rule_name}' saved", socket)
+                response = {"continue": False, "stopReason": f"✓ Rule '{rule_name}' saved"}
+            except Exception as e:
+                send_tmux_message(f"❌ Error editing rule: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
 
             print(json.dumps(response))
