@@ -314,9 +314,11 @@ def handle_user_prompt_submit(claude_data_dir=None):
 
 :help              Show this help message
 :list              List available slash commands (skills)
+:rules             List all rules
 :note              Open session notes in vim
 :skill <name>      Create/edit a global Claude skill
 :rule <name>       Create/edit a global rule
+::skills           List all kitty-claude skills
 ::skill <name>     Create/edit a kitty-claude skill
 ::<skill> [prompt] Run kitty-claude skill (injects context)
 :clear             Clear session and start fresh
@@ -329,6 +331,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :rollback          Rollback to the last checkpoint (clones session)
 
 Examples:
+  :list, :rules, ::skills
   :note
   :skill my-skill
   :rule my-rule
@@ -339,10 +342,45 @@ Examples:
   :rollback
   :clear
   :reload
-  :list
 """
             send_tmux_message("📖 See console for help", socket)
             response = {"continue": False, "stopReason": help_text}
+            print(json.dumps(response))
+            return
+
+        # Check for :rules command
+        if prompt == ':rules':
+            # Determine config directory based on profile
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
+            rules_dir = config_dir / "rules"
+
+            if not rules_dir.exists() or not any(rules_dir.iterdir()):
+                message = "No rules found.\n\nCreate rules with :rule <name>"
+                send_tmux_message("📋 No rules found", socket)
+                response = {"continue": False, "stopReason": message}
+                print(json.dumps(response))
+                return
+
+            # List all rule files
+            rules = []
+            for rule_file in sorted(rules_dir.iterdir()):
+                if rule_file.is_file() and rule_file.suffix == '.md':
+                    rule_name = rule_file.stem
+                    rules.append(f"  {rule_name}")
+
+            if rules:
+                rules_text = "Available rules:\n\n" + "\n".join(rules)
+                send_tmux_message(f"📋 Found {len(rules)} rules", socket)
+            else:
+                rules_text = "No rules found."
+                send_tmux_message("📋 No rules found", socket)
+
+            response = {"continue": False, "stopReason": rules_text}
             print(json.dumps(response))
             return
 
@@ -901,6 +939,42 @@ exec claude
             print(json.dumps(response))
             return
 
+        # Check for ::skills command (list kitty-claude skills)
+        if prompt == '::skills':
+            # Determine config directory based on profile
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
+            kc_skills_dir = config_dir / "kc-skills"
+
+            if not kc_skills_dir.exists() or not any(kc_skills_dir.iterdir()):
+                message = "No kitty-claude skills found.\n\nCreate skills with ::skill <name>"
+                send_tmux_message("📋 No KC skills found", socket)
+                response = {"continue": False, "stopReason": message}
+                print(json.dumps(response))
+                return
+
+            # List all skill files
+            skills = []
+            for skill_file in sorted(kc_skills_dir.iterdir()):
+                if skill_file.is_file() and skill_file.suffix == '.md':
+                    skill_name = skill_file.stem
+                    skills.append(f"  ::{skill_name}")
+
+            if skills:
+                skills_text = "Available kitty-claude skills:\n\n" + "\n".join(skills)
+                send_tmux_message(f"📋 Found {len(skills)} KC skills", socket)
+            else:
+                skills_text = "No kitty-claude skills found."
+                send_tmux_message("📋 No KC skills found", socket)
+
+            response = {"continue": False, "stopReason": skills_text}
+            print(json.dumps(response))
+            return
+
         # Check for ::skill command (create/edit kitty-claude skill)
         if prompt.startswith('::skill '):
             skill_name = prompt[8:].strip()
@@ -1064,8 +1138,8 @@ Add your skill content here.
                     f"vim {skill_file}"
                 ])
 
-                send_tmux_message(f"✓ Skill '{skill_name}' saved", socket)
-                response = {"continue": False, "stopReason": f"✓ Skill '{skill_name}' saved"}
+                send_tmux_message(f"✓ Skill '{skill_name}' saved - use :reload to apply", socket)
+                response = {"continue": False, "stopReason": f"✓ Skill '{skill_name}' saved\n\nUse :reload to make the skill available."}
             except Exception as e:
                 send_tmux_message(f"❌ Error editing skill: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
@@ -1119,8 +1193,8 @@ Add your rule content here. This will be included in CLAUDE.md.
                     f"vim {rule_file}"
                 ])
 
-                send_tmux_message(f"✓ Rule '{rule_name}' saved", socket)
-                response = {"continue": False, "stopReason": f"✓ Rule '{rule_name}' saved"}
+                send_tmux_message(f"✓ Rule '{rule_name}' saved - use :reload to apply", socket)
+                response = {"continue": False, "stopReason": f"✓ Rule '{rule_name}' saved\n\nUse :reload to rebuild CLAUDE.md and pick up the new rule."}
             except Exception as e:
                 send_tmux_message(f"❌ Error editing rule: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
