@@ -35,6 +35,7 @@ from kitty_claude.session import (
     get_open_sessions
 )
 from kitty_claude.tmux_status import handle_tmux_status
+from kitty_claude.rules import save_rule, build_claude_md, list_rules, show_rule
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -1039,7 +1040,10 @@ def main():
         parser.add_argument("--list-sessions", action="store_true", help="List all open sessions with metadata")
         parser.add_argument("--picker", action="store_true", help="Fuzzy find and switch to a session (internal use)")
         parser.add_argument("--one-tab", action="store_true", help="Single-tab mode - no session restoration, no new tabs")
-        
+        parser.add_argument("--add-rules", nargs='+', metavar="NAME [FILE]", help="Add a rule: --add-rules NAME (reads stdin) or --add-rules NAME FILE")
+        parser.add_argument("--list-rules", action="store_true", help="List all rules")
+        parser.add_argument("--show-rule", metavar="NAME", help="Show content of a specific rule")
+
         args = parser.parse_args()
         
         # Determine profile name
@@ -1059,8 +1063,51 @@ def main():
             kitty_claude_cmd = "kitty-claude --new-window"
         
         claude_data_dir = config_dir / "claude-data"
-        
+
         # Dispatch to command handlers
+        if args.add_rules:
+            # Parse arguments: NAME or NAME FILE
+            if len(args.add_rules) == 1:
+                # Read from stdin
+                rule_name = args.add_rules[0]
+                rule_content = sys.stdin.read()
+            elif len(args.add_rules) == 2:
+                # Read from file
+                rule_name = args.add_rules[0]
+                rule_file_path = Path(args.add_rules[1])
+                if not rule_file_path.exists():
+                    print(f"Error: File not found: {rule_file_path}", file=sys.stderr)
+                    sys.exit(1)
+                rule_content = rule_file_path.read_text()
+            else:
+                print("Error: --add-rules takes 1 or 2 arguments: NAME or NAME FILE", file=sys.stderr)
+                sys.exit(1)
+
+            # Save the rule
+            save_rule(rule_name, rule_content, profile)
+
+            # Rebuild CLAUDE.md
+            build_claude_md(profile)
+            sys.exit(0)
+
+        if args.list_rules:
+            rules = list_rules(profile)
+            if not rules:
+                print("No rules found.")
+            else:
+                print("Rules:")
+                for rule in rules:
+                    print(f"  {rule}")
+            sys.exit(0)
+
+        if args.show_rule:
+            content = show_rule(args.show_rule, profile)
+            if content is None:
+                print(f"Error: Rule not found: {args.show_rule}", file=sys.stderr)
+                sys.exit(1)
+            print(content)
+            sys.exit(0)
+
         if args.picker:
             handle_session_picker(profile, tmux_socket)
             sys.exit(0)

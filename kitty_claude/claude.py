@@ -17,6 +17,7 @@ from kitty_claude.session import (
     remove_open_session
 )
 from kitty_claude.tmux import get_runtime_tmux_state_file
+from kitty_claude.rules import build_claude_md
 
 def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     """Create a new Claude window with session tracking.
@@ -176,7 +177,10 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     
     # Add to open sessions list
     add_open_session(session_id, profile)
-    
+
+    # Build CLAUDE.md from rules before launching
+    build_claude_md(profile)
+
     # Launch claude and wait for it to exit
     if resume_session_id:
         cmd = ["claude", "--resume", session_id]
