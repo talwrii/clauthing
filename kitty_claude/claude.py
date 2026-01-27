@@ -9,15 +9,91 @@ import subprocess
 from pathlib import Path
 from kitty_claude.logging import log, run
 from kitty_claude.session import (
-    get_session_name, 
-    add_open_session, 
-    get_state_dir, 
-    save_session_metadata, 
+    get_session_name,
+    add_open_session,
+    get_state_dir,
+    save_session_metadata,
     get_open_sessions,
     remove_open_session
 )
 from kitty_claude.tmux import get_runtime_tmux_state_file
 from kitty_claude.rules import build_claude_md
+
+
+def setup_session_config(session_id, profile=None):
+    """Create a unique config directory for this session with shared projects.
+
+    This allows each session to have its own settings.json (with different MCP servers)
+    while sharing conversation history through a symlinked projects directory.
+
+    Args:
+        session_id: Unique session identifier
+        profile: Profile name (optional)
+
+    Returns:
+        Path to the session-specific claude-data directory
+    """
+    # Get base config directory
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    # Canonical shared projects location
+    canonical_projects = base_config / "claude-data" / "projects"
+    canonical_projects.mkdir(parents=True, exist_ok=True)
+
+    # Create session-specific config directory
+    session_configs = base_config / "session-configs"
+    session_configs.mkdir(parents=True, exist_ok=True)
+
+    session_config_dir = session_configs / session_id
+    session_config_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy settings.json from canonical location if it exists
+    canonical_settings = base_config / "claude-data" / "settings.json"
+    session_settings = session_config_dir / "settings.json"
+
+    if canonical_settings.exists() and not session_settings.exists():
+        shutil.copy2(canonical_settings, session_settings)
+        log(f"Copied settings from {canonical_settings}", profile)
+    elif not session_settings.exists():
+        # Create minimal settings file
+        session_settings.write_text('{"model": "sonnet"}\n')
+        log(f"Created default settings.json", profile)
+
+    # Symlink projects directory to canonical location
+    session_projects = session_config_dir / "projects"
+    if not session_projects.exists():
+        session_projects.symlink_to(canonical_projects)
+        log(f"Symlinked projects: {session_projects} -> {canonical_projects}", profile)
+
+    log(f"Session config ready: {session_config_dir}", profile)
+    return session_config_dir
+
+
+def cleanup_session_config(session_id, profile=None):
+    """Remove session-specific config directory after session ends.
+
+    Args:
+        session_id: Unique session identifier
+        profile: Profile name (optional)
+    """
+    # Get base config directory
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    session_config_dir = base_config / "session-configs" / session_id
+
+    if session_config_dir.exists():
+        try:
+            # Remove symlink and directory
+            shutil.rmtree(session_config_dir)
+            log(f"Cleaned up session config: {session_config_dir}", profile)
+        except Exception as e:
+            log(f"Error cleaning up session config: {e}", profile)
 
 def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     """Create a new Claude window with session tracking.
@@ -181,17 +257,22 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     # Build CLAUDE.md from rules before launching
     build_claude_md(profile)
 
+    # Set up session-specific config directory with shared projects
+    session_config_dir = setup_session_config(session_id, profile)
+
     # Launch claude and wait for it to exit
     if resume_session_id:
         cmd = ["claude", "--resume", session_id]
     else:
         cmd = ["claude", "--session-id", session_id]
-    
+
     log(f"Starting claude: {' '.join(cmd)}", profile)
-    
+
     try:
-        # Use run() wrapper which sets CLAUDE_CONFIG_DIR
-        result = run(cmd, stderr=subprocess.PIPE, text=True, profile=profile)
+        # Use run() wrapper and override CLAUDE_CONFIG_DIR for this session
+        env = os.environ.copy()
+        env['CLAUDE_CONFIG_DIR'] = str(session_config_dir)
+        result = run(cmd, stderr=subprocess.PIPE, text=True, env=env, profile=profile)
         
         # Log the exit
         log(f"Claude exited with code {result.returncode} for session {session_id}", profile)
@@ -200,12 +281,14 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
         if result.stderr and result.stderr.strip():
             log(f"Claude stderr: {result.stderr.strip()}", profile)
         
-        # If claude exited cleanly (exit code 0), remove from open sessions
+        # If claude exited cleanly (exit code 0), remove from open sessions and cleanup config
         if result.returncode == 0:
             log(f"Clean exit - removing session {session_id} from open sessions", profile)
             remove_open_session(session_id, profile)
+            cleanup_session_config(session_id, profile)
         else:
             log(f"Non-zero exit code {result.returncode} - keeping session {session_id} in open sessions", profile)
+            # Don't cleanup config on error in case user wants to debug
             
     except KeyboardInterrupt:
         log(f"Claude interrupted (Ctrl+C) for session {session_id} - keeping in open sessions", profile)
