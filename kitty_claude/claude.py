@@ -40,6 +40,65 @@ def deep_merge(base, override):
     return result
 
 
+def propagate_credentials(profile=None):
+    """Copy fresh credentials from any running session back to the shared claude-data dir.
+
+    When Claude refreshes an OAuth token, it replaces the session's .credentials.json
+    symlink with a regular file. This means the shared claude-data/.credentials.json
+    becomes stale. This function finds the freshest credentials across all sessions
+    and updates the shared file.
+    """
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    shared_creds = base_config / "claude-data" / ".credentials.json"
+    session_configs_dir = base_config / "session-configs"
+
+    if not session_configs_dir.exists():
+        return
+
+    # Find the freshest credentials across all sessions
+    best_expiry = 0
+    best_creds_content = None
+
+    # Check current shared credentials expiry
+    if shared_creds.exists():
+        try:
+            shared_data = json.loads(shared_creds.read_text())
+            best_expiry = shared_data.get("claudeAiOauth", {}).get("expiresAt", 0)
+        except Exception:
+            pass
+
+    # Scan all session directories for fresher credentials
+    for session_dir in session_configs_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+        creds_file = session_dir / ".credentials.json"
+        # Only check regular files (not symlinks) - those are the ones Claude has refreshed
+        if creds_file.exists() and not creds_file.is_symlink():
+            try:
+                content = creds_file.read_text()
+                data = json.loads(content)
+                expiry = data.get("claudeAiOauth", {}).get("expiresAt", 0)
+                if expiry > best_expiry:
+                    best_expiry = expiry
+                    best_creds_content = content
+            except Exception:
+                continue
+
+    if best_creds_content:
+        try:
+            # Remove existing file/symlink and write fresh credentials
+            if shared_creds.exists() or shared_creds.is_symlink():
+                shared_creds.unlink()
+            shared_creds.write_text(best_creds_content)
+            log(f"Propagated fresh credentials (expires {best_expiry}) to shared location", profile)
+        except Exception as e:
+            log(f"Failed to propagate credentials: {e}", profile)
+
+
 def setup_session_config(session_id, profile=None):
     """Create a unique config directory for this session with shared projects.
 
@@ -53,6 +112,9 @@ def setup_session_config(session_id, profile=None):
     Returns:
         Path to the session-specific claude-data directory
     """
+    # Propagate fresh credentials from running sessions before setting up new one
+    propagate_credentials(profile)
+
     # Get base config directory
     if profile:
         base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
@@ -95,15 +157,20 @@ def setup_session_config(session_id, profile=None):
     merged_settings_file.write_text(json.dumps(merged_settings, indent=2))
     log(f"Merged global + session settings", profile)
 
-    # Symlink everything from claude-data except settings.json and .claude.json (we manage those ourselves)
+    # Link/copy everything from claude-data except files we manage ourselves
     claude_data_dir = base_config / "claude-data"
     skip_files = {"settings.json", ".claude.json"}
+    # Files that Claude overwrites (breaking symlinks) - copy these instead
+    copy_files = {".credentials.json"}
     for item in claude_data_dir.iterdir():
         if item.name in skip_files:
             continue
         link_path = session_config_dir / item.name
         if not link_path.exists():
-            link_path.symlink_to(item)
+            if item.name in copy_files:
+                shutil.copy2(item, link_path)
+            else:
+                link_path.symlink_to(item)
 
     # Create session-specific .claude.json with saved auth + mcpServers from existing session
     session_claude_json = session_config_dir / ".claude.json"
@@ -290,8 +357,11 @@ def save_auth_from_session(session_id, profile=None):
     try:
         session_config = json.loads(session_claude_json.read_text())
 
-        # Extract auth fields (everything except mcpServers and session state)
-        auth_fields = ["userID", "oauthAccount", "claudeCodeFirstTokenDate"]
+        # Extract auth + onboarding fields needed for new sessions to skip login
+        auth_fields = [
+            "userID", "oauthAccount", "claudeCodeFirstTokenDate",
+            "hasCompletedOnboarding", "lastOnboardingVersion",
+        ]
         auth_data = {}
         for field in auth_fields:
             if field in session_config:
@@ -313,8 +383,9 @@ def cleanup_session_config(session_id, profile=None):
         session_id: Unique session identifier
         profile: Profile name (optional)
     """
-    # Save auth before cleanup
+    # Save auth and credentials before cleanup
     save_auth_from_session(session_id, profile)
+    propagate_credentials(profile)
 
     # Unregister from running sessions
     unregister_running_session(session_id, profile)
