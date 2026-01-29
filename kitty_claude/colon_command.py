@@ -207,8 +207,29 @@ def clone_session_and_change_directory(target_dir, current_dir, input_data, clau
         # One-tab mode: use a temp launcher script to avoid shell quoting issues
         claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
 
+        # Get claude binary path from config, or resolve from PATH
+        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        if profile:
+            config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        else:
+            config_dir = Path.home() / ".config" / "kitty-claude"
+        config_file = config_dir / "config.json"
+        claude_bin = None
+        if config_file.exists():
+            try:
+                config = json.loads(config_file.read_text())
+                if config.get("claude_binary"):
+                    claude_bin = config["claude_binary"]
+            except:
+                pass
+
+        # If not configured, try to find it in current PATH and use full path
+        if not claude_bin:
+            claude_bin = shutil.which("claude") or "claude"
+
         # Log for debugging
         log(f"one-tab :cd - config={claude_config}, session={new_session_id}, target={target_dir}")
+        log(f"one-tab :cd - claude binary: {claude_bin}")
         session_file = target_projects_dir / f"{new_session_id}.jsonl"
         log(f"one-tab :cd - session file exists: {session_file.exists()}")
 
@@ -218,7 +239,7 @@ def clone_session_and_change_directory(target_dir, current_dir, input_data, clau
         launcher.write_text(f'''#!/bin/sh
 export CLAUDE_CONFIG_DIR="{claude_config}"
 cd "{target_dir}"
-exec claude --resume {new_session_id}
+exec "{claude_bin}" --resume {new_session_id}
 ''')
         launcher.chmod(0o755)
         log(f"one-tab :cd - launcher script: {launcher}")
