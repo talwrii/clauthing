@@ -558,5 +558,53 @@ def run_default_tests():
     return runner.summary()
 
 
+def run_all_tests():
+    """Run all test suites."""
+    total_exit = run_default_tests()
+    
+    # Import and run other test modules
+    print()
+    print("=" * 50)
+    print()
+    
+    try:
+        from test_cd_command import run_cd_tests
+        total_exit = max(total_exit, run_cd_tests())
+    except ImportError as e:
+        print(f"Skipping cd tests: {e}")
+    
+    print()
+    print("=" * 50)
+    print()
+    
+    try:
+        from test_tab_switching import run_tab_switching_tests
+        total_exit = max(total_exit, run_tab_switching_tests())
+    except ImportError as e:
+        print(f"Skipping tab switching tests: {e}")
+    
+    print()
+    print("=" * 50)
+    print()
+    
+    try:
+        from test_picker import run_picker_tests
+        total_exit = max(total_exit, run_picker_tests())
+    except ImportError as e:
+        print(f"Skipping picker tests: {e}")
+    
+    print()
+    print("=" * 50)
+    print()
+    
+    try:
+        from test_claude_config import run_kitty_claude_config_tests
+        total_exit = max(total_exit, run_kitty_claude_config_tests())
+    except ImportError as e:
+        print(f"Skipping claude config tests: {e}")
+    
+    return total_exit
+
+
 if __name__ == "__main__":
-    sys.exit(run_default_tests())
+    sys.exit(run_all_tests())

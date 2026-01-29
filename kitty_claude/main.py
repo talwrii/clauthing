@@ -51,25 +51,65 @@ def get_state_dir():
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
 
+def get_claude_binary(profile=None):
+    """Get the path to the claude binary from config."""
+    if profile:
+        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "kitty-claude"
+    config_file = config_dir / "config.json"
+    if config_file.exists():
+        try:
+            config = json.loads(config_file.read_text())
+            claude_path = config.get("claude_binary")
+            if claude_path:
+                return claude_path
+        except:
+            pass
+    return "claude"
+
+def set_claude_binary(path, profile=None):
+    """Set the path to the claude binary in config."""
+    if profile:
+        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "kitty-claude"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+    config = {}
+    if config_file.exists():
+        try:
+            config = json.loads(config_file.read_text())
+        except:
+            pass
+    config["claude_binary"] = str(path)
+    config_file.write_text(json.dumps(config, indent=2))
+    print(f"✓ Set claude binary to: {path}")
+    path_obj = Path(path)
+    if not path_obj.exists():
+        print(f"⚠  Warning: {path} does not exist")
+    elif not os.access(path, os.X_OK):
+        print(f"⚠  Warning: {path} is not executable")
+
 def setup_claude_config(config_dir):
     """Set up isolated Claude Code configuration on first run."""
     claude_data_dir = config_dir / "claude-data"
     commands_dir = claude_data_dir / "commands"
-    
+
     # Create directories
     commands_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Symlink credentials from main Claude config if they exist
     main_credentials = Path.home() / ".claude" / ".credentials.json"
     isolated_credentials = claude_data_dir / ".credentials.json"
-    
+
     if main_credentials.exists() and not isolated_credentials.exists():
         try:
             isolated_credentials.symlink_to(main_credentials)
             print(f"Linked credentials from {main_credentials}")
         except Exception as e:
             print(f"Warning: Could not link credentials: {e}")
-    
+
     # Create settings.json with UserPromptSubmit and Stop hooks
     settings_file = claude_data_dir / "settings.json"
     if not settings_file.exists():
@@ -100,7 +140,7 @@ def setup_claude_config(config_dir):
             }
         }, indent=2))
         print(f"Created settings with UserPromptSubmit and Stop hooks at {settings_file}")
-    
+
     return claude_data_dir
 
 def setup_jail_directory():
@@ -138,18 +178,18 @@ def restore_state(jail_dir):
     state_file = get_runtime_tmux_state_file(profile)
     if not state_file.exists():
         return
-    
+
     try:
         state = json.loads(state_file.read_text())
         windows = state.get("windows", {})
         if not windows:
             return
-        
+
         print(f"Restoring {len(windows)} window(s)...")
-        
+
         # Sort by window index
         sorted_windows = sorted(windows.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0)
-        
+
         # Skip first window (it will be created automatically)
         for window_index, window_data in sorted_windows[1:]:
             path = window_data.get("path", jail_dir)
@@ -159,7 +199,7 @@ def restore_state(jail_dir):
                     ["tmux", "-L", "kitty-claude", "new-window", "-t", "kitty-claude", "-c", str(path), "claude", "--resume", session_id],
                     stderr=subprocess.DEVNULL
                 )
-        
+
         print("✓ State restored")
     except Exception as e:
         print(f"Warning: Could not restore state: {e}")
@@ -167,11 +207,11 @@ def restore_state(jail_dir):
 def restart():
     """Save state and restart kitty-claude."""
     config_dir = Path.home() / ".config" / "kitty-claude"
-    
+
     # Save state
     print("Saving state...")
     save_state()
-    
+
     # Kill tmux session
     print("Stopping tmux session...")
     try:
@@ -181,7 +221,7 @@ def restart():
         )
     except:
         pass
-    
+
     # Relaunch (will restore state on startup)
     print("Relaunching...")
     os.execvp("kitty-claude", ["kitty-claude"])
@@ -190,19 +230,19 @@ def reinstall(config_dir):
     """Remove all kitty-claude config except credentials."""
     claude_data_dir = config_dir / "claude-data"
     credentials_file = claude_data_dir / ".credentials.json"
-    
+
     # Backup credentials if it's a real file (not a symlink)
     credentials_backup = None
     if credentials_file.exists() and not credentials_file.is_symlink():
         credentials_backup = credentials_file.read_bytes()
         print(f"Backed up credentials")
-    
+
     # Remove entire config directory
     if config_dir.exists():
         print(f"Removing {config_dir}...")
         shutil.rmtree(config_dir)
         print("✓ Removed kitty-claude configuration")
-    
+
     # Restore credentials if we backed them up
     if credentials_backup:
         claude_data_dir.mkdir(parents=True, exist_ok=True)
@@ -212,18 +252,18 @@ def reinstall(config_dir):
 def handle_session_picker(profile, socket="kitty-claude"):
     """Fuzzy find and switch to an open session."""
     open_sessions = get_open_sessions(profile)
-    
+
     if not open_sessions:
         print("No open sessions.")
         return
-    
+
     # Build list with session info
     items = []
     state_dir = get_state_dir()
-    
+
     for session_id in open_sessions:
         name = get_session_name(session_id)
-        
+
         # Get path from metadata
         metadata_file = state_dir / "sessions" / f"{session_id}.json"
         if metadata_file.exists():
@@ -234,9 +274,9 @@ def handle_session_picker(profile, socket="kitty-claude"):
                 path = "Unknown"
         else:
             path = "Unknown"
-        
+
         items.append(f"{name} | {path} | {session_id}")
-    
+
     # Pipe to fzf (works in tmux popup)
     try:
         result = subprocess.run(
@@ -246,30 +286,30 @@ def handle_session_picker(profile, socket="kitty-claude"):
             stderr=subprocess.PIPE,
             text=True
         )
-        
+
         if result.returncode == 0 and result.stdout.strip():
             # Extract session_id
             selected = result.stdout.strip()
             print(f"Selected: {selected}")
-            
+
             session_id = selected.split(" | ")[-1]
             print(f"Session ID: {session_id}")
-            
+
             # Find window with this session
             cmd = ["tmux", "-L", socket, "list-windows", "-F", "#{window_index} #{@session_id}"]
             print(f"Running: {' '.join(cmd)}")
-            
+
             windows = run(
                 cmd,
                 capture_output=True,
                 text=True,
                 profile=profile
             )
-            
+
             print(f"Windows found:")
             for line in windows.stdout.strip().split("\n"):
                 print(f"  {line}")
-            
+
             for line in windows.stdout.strip().split("\n"):
                 parts = line.split()
                 if len(parts) >= 2 and parts[1] == session_id:
@@ -279,7 +319,7 @@ def handle_session_picker(profile, socket="kitty-claude"):
                     run(switch_cmd, profile=profile)
                     print("Done!")
                     return
-            
+
             print(f"No window found with session {session_id}, opening new window...")
             # Not found? Open new window
             kitty_claude_cmd = ["kitty-claude"]
@@ -290,47 +330,47 @@ def handle_session_picker(profile, socket="kitty-claude"):
             subprocess.Popen(kitty_claude_cmd)
         else:
             print("Cancelled or no selection")
-            
+
     except FileNotFoundError:
         print("Error: fzf not found. Install: sudo apt install fzf")
 
 def handle_one_tab(config_dir, profile, remain_on_exit=False):
     """Launch kitty-claude in single-tab mode.
-    
+
     Uses tmux but disables new tab creation and skips session restoration.
     Each invocation creates a completely independent instance.
     """
     import time
-    
+
     # Unique ID for this instance
     instance_id = f"{int(time.time())}-{os.getpid()}"
-    
+
     # Put ephemeral configs in temp directory
     tmp_config_dir = Path(f"/tmp/kitty-claude-one-tab-{os.getuid()}")
     tmp_config_dir.mkdir(parents=True, exist_ok=True)
-    
+
     kitty_config_path = tmp_config_dir / f"kitty-{instance_id}.conf"
     tmux_config_path = tmp_config_dir / f"tmux-{instance_id}.conf"
-    
+
     # Unique socket and session name for each instance
     if profile:
         tmux_socket = f"kc1-{profile}-{instance_id}"
     else:
         tmux_socket = f"kc1-{instance_id}"
-    
+
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
-    
+
     # Set up jail directory
     jail_dir = setup_jail_directory()
-    
+
     config_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Start logging
     log_dir = get_log_dir(profile)
     log_dir.mkdir(exist_ok=True)
     cleanup_old_run_logs(profile, keep=5)
-    
+
     # Create new run ID
     run_id_file = log_dir / "current-run-id"
     existing_runs = sorted(log_dir.glob("run-*.log"))
@@ -341,9 +381,12 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False):
         run_num = 1
     run_id_file.write_text(str(run_num))
     log(f"=== ONE-TAB MODE (run {run_num}, instance {instance_id}) ===", profile)
-    
+
     remain_config = "set -g remain-on-exit on\n" if remain_on_exit else ""
     
+    # Get claude binary
+    claude_bin = get_claude_binary(profile)
+
     # Simplified tmux config - NO C-n, NO session restoration hooks
     tmux_config_path.write_text(f"""\
 # kitty-claude tmux config (ONE-TAB MODE)
@@ -356,8 +399,8 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
 
-# Default command is just claude
-set -g default-command "claude"
+# Default command is claude
+set -g default-command "{claude_bin}"
 
 # DISABLED: C-n does nothing in one-tab mode
 bind -n C-n display-message "New tabs disabled in --one-tab mode"
@@ -388,7 +431,7 @@ set -g status-right " #{{pane_current_path}} "
 """)
     tmux_config_path.chmod(0o444)
     log(f"Created one-tab tmux config at {tmux_config_path}", profile)
-    
+
     # Kitty config
     kitty_config_path.write_text(f"""\
 # kitty-claude config (ONE-TAB MODE)
@@ -397,7 +440,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
 """)
     kitty_config_path.chmod(0o444)
     log(f"Created one-tab kitty config at {kitty_config_path}", profile)
-    
+
     # Check dependencies
     if not shutil.which("tmux"):
         print("Error: tmux not found.")
@@ -405,10 +448,11 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
     if not shutil.which("kitty"):
         print("Error: kitty not found.")
         sys.exit(1)
-    if not shutil.which("claude"):
-        print("Error: claude not found.")
+    if not shutil.which(claude_bin):
+        print(f"Error: claude not found at '{claude_bin}'.")
+        print("Please install Claude Code or set path with: kitty-claude --set-claude /path/to/claude")
         sys.exit(1)
-    
+
     # Launch kitty - NO session restoration, just start fresh
     log(f"Launching kitty in one-tab mode", profile)
     os.execvp("kitty", [
@@ -420,17 +464,17 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
 def handle_list_sessions(profile):
     """List all open sessions with their metadata."""
     open_sessions = get_open_sessions(profile)
-    
+
     if not open_sessions:
         print("No open sessions found.")
         return
-    
+
     print(f"\n{'='*80}")
     print(f"Open Sessions ({len(open_sessions)})")
     print(f"{'='*80}\n")
-    
+
     state_dir = get_state_dir()
-    
+
     # Get Claude data directory to check for conversation files
     if profile:
         config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
@@ -438,18 +482,18 @@ def handle_list_sessions(profile):
         config_dir = Path.home() / ".config" / "kitty-claude"
     claude_data_dir = config_dir / "claude-data"
     projects_dir = claude_data_dir / "projects"
-    
+
     for i, session_id in enumerate(open_sessions, 1):
         # Load metadata
         metadata_file = state_dir / "sessions" / f"{session_id}.json"
-        
+
         if metadata_file.exists():
             try:
                 metadata = json.loads(metadata_file.read_text())
                 name = metadata.get("name", "Unknown")
                 path = metadata.get("path", "Unknown")
                 created = metadata.get("created", "Unknown")
-                
+
                 print(f"{i}. {name}")
                 print(f"   Session ID: {session_id}")
                 print(f"   Path: {path}")
@@ -460,7 +504,7 @@ def handle_list_sessions(profile):
         else:
             print(f"{i}. {session_id}")
             print(f"   No metadata found")
-        
+
         # Look for conversation file
         conv_file = None
         if projects_dir.exists():
@@ -469,14 +513,14 @@ def handle_list_sessions(profile):
                 if session_file.exists():
                     conv_file = session_file
                     break
-        
+
         if conv_file:
             print(f"   Conversation: {conv_file} ✓")
         else:
             print(f"   Conversation: Not found ✗")
-        
+
         print()
-    
+
     print(f"{'='*80}\n")
 
 
@@ -491,20 +535,20 @@ def handle_copy_profile(source_profile, dest_profile):
         source_dir = Path.home() / ".config" / "kitty-claude"
     else:
         source_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / source_profile
-    
+
     # Dest: always in other-profiles
     dest_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / dest_profile
-    
+
     if not source_dir.exists():
         print(f"Error: Source profile '{source_profile}' does not exist at {source_dir}")
         sys.exit(1)
-    
+
     if dest_dir.exists():
         print(f"Error: Destination profile '{dest_profile}' already exists at {dest_dir}")
         sys.exit(1)
-    
+
     print(f"Copying profile '{source_profile}' to '{dest_profile}'...")
-    
+
     # Exclude config files (they'll be regenerated) and other directories
     def ignore_configs(directory, contents):
         ignored = []
@@ -512,7 +556,7 @@ def handle_copy_profile(source_profile, dest_profile):
             # Exclude these from root of source
             ignored.extend(['other-profiles', 'worktrees', 'kitty.conf', 'tmux.conf'])
         return ignored
-    
+
     shutil.copytree(source_dir, dest_dir, ignore=ignore_configs)
     print(f"✓ Profile '{dest_profile}' created at {dest_dir}")
     sys.exit(0)
@@ -520,7 +564,7 @@ def handle_copy_profile(source_profile, dest_profile):
 def handle_rename(new_name, profile, tmux_socket):
     """Rename current window's session (looks up session ID from state file)."""
     log(f"Rename request: new_name={new_name}, profile={profile}, tmux_socket={tmux_socket}", profile)
-    
+
     # Get current window index
     try:
         cmd = ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_index}"]
@@ -537,27 +581,27 @@ def handle_rename(new_name, profile, tmux_socket):
         log(f"Error getting window index: {e}", profile)
         print("Error: Could not get window index from tmux", file=sys.stderr)
         sys.exit(1)
-    
+
     # Load state file to get session ID
     state_file = get_runtime_tmux_state_file(profile)
     if not state_file.exists():
         log(f"ERROR: State file does not exist: {state_file}", profile)
         print("Error: No state file found", file=sys.stderr)
         sys.exit(1)
-    
+
     try:
         state = json.loads(state_file.read_text())
         windows = state.get("windows", {})
         window_data = windows.get(window_index)
-        
+
         if not window_data:
             log(f"ERROR: No window data for index {window_index}", profile)
             print(f"Error: No session data for window {window_index}", file=sys.stderr)
             sys.exit(1)
-        
+
         session_id = window_data.get("session_id")
         log(f"Got session_id from state: '{session_id}'", profile)
-        
+
         if not session_id:
             log("ERROR: Session ID is empty in state", profile)
             print("Error: No session ID found for this window", file=sys.stderr)
@@ -566,19 +610,19 @@ def handle_rename(new_name, profile, tmux_socket):
         log(f"Error reading state file: {e}", profile)
         print(f"Error: Could not read state file: {e}", file=sys.stderr)
         sys.exit(1)
-    
+
     # Now call the rename logic with the looked-up session ID
     rename_session(session_id, new_name, profile, tmux_socket)
 
 def rename_session(session_id, new_name, profile, tmux_socket):
     """Rename a session by ID."""
     log(f"Rename session handler: session_id={session_id}, new_name={new_name}", profile)
-    
+
     # Update session metadata
     state_dir = get_state_dir()
     metadata_file = state_dir / "sessions" / f"{session_id}.json"
     log(f"Metadata file: {metadata_file}, exists={metadata_file.exists()}", profile)
-    
+
     if metadata_file.exists():
         try:
             metadata = json.loads(metadata_file.read_text())
@@ -587,11 +631,11 @@ def rename_session(session_id, new_name, profile, tmux_socket):
             log("Updated metadata file", profile)
         except Exception as e:
             log(f"Error updating metadata: {e}", profile)
-    
+
     # Update window state
     state_file = get_runtime_tmux_state_file(profile)
     log(f"State file: {state_file}, exists={state_file.exists()}", profile)
-    
+
     if state_file.exists():
         try:
             state = json.loads(state_file.read_text())
@@ -603,7 +647,7 @@ def rename_session(session_id, new_name, profile, tmux_socket):
             state_file.write_text(json.dumps(state, indent=2))
         except Exception as e:
             log(f"Error updating state: {e}", profile)
-    
+
     # Rename current tmux window
     try:
         cmd = ["tmux", "-L", tmux_socket, "rename-window", new_name]
@@ -611,23 +655,23 @@ def rename_session(session_id, new_name, profile, tmux_socket):
         log(f"Rename successful", profile)
     except Exception as e:
         log(f"Error renaming window: {e}", profile)
-    
+
     sys.exit(0)
 
 def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd, tmux_socket, remain_on_exit=False):
     """Regenerate configuration files."""
     print("Regenerating config files...")
-    
+
     kitty_config_path = config_dir / "kitty.conf"
     tmux_config_path = config_dir / "tmux.conf"
-    
+
     # Set up jail directory
     jail_dir = setup_jail_directory()
-    
+
     # Ensure Claude config exists
     if not claude_data_dir.exists():
         setup_claude_config(config_dir)
-    
+
     # Remove old configs
     if tmux_config_path.exists():
         tmux_config_path.unlink()
@@ -635,11 +679,11 @@ def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd,
     if kitty_config_path.exists():
         kitty_config_path.unlink()
         print(f"Removed old {kitty_config_path}")
-    
+
     # Get kitty-claude executable for status bar
     kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
     profile_arg = f"--profile {profile} " if profile else ""
-    
+
     # Regenerate tmux config
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
@@ -717,14 +761,14 @@ set -g window-status-format " #I:#W "
 set -g window-status-current-format " #I:#W "
 """)
     print(f"✓ Created {tmux_config_path}")
-    
+
     # Regenerate kitty config
     kitty_config_path.write_text(
         f"include {Path.home()}/.config/kitty/kitty.conf\n"
         f"shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {kitty_claude_cmd}\n"
     )
     print(f"✓ Created {kitty_config_path}")
-    
+
     print("\nConfig files regenerated!")
     sys.exit(0)
 
@@ -732,10 +776,10 @@ def handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_o
     """Run tmux directly without kitty (for testing)."""
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
-    
+
     # Set up jail directory
     jail_dir = setup_jail_directory()
-    
+
     # Create tmux config
     tmux_config_path = config_dir / "tmux.conf"
     if not tmux_config_path.exists():
@@ -774,7 +818,7 @@ setw -g pane-base-index 1
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
 """)
-    
+
     # Launch tmux directly
     os.execvp("tmux", ["tmux", "-L", tmux_socket, "-f", str(tmux_config_path),
                        "new-session", "-As", tmux_socket, "-c", str(jail_dir)])
@@ -783,21 +827,21 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
     """Main launch logic for kitty-claude."""
     kitty_config_path = config_dir / "kitty.conf"
     tmux_config_path = config_dir / "tmux.conf"
-    
+
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
-    
+
     # Set up jail directory
     jail_dir = setup_jail_directory()
-    
+
     # Create config dir if it doesn't exist
     config_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Start a new run (cleanup old logs and create new run ID)
     log_dir = get_log_dir(profile)
     log_dir.mkdir(exist_ok=True)
     cleanup_old_run_logs(profile, keep=5)
-    
+
     # Create new run ID
     run_id_file = log_dir / "current-run-id"
     existing_runs = sorted(log_dir.glob("run-*.log"))
@@ -808,17 +852,17 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
         run_num = 1
     run_id_file.write_text(str(run_num))
     log(f"=== NEW RUN {run_num} ===", profile)
-    
+
     # Remove old config files if they exist (they're read-only)
     if tmux_config_path.exists():
         tmux_config_path.unlink()
     if kitty_config_path.exists():
         kitty_config_path.unlink()
-    
+
     # Get kitty-claude executable for status bar
     kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
     profile_arg = f"--profile {profile} " if profile else ""
-    
+
     # Always regenerate tmux config (it's ephemeral, not user-editable)
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
@@ -903,7 +947,7 @@ set -g window-status-current-format " #I:#W "
 """)
     tmux_config_path.chmod(0o444)  # Read-only
     print(f"Created tmux config at {tmux_config_path}")
-    
+
     # Always regenerate kitty config (it's ephemeral, not user-editable)
     kitty_config_path.write_text(f"""\
 # ============================================================================
@@ -914,7 +958,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
 """)
     kitty_config_path.chmod(0o444)  # Read-only
     print(f"Created kitty config at {kitty_config_path}")
-    
+
     # Check if tmux session exists
     try:
         result = run(
@@ -928,18 +972,18 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
     except Exception as e:
         session_exists = False
         log(f"Error checking tmux session: {e}", profile)
-    
+
     # If session doesn't exist, restore open sessions
     if not session_exists:
         log("Session doesn't exist, restoring open sessions", profile)
         open_sessions = get_open_sessions(profile)
         log(f"Restore: Found {len(open_sessions)} open sessions: {open_sessions}", profile)
-        
+
         if open_sessions:
             # Start tmux session with first session
             first_session_id = open_sessions[0]
             log(f"Restore: Creating initial session with {first_session_id}", profile)
-            
+
             # Create first window
             result = run(
                 ["tmux", "-L", tmux_socket, "-f", str(tmux_config_path),
@@ -949,7 +993,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                 text=True,
                 profile=profile
             )
-            
+
             # Check if session was created successfully
             if result.returncode != 0:
                 log(f"Restore: Failed to create initial session, aborting restore", profile)
@@ -970,7 +1014,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                         log(f"Restore: Session ready after {attempt * 100}ms", profile)
                         break
                     time.sleep(0.1)
-                
+
                 if not session_ready:
                     log(f"Restore: Session died or never started after {max_attempts * 100}ms, skipping restore", profile)
                 else:
@@ -987,16 +1031,16 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                                 path = str(jail_dir)
                         else:
                             path = str(jail_dir)
-                        
+
                         log(f"Restore: Creating window for session {sess_id} at {path}", profile)
-                        
+
                         # Build wrapper command (FIXED - use indirection)
                         cmd_parts = [kitty_claude_path]
                         if profile:
                             cmd_parts.extend(["--profile", profile])
                         cmd_parts.extend(["--new-window", "--resume-session", sess_id])
                         cmd_str = " ".join(cmd_parts)
-                        
+
                         run(
                             ["tmux", "-L", tmux_socket, "new-window", "-t", tmux_socket,
                              "-c", path, "-n", win_name, cmd_str],
@@ -1006,7 +1050,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                         )
         else:
             log("Restore: No open sessions to restore", profile)
-    
+
     # Launch kitty
     os.execvp("kitty", [
         "kitty",
@@ -1046,16 +1090,17 @@ def main():
         parser.add_argument("--add-rules", nargs='+', metavar="NAME [FILE]", help="Add a rule: --add-rules NAME (reads stdin) or --add-rules NAME FILE")
         parser.add_argument("--list-rules", action="store_true", help="List all rules")
         parser.add_argument("--show-rule", metavar="NAME", help="Show content of a specific rule")
+        parser.add_argument("--set-claude", metavar="PATH", help="Set path to claude binary")
         parser.add_argument("--mcp-exec", nargs=argparse.REMAINDER, help="Run mcp-exec with given arguments (internal use)")
 
         args = parser.parse_args()
-        
+
         # Determine profile name
         profile = args.profile or os.environ.get('KITTY_CLAUDE_PROFILE')
-        
+
         # Log this invocation
         log(f"=== COMMAND: {' '.join(sys.argv)} ===", profile)
-        
+
         # Set up directories based on profile
         if profile:
             config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
@@ -1065,10 +1110,14 @@ def main():
             config_dir = Path.home() / ".config" / "kitty-claude"
             tmux_socket = "kitty-claude"
             kitty_claude_cmd = "kitty-claude --new-window"
-        
+
         claude_data_dir = config_dir / "claude-data"
 
         # Dispatch to command handlers
+        if args.set_claude:
+            set_claude_binary(args.set_claude, profile)
+            sys.exit(0)
+
         if args.add_rules:
             # Parse arguments: NAME or NAME FILE
             if len(args.add_rules) == 1:
@@ -1115,30 +1164,30 @@ def main():
         if args.picker:
             handle_session_picker(profile, tmux_socket)
             sys.exit(0)
-        
+
         if args.one_tab:
             handle_one_tab(config_dir, profile, args.remain)
             # execvp doesn't return
             sys.exit(0)
-        
+
         if args.list_sessions:
             handle_list_sessions(profile)
             sys.exit(0)
-        
+
         if args.tmux_status:
             handle_tmux_status(args.tmux_status, profile)
             sys.exit(0)
-        
+
         if args.last_logs:
             handle_last_logs(profile)
-        
+
         if args.follow_logs:
             handle_follow_logs(profile)
-        
+
         if args.copy_profile:
             source_profile, dest_profile = args.copy_profile
             handle_copy_profile(source_profile, dest_profile)
-        
+
         if args.mcp_exec:
             # Run mcp-exec with the provided arguments
             from kitty_claude.mcp_exec.__main__ import main as mcp_exec_main
@@ -1153,52 +1202,54 @@ def main():
         if args.user_prompt_submit:
             handle_user_prompt_submit()
             sys.exit(0)
-        
+
         if args.stop:
             handle_stop()
             sys.exit(0)
-        
+
         if args.new_window:
             new_window(profile=profile, resume_session_id=args.resume_session, socket=tmux_socket)
             sys.exit(0)
-        
+
         if args.restart:
             restart()
             sys.exit(0)
-        
+
         if args.rename:
             handle_rename(args.rename, profile, tmux_socket)
-        
+
         if args.rename_session:
             session_id, new_name = args.rename_session
             rename_session(session_id, new_name, profile, tmux_socket)
-        
+
         if args.update_config:
             handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
-        
+
         if args.reinstall:
             reinstall(config_dir)
             sys.exit(0)
-        
+
         # Check dependencies
         if not shutil.which("tmux"):
             print("Error: tmux not found. Please install tmux first.")
             sys.exit(1)
-        
+
         if not shutil.which("kitty"):
             print("Error: kitty not found. Please install kitty first.")
             sys.exit(1)
-        
-        if not shutil.which("claude"):
-            print("Error: claude not found. Please install Claude Code first.")
+
+        claude_bin = get_claude_binary(profile)
+        if not shutil.which(claude_bin):
+            print(f"Error: claude not found at '{claude_bin}'.")
+            print("Please install Claude Code or set path with: kitty-claude --set-claude /path/to/claude")
             sys.exit(1)
-        
+
         if args.no_kitty:
             handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
-        
+
         # Default: launch kitty-claude
         launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
-    
+
     except Exception as e:
         # Log any uncaught exceptions
         profile = os.environ.get('KITTY_CLAUDE_PROFILE')
