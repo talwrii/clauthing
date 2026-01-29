@@ -18,13 +18,33 @@ from kitty_claude.session import (
 )
 from kitty_claude.tmux import get_runtime_tmux_state_file
 from kitty_claude.rules import build_claude_md
+import time
+
+
+def deep_merge(base, override):
+    """Deep merge two dictionaries, with override taking precedence.
+
+    Args:
+        base: Base dictionary
+        override: Override dictionary
+
+    Returns:
+        Merged dictionary
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def setup_session_config(session_id, profile=None):
     """Create a unique config directory for this session with shared projects.
 
-    This allows each session to have its own settings.json (with different MCP servers)
-    while sharing conversation history through a symlinked projects directory.
+    This merges global settings.json with session-specific session.json overrides.
+    The session.json only contains differences from global settings.
 
     Args:
         session_id: Unique session identifier
@@ -50,26 +70,240 @@ def setup_session_config(session_id, profile=None):
     session_config_dir = session_configs / session_id
     session_config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy settings.json from canonical location if it exists
-    canonical_settings = base_config / "claude-data" / "settings.json"
-    session_settings = session_config_dir / "settings.json"
+    # Load global settings
+    canonical_settings_file = base_config / "claude-data" / "settings.json"
+    if canonical_settings_file.exists():
+        global_settings = json.loads(canonical_settings_file.read_text())
+    else:
+        global_settings = {"model": "sonnet"}
 
-    if canonical_settings.exists() and not session_settings.exists():
-        shutil.copy2(canonical_settings, session_settings)
-        log(f"Copied settings from {canonical_settings}", profile)
-    elif not session_settings.exists():
-        # Create minimal settings file
-        session_settings.write_text('{"model": "sonnet"}\n')
-        log(f"Created default settings.json", profile)
+    # Load session overrides (if exist)
+    session_overrides_file = session_config_dir / "session.json"
+    if session_overrides_file.exists():
+        session_overrides = json.loads(session_overrides_file.read_text())
+    else:
+        # Create empty overrides file
+        session_overrides = {}
+        session_overrides_file.write_text('{}\n')
+        log(f"Created empty session.json for overrides", profile)
 
-    # Symlink projects directory to canonical location
-    session_projects = session_config_dir / "projects"
-    if not session_projects.exists():
-        session_projects.symlink_to(canonical_projects)
-        log(f"Symlinked projects: {session_projects} -> {canonical_projects}", profile)
+    # Merge global + session overrides
+    merged_settings = deep_merge(global_settings, session_overrides)
+
+    # Write merged settings.json for Claude Code to use
+    merged_settings_file = session_config_dir / "settings.json"
+    merged_settings_file.write_text(json.dumps(merged_settings, indent=2))
+    log(f"Merged global + session settings", profile)
+
+    # Symlink everything from claude-data except settings.json and .claude.json (we manage those ourselves)
+    claude_data_dir = base_config / "claude-data"
+    skip_files = {"settings.json", ".claude.json"}
+    for item in claude_data_dir.iterdir():
+        if item.name in skip_files:
+            continue
+        link_path = session_config_dir / item.name
+        if not link_path.exists():
+            link_path.symlink_to(item)
+
+    # Create session-specific .claude.json with saved auth + mcpServers from existing session
+    session_claude_json = session_config_dir / ".claude.json"
+
+    # Load saved auth from previous sessions
+    saved_auth_file = base_config / "claude-auth.json"
+    if saved_auth_file.exists():
+        saved_auth = json.loads(saved_auth_file.read_text())
+    else:
+        saved_auth = {}
+
+    # Preserve mcpServers if .claude.json already exists
+    if session_claude_json.exists():
+        try:
+            existing = json.loads(session_claude_json.read_text())
+            mcp_servers = existing.get("mcpServers", {})
+        except:
+            mcp_servers = {}
+    else:
+        mcp_servers = {}
+
+    # Build new config with saved auth + preserved mcpServers
+    session_config = {"mcpServers": mcp_servers, **saved_auth}
+    session_claude_json.write_text(json.dumps(session_config, indent=2))
+    log(f"Created/updated session-specific .claude.json", profile)
 
     log(f"Session config ready: {session_config_dir}", profile)
     return session_config_dir
+
+
+def get_running_sessions_file(profile=None):
+    """Get path to running sessions tracking file."""
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+    return base_config / "running-sessions.json"
+
+
+def register_running_session(session_id, pid, cwd, profile=None):
+    """Register a running Claude session."""
+    running_file = get_running_sessions_file(profile)
+
+    # Load existing
+    if running_file.exists():
+        try:
+            running = json.loads(running_file.read_text())
+        except:
+            running = {}
+    else:
+        running = {}
+
+    # Add this session
+    running[session_id] = {
+        "pid": pid,
+        "cwd": cwd,
+        "started": int(time.time())
+    }
+
+    # Save
+    running_file.write_text(json.dumps(running, indent=2))
+
+
+def unregister_running_session(session_id, profile=None):
+    """Remove a session from running sessions."""
+    running_file = get_running_sessions_file(profile)
+
+    if not running_file.exists():
+        return
+
+    try:
+        running = json.loads(running_file.read_text())
+        if session_id in running:
+            del running[session_id]
+            running_file.write_text(json.dumps(running, indent=2))
+    except:
+        pass
+
+
+def get_running_sessions(profile=None):
+    """Get list of currently running sessions (checks PIDs are alive)."""
+    running_file = get_running_sessions_file(profile)
+
+    if not running_file.exists():
+        return []
+
+    try:
+        running = json.loads(running_file.read_text())
+    except:
+        return []
+
+    # Check which PIDs are still alive
+    alive_sessions = []
+    stale_sessions = []
+
+    for session_id, info in running.items():
+        pid = info["pid"]
+        # Check if process exists
+        try:
+            os.kill(pid, 0)  # Signal 0 just checks if process exists
+            alive_sessions.append({
+                "session_id": session_id,
+                **info
+            })
+        except (OSError, ProcessLookupError):
+            stale_sessions.append(session_id)
+
+    # Clean up stale sessions
+    if stale_sessions:
+        for session_id in stale_sessions:
+            del running[session_id]
+        running_file.write_text(json.dumps(running, indent=2))
+
+    return alive_sessions
+
+
+def get_recent_sessions(profile=None, limit=10):
+    """Get list of recent sessions ordered by last activity."""
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    session_configs = base_config / "session-configs"
+    if not session_configs.exists():
+        return []
+
+    # Get all session directories with their last modified time
+    sessions = []
+    for session_dir in session_configs.iterdir():
+        if session_dir.is_dir():
+            session_id = session_dir.name
+            # Get last modified time (from .claude.json if exists, otherwise directory)
+            claude_json = session_dir / ".claude.json"
+            if claude_json.exists():
+                mtime = claude_json.stat().st_mtime
+            else:
+                mtime = session_dir.stat().st_mtime
+
+            # Try to get CWD from session
+            cwd = None
+            if claude_json.exists():
+                try:
+                    config = json.loads(claude_json.read_text())
+                    projects = config.get("projects", {})
+                    if projects:
+                        cwd = list(projects.keys())[0]  # Get first project path
+                except:
+                    pass
+
+            sessions.append({
+                "session_id": session_id,
+                "last_modified": mtime,
+                "cwd": cwd
+            })
+
+    # Sort by last modified (most recent first)
+    sessions.sort(key=lambda s: s["last_modified"], reverse=True)
+
+    # Limit results
+    return sessions[:limit]
+
+
+def save_auth_from_session(session_id, profile=None):
+    """Extract and save auth info from session's .claude.json for reuse.
+
+    Args:
+        session_id: Unique session identifier
+        profile: Profile name (optional)
+    """
+    # Get base config directory
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    # Read session's .claude.json
+    session_config_dir = base_config / "session-configs" / session_id
+    session_claude_json = session_config_dir / ".claude.json"
+
+    if not session_claude_json.exists():
+        return
+
+    try:
+        session_config = json.loads(session_claude_json.read_text())
+
+        # Extract auth fields (everything except mcpServers and session state)
+        auth_fields = ["userID", "oauthAccount", "claudeCodeFirstTokenDate"]
+        auth_data = {}
+        for field in auth_fields:
+            if field in session_config:
+                auth_data[field] = session_config[field]
+
+        if auth_data:
+            # Save to global auth file
+            saved_auth_file = base_config / "claude-auth.json"
+            saved_auth_file.write_text(json.dumps(auth_data, indent=2))
+            log(f"Saved auth from session {session_id}", profile)
+    except Exception as e:
+        log(f"Failed to save auth: {e}", profile)
 
 
 def cleanup_session_config(session_id, profile=None):
@@ -79,6 +313,12 @@ def cleanup_session_config(session_id, profile=None):
         session_id: Unique session identifier
         profile: Profile name (optional)
     """
+    # Save auth before cleanup
+    save_auth_from_session(session_id, profile)
+
+    # Unregister from running sessions
+    unregister_running_session(session_id, profile)
+
     # Get base config directory
     if profile:
         base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile

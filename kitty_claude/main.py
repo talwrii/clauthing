@@ -1046,6 +1046,7 @@ def main():
         parser.add_argument("--add-rules", nargs='+', metavar="NAME [FILE]", help="Add a rule: --add-rules NAME (reads stdin) or --add-rules NAME FILE")
         parser.add_argument("--list-rules", action="store_true", help="List all rules")
         parser.add_argument("--show-rule", metavar="NAME", help="Show content of a specific rule")
+        parser.add_argument("--mcp-exec", nargs=argparse.REMAINDER, help="Run mcp-exec with given arguments (internal use)")
 
         args = parser.parse_args()
         
@@ -1138,10 +1139,17 @@ def main():
             source_profile, dest_profile = args.copy_profile
             handle_copy_profile(source_profile, dest_profile)
         
+        if args.mcp_exec:
+            # Run mcp-exec with the provided arguments
+            from kitty_claude.mcp_exec.__main__ import main as mcp_exec_main
+            sys.argv = ['mcp-exec'] + args.mcp_exec
+            mcp_exec_main()
+            sys.exit(0)
+
         if args.notes:
             open_session_notes(get_runtime_tmux_state_file)
             sys.exit(0)
-        
+
         if args.user_prompt_submit:
             handle_user_prompt_submit()
             sys.exit(0)

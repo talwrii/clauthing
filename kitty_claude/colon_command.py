@@ -23,6 +23,7 @@ from kitty_claude.session import (
 )
 from kitty_claude.window_utils import open_session_notes
 from kitty_claude.tmux import get_runtime_tmux_state_file
+from kitty_claude.rules import build_claude_md
 
 
 def get_tmux_socket():
@@ -307,28 +308,75 @@ def handle_user_prompt_submit(claude_data_dir=None):
         # Read JSON from stdin
         input_data = json.loads(sys.stdin.read())
         prompt = input_data.get('prompt', '').strip()
-        
+
+        # Register this session as running (if not already registered)
+        session_id = input_data.get('session_id')
+        if session_id:
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            cwd = input_data.get('cwd', os.getcwd())
+            # Find Claude's PID - try multiple approaches
+            claude_pid = None
+            try:
+                # First try: multi-tab mode with --resume
+                result = subprocess.run(
+                    ["pgrep", "-f", f"claude --resume {session_id}"],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    claude_pid = int(result.stdout.strip().split('\n')[0])
+
+                # Second try: one-tab mode - get PID from tmux pane
+                if not claude_pid:
+                    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+                    if socket:
+                        result = subprocess.run(
+                            ["tmux", "-L", socket, "display-message", "-p", "#{pane_pid}"],
+                            capture_output=True, text=True
+                        )
+                        if result.returncode == 0:
+                            pane_pid = int(result.stdout.strip())
+                            # The pane_pid is usually the shell, Claude is a child
+                            result = subprocess.run(
+                                ["pgrep", "-P", str(pane_pid), "claude"],
+                                capture_output=True, text=True
+                            )
+                            if result.returncode == 0:
+                                claude_pid = int(result.stdout.strip().split('\n')[0])
+
+                if claude_pid:
+                    from kitty_claude.claude import register_running_session
+                    register_running_session(session_id, claude_pid, cwd, profile)
+                    with open("/tmp/session-register-debug.log", "a") as f:
+                        f.write(f"Registered: {session_id[:8]} PID={claude_pid} cwd={cwd}\n")
+            except Exception as e:
+                with open("/tmp/session-register-debug.log", "a") as f:
+                    f.write(f"Failed to register {session_id[:8]}: {e}\n")
+
         # Check for :help command
         if prompt == ':help':
             help_text = """kitty-claude colon commands:
 
-:help              Show this help message
-:list              List available slash commands (skills)
-:rules             List all rules
-:note              Open session notes in vim
-:skill <name>      Create/edit a global Claude skill
-:rule <name>       Create/edit a global rule
-::skills           List all kitty-claude skills
-::skill <name>     Create/edit a kitty-claude skill
-::<skill> [prompt] Run kitty-claude skill (injects context)
-:clear             Clear session and start fresh
-:reload            Reload Claude (same session, pick up config changes)
-:cd <path>         Change directory and move session
-:cd-tmux           Change to directory of tmux session 0
-:fork              Open a fork in a popup window
-:time              Show duration of last response
-:checkpoint        Save a checkpoint in the current session
-:rollback          Rollback to the last checkpoint (clones session)
+:help                Show this help message
+:list                List available slash commands (skills)
+:rules               List all rules
+:note                Open session notes in vim
+:skill <name>        Create/edit a global Claude skill
+:rule <name>         Create/edit a global rule
+::skills             List all kitty-claude skills
+::skill <name>       Create/edit a kitty-claude skill
+::<skill> [prompt]   Run kitty-claude skill (injects context)
+:mcp-shell <cmd>     Expose shell command as MCP server
+:current-sessions    List all currently running sessions
+:sessions            List recent sessions (last 10)
+:resume <num|id>     Resume a session in new window
+:clear               Clear session and start fresh
+:reload              Reload Claude (same session, pick up config changes)
+:cd <path>           Change directory and move session
+:cd-tmux             Change to directory of tmux session 0
+:fork                Open a fork in a popup window
+:time                Show duration of last response
+:checkpoint          Save a checkpoint in the current session
+:rollback            Rollback to the last checkpoint (clones session)
 
 Examples:
   :list, :rules, ::skills
@@ -337,6 +385,11 @@ Examples:
   :rule my-rule
   ::skill context
   ::context what should I do?
+  :mcp-shell cat
+  :current-sessions
+  :sessions
+  :resume 1
+  :resume 58093da9-7922-4bc0-a89f-eea6691b02eb
   :cd ~/projects/myapp
   :checkpoint
   :rollback
@@ -345,6 +398,86 @@ Examples:
 """
             send_tmux_message("📖 See console for help", socket)
             response = {"continue": False, "stopReason": help_text}
+            print(json.dumps(response))
+            return
+
+        # Check for :current-sessions command
+        if prompt == ':current-sessions':
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            from kitty_claude.claude import get_running_sessions
+
+            sessions = get_running_sessions(profile)
+
+            if not sessions:
+                msg = "No currently running sessions"
+            else:
+                lines = ["Currently running sessions:\n"]
+                for i, sess in enumerate(sessions, 1):
+                    cwd = sess.get('cwd', '?')
+                    session_id = sess['session_id']
+                    pid = sess['pid']
+                    lines.append(f"{i}. {session_id[:8]}... (PID {pid}) - {cwd}")
+                msg = "\n".join(lines)
+
+            send_tmux_message(f"✓ {len(sessions)} running", socket)
+            response = {"continue": False, "stopReason": msg}
+            print(json.dumps(response))
+            return
+
+        # Check for :sessions command
+        if prompt == ':sessions':
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            from kitty_claude.claude import get_recent_sessions
+            from datetime import datetime
+
+            sessions = get_recent_sessions(profile, limit=10)
+
+            if not sessions:
+                msg = "No recent sessions found"
+            else:
+                lines = ["Recent sessions (ordered by last activity):\n"]
+                for i, sess in enumerate(sessions, 1):
+                    session_id = sess['session_id']
+                    cwd = sess.get('cwd', '?')
+                    mtime = datetime.fromtimestamp(sess['last_modified']).strftime('%Y-%m-%d %H:%M')
+                    lines.append(f"{i}. {session_id[:8]}... - {cwd} (last: {mtime})")
+                lines.append(f"\nUse :resume <number> or :resume <session-id> to resume")
+                msg = "\n".join(lines)
+
+            send_tmux_message(f"✓ {len(sessions)} sessions", socket)
+            response = {"continue": False, "stopReason": msg}
+            print(json.dumps(response))
+            return
+
+        # Check for :resume command
+        if prompt.startswith(':resume '):
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            arg = prompt[8:].strip()
+
+            # Determine if arg is a number or session ID
+            target_session_id = None
+            if arg.isdigit():
+                # It's a number - get from :sessions list
+                from kitty_claude.claude import get_recent_sessions
+                sessions = get_recent_sessions(profile, limit=10)
+                index = int(arg) - 1
+                if 0 <= index < len(sessions):
+                    target_session_id = sessions[index]['session_id']
+                else:
+                    send_tmux_message(f"❌ Invalid session number", socket)
+                    response = {"continue": False, "stopReason": f"❌ Session number {arg} not found"}
+                    print(json.dumps(response))
+                    return
+            else:
+                # It's a session ID
+                target_session_id = arg
+
+            # Open new window with this session
+            from kitty_claude.claude import new_window
+            new_window(profile=profile, resume_session_id=target_session_id, socket=socket)
+
+            send_tmux_message(f"✓ Resuming session", socket)
+            response = {"continue": False, "stopReason": f"✓ Opening session {target_session_id[:8]}... in new window"}
             print(json.dumps(response))
             return
 
@@ -742,10 +875,21 @@ fi
             # Get kitty-claude executable path
             kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
 
+            # Rebuild CLAUDE.md from rules before reloading
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            build_claude_md(profile)
+
+            # Save auth from current session before regenerating config
+            from kitty_claude.claude import save_auth_from_session, setup_session_config
+            save_auth_from_session(session_id, profile)
+
+            # Merge session config (global + session.json overrides)
+            session_config_dir = setup_session_config(session_id, profile)
+
             # Check if we're in one-tab mode
             if socket.startswith("kc1-"):
                 # One-tab mode: respawn with same session
-                claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
+                claude_config = str(session_config_dir)
 
                 uid = os.getuid()
                 launcher = Path(f"/tmp/kc-reload-{uid}.sh")
@@ -1197,6 +1341,128 @@ Add your rule content here. This will be included in CLAUDE.md.
                 response = {"continue": False, "stopReason": f"✓ Rule '{rule_name}' saved\n\nUse :reload to rebuild CLAUDE.md and pick up the new rule."}
             except Exception as e:
                 send_tmux_message(f"❌ Error editing rule: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # Check for :mcp-shell command
+        if prompt.startswith(':mcp-shell '):
+            command_name = prompt[11:].strip()
+
+            if not command_name:
+                send_tmux_message("❌ Usage: :mcp-shell <command>", socket)
+                response = {"continue": False, "stopReason": "❌ Usage: :mcp-shell <command>"}
+                print(json.dumps(response))
+                return
+
+            session_id = input_data.get('session_id')
+            if not session_id:
+                send_tmux_message("❌ No session ID", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID found"}
+                print(json.dumps(response))
+                return
+
+            try:
+                # Debug logging to /tmp
+                with open("/tmp/mcp-shell-debug.log", "a") as f:
+                    f.write(f"command_name={command_name}\n")
+                    f.write(f"PATH={os.environ.get('PATH', 'NO PATH')[:500]}\n")
+
+                # Find command in PATH
+                command_path = shutil.which(command_name)
+
+                with open("/tmp/mcp-shell-debug.log", "a") as f:
+                    f.write(f"which result={command_path}\n")
+                    f.write(f"type={type(command_path)}\n")
+                    f.write(f"repr={repr(command_path)}\n")
+                    f.write(f"bool={bool(command_path)}\n")
+                    f.write(f"checking: not command_path = {not command_path}\n\n")
+
+                if not command_path:
+                    send_tmux_message(f"❌ Command '{command_name}' not found in PATH", socket)
+                    response = {"continue": False, "stopReason": f"❌ Command '{command_name}' not found in PATH"}
+                    print(json.dumps(response))
+                    return
+
+                # Get command help to extract description
+                with open("/tmp/mcp-shell-debug.log", "a") as f:
+                    f.write(f"About to run: {[command_path, '--help']}\n")
+
+                help_result = subprocess.run(
+                    [command_path, "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+
+                with open("/tmp/mcp-shell-debug.log", "a") as f:
+                    f.write(f"subprocess completed successfully\n")
+                # Use first line of help as description, or fallback
+                help_lines = (help_result.stdout or help_result.stderr or "").strip().split('\n')
+                description = help_lines[0] if help_lines and help_lines[0] else f"Execute {command_name}"
+                # Truncate if too long
+                if len(description) > 100:
+                    description = description[:97] + "..."
+
+                # Determine config directory for current session
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+
+                session_config_dir = config_dir / "session-configs" / session_id
+                session_config_dir.mkdir(parents=True, exist_ok=True)
+
+                # Get current working directory
+                cwd = input_data.get('cwd', os.getcwd())
+
+                # Load session-specific .claude.json
+                claude_json_file = session_config_dir / ".claude.json"
+                if claude_json_file.exists():
+                    claude_config = json.loads(claude_json_file.read_text())
+                else:
+                    claude_config = {}
+
+                # Ensure projects structure exists
+                if "projects" not in claude_config:
+                    claude_config["projects"] = {}
+                if cwd not in claude_config["projects"]:
+                    claude_config["projects"][cwd] = {}
+                if "mcpServers" not in claude_config["projects"][cwd]:
+                    claude_config["projects"][cwd]["mcpServers"] = {}
+
+                # Add the mcp-exec server using kitty-claude --mcp-exec
+                server_name = f"shell-{command_name}"
+                kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
+                claude_config["projects"][cwd]["mcpServers"][server_name] = {
+                    "type": "stdio",
+                    "command": kitty_claude_path,
+                    "args": [
+                        "--mcp-exec",
+                        command_name,  # Use command name, not full path, for valid MCP tool name
+                        description,
+                        "--pos-arg", "input Input data"
+                    ]
+                }
+
+                # Save session .claude.json
+                claude_json_file.write_text(json.dumps(claude_config, indent=2))
+
+                send_tmux_message(f"✓ MCP server '{server_name}' added - use :reload", socket)
+                response = {
+                    "continue": False,
+                    "stopReason": f"✓ MCP server '{server_name}' added\n\nUse :reload to start Claude with the new MCP server."
+                }
+            except subprocess.TimeoutExpired:
+                send_tmux_message(f"❌ Command '{command_name}' timed out", socket)
+                response = {"continue": False, "stopReason": f"❌ Command '{command_name}' help timed out"}
+            except Exception as e:
+                with open("/tmp/mcp-shell-debug.log", "a") as f:
+                    f.write(f"Exception: {type(e).__name__}: {e}\n")
+                send_tmux_message(f"❌ Error: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
 
             print(json.dumps(response))
