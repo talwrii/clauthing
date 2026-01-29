@@ -9,6 +9,8 @@ import argparse
 import json
 import uuid
 import shlex
+import signal
+import time
 from pathlib import Path
 
 from kitty_claude.logging import log, get_log_dir, get_run_log_file, cleanup_old_run_logs, run
@@ -36,6 +38,63 @@ from kitty_claude.session import (
 )
 from kitty_claude.tmux_status import handle_tmux_status
 from kitty_claude.rules import save_rule, build_claude_md, list_rules, show_rule
+
+def fork_with_log_tailing(exec_func, profile=None):
+    """Fork process: child execs, parent tails logs to stderr.
+    
+    Args:
+        exec_func: Function that calls os.execvp (will be called in child)
+        profile: Profile name for finding log file
+    """
+    import select
+    
+    log_file = get_run_log_file(profile)
+    
+    # Ensure log file exists
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.touch()
+    
+    pid = os.fork()
+    
+    if pid == 0:
+        # Child process - do the exec
+        exec_func()
+        # exec doesn't return, but just in case:
+        sys.exit(0)
+    else:
+        # Parent process - tail the log file
+        print(f"[kitty-claude] Streaming logs from {log_file}", file=sys.stderr)
+        print(f"[kitty-claude] Child PID: {pid}", file=sys.stderr)
+        print("-" * 60, file=sys.stderr)
+        
+        try:
+            with open(log_file, 'r') as f:
+                # Seek to end
+                f.seek(0, 2)
+                
+                while True:
+                    # Check if child is still alive
+                    result = os.waitpid(pid, os.WNOHANG)
+                    if result[0] != 0:
+                        # Child exited
+                        print("-" * 60, file=sys.stderr)
+                        print(f"[kitty-claude] Child exited with status {result[1]}", file=sys.stderr)
+                        break
+                    
+                    # Read any new lines
+                    line = f.readline()
+                    if line:
+                        sys.stderr.write(line)
+                        sys.stderr.flush()
+                    else:
+                        # No new data, wait a bit
+                        time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("\n[kitty-claude] Interrupted, killing child...", file=sys.stderr)
+            os.kill(pid, signal.SIGTERM)
+            os.waitpid(pid, 0)
+        
+        sys.exit(0)
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -334,7 +393,7 @@ def handle_session_picker(profile, socket="kitty-claude"):
     except FileNotFoundError:
         print("Error: fzf not found. Install: sudo apt install fzf")
 
-def handle_one_tab(config_dir, profile, remain_on_exit=False):
+def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False):
     """Launch kitty-claude in single-tab mode.
 
     Uses tmux but disables new tab creation and skips session restoration.
@@ -383,7 +442,7 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False):
     log(f"=== ONE-TAB MODE (run {run_num}, instance {instance_id}) ===", profile)
 
     remain_config = "set -g remain-on-exit on\n" if remain_on_exit else ""
-    
+
     # Get claude binary
     claude_bin = get_claude_binary(profile)
 
@@ -445,7 +504,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
     if not shutil.which("tmux"):
         print("Error: tmux not found.")
         sys.exit(1)
-    if not shutil.which("kitty"):
+    if not no_kitty and not shutil.which("kitty"):
         print("Error: kitty not found.")
         sys.exit(1)
     if not shutil.which(claude_bin):
@@ -453,13 +512,23 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
         print("Please install Claude Code or set path with: kitty-claude --set-claude /path/to/claude")
         sys.exit(1)
 
-    # Launch kitty - NO session restoration, just start fresh
-    log(f"Launching kitty in one-tab mode", profile)
-    os.execvp("kitty", [
-        "kitty",
-        "--class=kitty-claude",
-        f"--config={kitty_config_path}"
-    ])
+    if no_kitty:
+        # Launch tmux directly (for testing)
+        log(f"Launching tmux directly in one-tab mode (no kitty)", profile)
+        os.execvp("tmux", [
+            "tmux", "-L", tmux_socket,
+            "-f", str(tmux_config_path),
+            "new-session", "-As", tmux_socket,
+            "-c", str(jail_dir)
+        ])
+    else:
+        # Launch kitty - NO session restoration, just start fresh
+        log(f"Launching kitty in one-tab mode", profile)
+        os.execvp("kitty", [
+            "kitty",
+            "--class=kitty-claude",
+            f"--config={kitty_config_path}"
+        ])
 
 def handle_list_sessions(profile):
     """List all open sessions with their metadata."""
@@ -1087,6 +1156,7 @@ def main():
         parser.add_argument("--list-sessions", action="store_true", help="List all open sessions with metadata")
         parser.add_argument("--picker", action="store_true", help="Fuzzy find and switch to a session (internal use)")
         parser.add_argument("--one-tab", action="store_true", help="Single-tab mode - no session restoration, no new tabs")
+        parser.add_argument("--log", action="store_true", help="Stream logs to stderr while running")
         parser.add_argument("--add-rules", nargs='+', metavar="NAME [FILE]", help="Add a rule: --add-rules NAME (reads stdin) or --add-rules NAME FILE")
         parser.add_argument("--list-rules", action="store_true", help="List all rules")
         parser.add_argument("--show-rule", metavar="NAME", help="Show content of a specific rule")
@@ -1094,6 +1164,10 @@ def main():
         parser.add_argument("--mcp-exec", nargs=argparse.REMAINDER, help="Run mcp-exec with given arguments (internal use)")
 
         args = parser.parse_args()
+
+        # Enable stderr logging if --log flag is set
+        if args.log:
+            os.environ['KITTY_CLAUDE_LOG_STDERR'] = '1'
 
         # Determine profile name
         profile = args.profile or os.environ.get('KITTY_CLAUDE_PROFILE')
@@ -1166,7 +1240,13 @@ def main():
             sys.exit(0)
 
         if args.one_tab:
-            handle_one_tab(config_dir, profile, args.remain)
+            if args.log:
+                fork_with_log_tailing(
+                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty),
+                    profile
+                )
+            else:
+                handle_one_tab(config_dir, profile, args.remain, args.no_kitty)
             # execvp doesn't return
             sys.exit(0)
 
@@ -1245,10 +1325,22 @@ def main():
             sys.exit(1)
 
         if args.no_kitty:
-            handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
+            if args.log:
+                fork_with_log_tailing(
+                    lambda: handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain),
+                    profile
+                )
+            else:
+                handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
 
         # Default: launch kitty-claude
-        launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
+        if args.log:
+            fork_with_log_tailing(
+                lambda: launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain),
+                profile
+            )
+        else:
+            launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
 
     except Exception as e:
         # Log any uncaught exceptions

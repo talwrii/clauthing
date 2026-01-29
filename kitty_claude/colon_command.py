@@ -21,6 +21,7 @@ from kitty_claude.session import (
     save_session_metadata,
     remove_open_session
 )
+from kitty_claude.session_utils import session_has_messages
 from kitty_claude.window_utils import open_session_notes
 from kitty_claude.tmux import get_runtime_tmux_state_file
 from kitty_claude.rules import build_claude_md
@@ -32,7 +33,7 @@ def get_tmux_socket():
     socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
     if socket:
         return socket
-    
+
     # Fallback: parse TMUX variable (format: /tmp/tmux-1000/socketname,pid,window)
     tmux_var = os.environ.get('TMUX', '')
     if tmux_var:
@@ -41,7 +42,7 @@ def get_tmux_socket():
         socket_name = os.path.basename(socket_path)
         if socket_name:
             return socket_name
-    
+
     return 'kitty-claude'  # default
 
 
@@ -74,7 +75,7 @@ def save_session_metadata(session_id, name, path):
     state_dir = get_state_dir()
     sessions_dir = state_dir / "sessions"
     sessions_dir.mkdir(exist_ok=True)
-    
+
     metadata_file = sessions_dir / f"{session_id}.json"
     metadata = {
         "name": name,
@@ -82,32 +83,6 @@ def save_session_metadata(session_id, name, path):
         "created": run(["date", "-Iseconds"], capture_output=True, text=True).stdout.strip()
     }
     metadata_file.write_text(json.dumps(metadata, indent=2))
-
-
-def session_has_messages(session_file):
-    """Check if a session file has any actual user/assistant messages.
-
-    Args:
-        session_file: Path to the JSONL session file
-
-    Returns:
-        True if the session has at least one user or assistant message
-    """
-    try:
-        with open(session_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get('type') in ('user', 'assistant'):
-                        return True
-                except json.JSONDecodeError:
-                    continue
-        return False
-    except Exception:
-        return False
 
 
 def add_checkpoint_to_session(session_file):
@@ -294,7 +269,7 @@ fi
 def handle_user_prompt_submit(claude_data_dir=None):
     """Handle UserPromptSubmit hook - process custom commands like :cd and :fork"""
     socket = get_tmux_socket()
-    
+
     try:
         # Get claude data dir from environment variable if not provided
         if claude_data_dir is None:
@@ -304,7 +279,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             else:
                 # Fallback to default
                 claude_data_dir = Path.home() / ".config" / "kitty-claude" / "claude-data"
-        
+
         # Read JSON from stdin
         input_data = json.loads(sys.stdin.read())
         prompt = input_data.get('prompt', '').strip()
@@ -554,10 +529,10 @@ Examples:
         if prompt.startswith(':fork'):
             current_dir = input_data.get('cwd', os.getcwd())
             session_id = input_data.get('session_id')
-            
+
             # Encode path
             encoded_current = current_dir.replace('/', '-')
-            
+
             # Find current session file
             projects_dir = claude_data_dir / "projects" / encoded_current
             if not projects_dir.exists():
@@ -565,65 +540,49 @@ Examples:
                 response = {"continue": False, "stopReason": "❌ No session found"}
                 print(json.dumps(response))
                 return
-            
-            session_files = sorted(projects_dir.glob("*.jsonl"), 
+
+            session_files = sorted(projects_dir.glob("*.jsonl"),
                                  key=lambda p: p.stat().st_mtime, reverse=True)
             if not session_files:
                 send_tmux_message("❌ No session found", socket)
                 response = {"continue": False, "stopReason": "❌ No session found"}
                 print(json.dumps(response))
                 return
-            
+
             # Generate new fork session ID
             fork_session_id = str(uuid.uuid4())
-            
+
             # Clone session to fork
             fork_file = projects_dir / f"{fork_session_id}.jsonl"
             shutil.copy2(session_files[0], fork_file)
-            
+
             send_tmux_message("🔀 Opening fork in popup...", socket)
-            
+
             # Open fork in popup (blocking call)
             run([
                 "tmux", "-L", socket,
                 "display-popup", "-E", "-w", "90%", "-h", "90%",
                 f"claude --resume {fork_session_id}"
             ])
-            
+
             # Popup closed - get last assistant message from fork
             try:
-                last_message = None
-                with open(fork_file, 'r') as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line.strip())
-                            if entry.get('type') == 'assistant':
-                                message = entry.get('message', {})
-                                content = message.get('content', [])
-                                # Extract text from content blocks
-                                text_parts = [
-                                    block.get('text', '') 
-                                    for block in content 
-                                    if isinstance(block, dict) and block.get('type') == 'text'
-                                ]
-                                if text_parts:
-                                    last_message = '\n'.join(text_parts)
-                        except json.JSONDecodeError:
-                            continue
-                
+                from kitty_claude.session_utils import get_last_assistant_message
+                last_message = get_last_assistant_message(fork_file)
+
                 if last_message:
                     send_tmux_message("✓ Fork completed, injecting response", socket)
-                    
+
                     # Escape the message for shell safety
                     fork_message = f"Fork result:\n\n{last_message}"
                     escaped_message = shlex.quote(fork_message)
-                    
+
                     # Background process: sleep then type the fork result
                     subprocess.Popen([
                         "sh", "-c",
                         f"sleep 0.5 && tmux -L {socket} send-keys -l {escaped_message} && tmux -L {socket} send-keys Enter"
                     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    
+
                     # Return immediately to unblock the hook
                     response = {"continue": False, "stopReason": ""}
                     print(json.dumps(response))
@@ -631,12 +590,12 @@ Examples:
                     send_tmux_message("⚠ Fork had no assistant messages", socket)
                     response = {"continue": False, "stopReason": "Fork had no responses"}
                     print(json.dumps(response))
-                
+
             except Exception as e:
                 send_tmux_message(f"❌ Error reading fork: {str(e)}", socket)
                 response = {"continue": False, "stopReason": f"Fork error: {str(e)}"}
                 print(json.dumps(response))
-            
+
             return
 
         # Check for :checkpoint command
@@ -828,7 +787,7 @@ fi
             )
             print(json.dumps(response))
             return
-        
+
         # Check for :time command
         if prompt == ':time':
             session_id = input_data.get('session_id')
@@ -837,14 +796,14 @@ fi
                 response = {"continue": False, "stopReason": "⏱ No session ID available"}
                 print(json.dumps(response))
                 return
-            
+
             duration = get_last_response_duration(session_id)
             if duration is None:
                 send_tmux_message("⏱ No timing data available yet", socket)
                 response = {"continue": False, "stopReason": "⏱ No timing data available yet"}
                 print(json.dumps(response))
                 return
-            
+
             # Format duration nicely
             if duration < 1:
                 duration_str = f"{duration * 1000:.0f}ms"
@@ -854,13 +813,13 @@ fi
                 minutes = int(duration // 60)
                 seconds = duration % 60
                 duration_str = f"{minutes}m {seconds:.1f}s"
-            
+
             message = f"⏱ Last response took: {duration_str}"
             send_tmux_message(message, socket)
             response = {"continue": False, "stopReason": message}
             print(json.dumps(response))
             return
-        
+
         # Check for :reload command
         if prompt == ':reload':
             current_dir = input_data.get('cwd', os.getcwd())
@@ -1473,7 +1432,7 @@ Add your rule content here. This will be included in CLAUDE.md.
         if session_id:
             save_request_start_time(session_id)
         print(prompt)
-        
+
     except Exception as e:
         # Log error and send notification
         error_msg = f"Hook error: {str(e)}"
@@ -1494,7 +1453,7 @@ def handle_stop():
         # Read JSON from stdin
         input_data = json.loads(sys.stdin.read())
         session_id = input_data.get('session_id')
-        
+
         if session_id:
             save_response_duration(session_id)
             # Remove from open sessions list
