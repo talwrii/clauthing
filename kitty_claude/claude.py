@@ -182,17 +182,18 @@ def setup_session_config(session_id, profile=None):
     else:
         saved_auth = {}
 
-    # Preserve mcpServers if .claude.json already exists
-    if session_claude_json.exists():
+    # Load MCP servers from session metadata
+    state_dir = get_state_dir()
+    metadata_file = state_dir / "sessions" / f"{session_id}.json"
+    mcp_servers = {}
+    if metadata_file.exists():
         try:
-            existing = json.loads(session_claude_json.read_text())
-            mcp_servers = existing.get("mcpServers", {})
+            metadata = json.loads(metadata_file.read_text())
+            mcp_servers = metadata.get("mcpServers", {})
         except:
-            mcp_servers = {}
-    else:
-        mcp_servers = {}
+            pass
 
-    # Build new config with saved auth + preserved mcpServers
+    # Build new config with saved auth + session MCP servers
     session_config = {"mcpServers": mcp_servers, **saved_auth}
     session_claude_json.write_text(json.dumps(session_config, indent=2))
     log(f"Created/updated session-specific .claude.json", profile)
