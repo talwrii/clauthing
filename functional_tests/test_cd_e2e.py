@@ -32,9 +32,12 @@ class KittyClaudeInstance:
         self.socket_name = None
         self.process = None
         self.target_dirs = []
+        self.start_time = None  # Track when this instance started
         
     def start(self, timeout=15):
         """Start kitty-claude in one-tab mode without kitty."""
+        self.start_time = time.time()  # Record start time
+        
         cmd = "kitty-claude --one-tab --no-kitty"
         if self.profile:
             cmd += f" --profile {self.profile}"
@@ -45,8 +48,7 @@ class KittyClaudeInstance:
         self.process = pexpect.spawn(cmd, encoding='utf-8', timeout=timeout)
         
         # Wait for tmux socket to appear
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        while time.time() - self.start_time < timeout:
             sockets = self._find_sockets()
             if sockets:
                 self.socket_name = sockets[0]
@@ -62,7 +64,7 @@ class KittyClaudeInstance:
         raise TimeoutError(f"kitty-claude did not start in time. Socket: {self.socket_name}")
     
     def _find_sockets(self):
-        """Find kc1-* tmux sockets (excluding test harness sockets)."""
+        """Find kc1-* tmux sockets created after this instance started."""
         uid = os.getuid()
         tmpdir = os.environ.get('TMUX_TMPDIR', '/tmp')
         socket_dir = Path(tmpdir) / f"tmux-{uid}"
@@ -74,10 +76,10 @@ class KittyClaudeInstance:
                 # Skip test harness sockets (they have "test" in name)
                 # Real kitty-claude sockets are like: kc1-{timestamp}-{pid}
                 if sock.name.startswith("kc1-") and "-test-" not in sock.name:
-                    # Only include if socket file exists and is recent (created in last 30s)
+                    # Only include if created AFTER this instance started
                     try:
-                        age = time.time() - sock.stat().st_ctime
-                        if age < 30:
+                        ctime = sock.stat().st_ctime
+                        if self.start_time and ctime >= self.start_time - 1:  # 1s tolerance
                             sockets.append(sock.name)
                     except:
                         pass
@@ -133,6 +135,29 @@ class KittyClaudeInstance:
                 time.sleep(1)
                 return True
             time.sleep(0.5)
+        return False
+    
+    def send_initial_message(self, message="hi", timeout=60):
+        """Send an initial message to create a session with messages.
+        
+        :cd requires the session to have messages before it can clone.
+        """
+        self.send_keys(message)
+        
+        # Wait for response (look for a second prompt indicating response is done)
+        start = time.time()
+        initial_content = self.capture_pane()
+        
+        while time.time() - start < timeout:
+            content = self.capture_pane()
+            # Response is done when we see content change significantly
+            # and there's a new prompt line
+            if content != initial_content:
+                # Check for signs of completion
+                if ">" in content.split(message)[-1] if message in content else ">" in content[-200:]:
+                    time.sleep(1)  # Let it stabilize
+                    return True
+            time.sleep(1)
         return False
     
     def get_launcher_scripts(self):
@@ -229,6 +254,44 @@ def run_e2e_cd_tests():
     print()
     print(":cd Command Tests:")
     
+    def test_cd_no_messages_shows_error():
+        """Test :cd on empty session (no messages) shows error."""
+        instance = KittyClaudeInstance()
+        instance.cleanup_launchers()
+        
+        try:
+            instance.start(timeout=15)
+            
+            # Wait for claude to be ready
+            ready = instance.wait_for_claude_ready(timeout=30)
+            assert_true(ready, "Claude should be ready")
+            
+            # DON'T send any message - session is empty
+            
+            # Send :cd ~ (should fail because no messages to clone)
+            print("    Sending :cd ~ on empty session...")
+            instance.send_keys(":cd ~")
+            
+            # Wait for processing
+            time.sleep(2)
+            
+            # Should NOT create launcher
+            launchers = instance.get_launcher_scripts()
+            assert_eq(len(launchers), 0,
+                     f"Should NOT create launcher for empty session. Pane:\n{instance.capture_pane()}")
+            
+            # Should show error message about no messages / cannot resume
+            content = instance.capture_pane()
+            has_error = any(x in content.lower() for x in [
+                "cannot", "no message", "empty", "nothing to", "error"
+            ])
+            assert_true(has_error,
+                       f"Should show error about empty session. Pane:\n{content}")
+            
+        finally:
+            instance.stop()
+    runner.run_test("cd_no_messages_shows_error", test_cd_no_messages_shows_error)
+    
     def test_cd_to_valid_directory():
         """Test :cd to a valid directory creates launcher script."""
         instance = KittyClaudeInstance()
@@ -241,11 +304,18 @@ def run_e2e_cd_tests():
             ready = instance.wait_for_claude_ready(timeout=30)
             assert_true(ready, "Claude should be ready")
             
+            # Send an initial message to create a session with messages
+            # (:cd requires messages to clone)
+            print("    Sending initial message to create session...")
+            got_response = instance.send_initial_message("say ok", timeout=60)
+            assert_true(got_response, "Should get response to initial message")
+            
             # Create target directory
             target = Path(tempfile.mkdtemp(prefix="cd-e2e-target-"))
             instance.target_dirs.append(target)
             
             # Send :cd command
+            print(f"    Sending :cd {target}...")
             instance.send_keys(f":cd {target}")
             
             # Wait for processing
@@ -279,10 +349,16 @@ def run_e2e_cd_tests():
             ready = instance.wait_for_claude_ready(timeout=30)
             assert_true(ready, "Claude should be ready")
             
+            # Send an initial message to create a session
+            print("    Sending initial message to create session...")
+            got_response = instance.send_initial_message("say ok", timeout=60)
+            assert_true(got_response, "Should get response to initial message")
+            
             # Send :cd to nonexistent path
             nonexistent = "/tmp/this-path-definitely-does-not-exist-e2e-xyz-123"
             assert_true(not Path(nonexistent).exists(), "Path should not exist")
             
+            print(f"    Sending :cd {nonexistent}...")
             instance.send_keys(f":cd {nonexistent}")
             
             # Wait for processing
@@ -313,7 +389,13 @@ def run_e2e_cd_tests():
             ready = instance.wait_for_claude_ready(timeout=30)
             assert_true(ready, "Claude should be ready")
             
+            # Send an initial message to create a session
+            print("    Sending initial message to create session...")
+            got_response = instance.send_initial_message("say ok", timeout=60)
+            assert_true(got_response, "Should get response to initial message")
+            
             # Send :cd ~
+            print("    Sending :cd ~...")
             instance.send_keys(":cd ~")
             
             # Wait for processing

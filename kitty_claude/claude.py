@@ -193,6 +193,22 @@ def setup_session_config(session_id, profile=None):
         except:
             pass
 
+    # Always include built-in command MCP server
+    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    mcp_servers["kitty-claude-commands"] = {
+        "command": kitty_claude_path,
+        "args": ["--command-mcp"],
+    }
+
+    # Auto-approve all MCP server tools in settings
+    allow = merged_settings.get("permissions", {}).get("allow", [])
+    for server_name in mcp_servers:
+        rule = f"mcp__{server_name}__*"
+        if rule not in allow:
+            allow.append(rule)
+    merged_settings.setdefault("permissions", {})["allow"] = allow
+    merged_settings_file.write_text(json.dumps(merged_settings, indent=2))
+
     # Build new config with saved auth + session MCP servers
     session_config = {"mcpServers": mcp_servers, **saved_auth}
     session_claude_json.write_text(json.dumps(session_config, indent=2))

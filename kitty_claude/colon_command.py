@@ -401,6 +401,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :note                Open session notes in vim
 :skill <name>        Create/edit a global Claude skill
 :rule <name>         Create/edit a global rule
+:kitty-commands      Enable kitty-claude command MCP server and reload
 :plan / :god         Enable planning MCP server (session overview) and reload
 ::skills             List all kitty-claude skills
 ::skill <name>       Create/edit a kitty-claude skill
@@ -410,6 +411,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :roles               List available roles
 :role <name>         Load a role's MCP servers into session
 :save-role <name>    Save current session's MCP servers as a role
+:send <message>      Send a message to another kitty-claude window (fzf)
 :current-sessions    List all currently running sessions
 :sessions            List recent sessions (last 10)
 :resume <num|id>     Resume a session in new window
@@ -420,6 +422,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :cd-tmux             Change to directory of tmux session 0
 :tmux                Link/switch to a tmux window on default server
 :tmux-unlink         Unlink the associated tmux window
+:tmuxpath            Show path of linked tmux window
 :tmuxs-link          Add current tmux window to linked windows list
 :tmuxs               Pick a linked tmux window (fzf)
 :call                Open popup with context, returns result
@@ -1079,6 +1082,53 @@ fi
             print(json.dumps(response))
             return
 
+        # :tmuxpath - show the current path of the linked tmux window
+        if prompt == ':tmuxpath':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                send_tmux_message("❌ No session ID", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID"}
+                print(json.dumps(response))
+                return
+
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+
+            try:
+                if metadata_file.exists():
+                    metadata = json.loads(metadata_file.read_text())
+                else:
+                    metadata = {}
+
+                linked_window = metadata.get("linked_tmux_window")
+
+                if not linked_window:
+                    send_tmux_message("No tmux window linked. Use :tmux first.", socket)
+                    response = {"continue": False, "stopReason": "No tmux window linked. Use :tmux to link a window first."}
+                    print(json.dumps(response))
+                    return
+
+                result = run(
+                    ["tmux", "-L", "default", "display-message", "-p", "-t", linked_window, "#{pane_current_path}"],
+                    capture_output=True, text=True, check=True
+                )
+                path = result.stdout.strip()
+                if path:
+                    send_tmux_message(f"Linked tmux window path: {path}", socket)
+                    response = {"continue": False, "stopReason": f"The linked tmux window ({linked_window}) is at: {path}"}
+                else:
+                    send_tmux_message("❌ Could not get path from linked window", socket)
+                    response = {"continue": False, "stopReason": "❌ Could not get path from linked tmux window"}
+            except subprocess.CalledProcessError:
+                send_tmux_message(f"❌ Linked window {linked_window} not found", socket)
+                response = {"continue": False, "stopReason": f"❌ Linked window {linked_window} not found - use :tmux-unlink to reset"}
+            except Exception as e:
+                send_tmux_message(f"❌ Error: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
         # :tmuxs-link - add current default tmux window to list of linked windows
         if prompt == ':tmuxs-link':
             session_id = input_data.get('session_id')
@@ -1652,6 +1702,98 @@ This will be injected as context when you run ::{skill_name}
             print(json.dumps(response))
             return
 
+        # Check for :kitty-commands command - enable command MCP server and reload
+        if prompt == ':kitty-commands':
+            current_dir = input_data.get('cwd', os.getcwd())
+            session_id = input_data.get('session_id')
+
+            if not session_id:
+                send_tmux_message("❌ No session ID available", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            # The command MCP server is auto-registered by setup_session_config,
+            # so we just need to reload to pick it up.
+            send_tmux_message("✓ Enabling kitty-claude commands MCP. Reloading...", socket)
+
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            build_claude_md(profile)
+
+            from kitty_claude.claude import save_auth_from_session, setup_session_config
+            save_auth_from_session(session_id, profile)
+            session_config_dir = setup_session_config(session_id, profile)
+
+            # Reload (same logic as :reload)
+            if socket.startswith("kc1-"):
+                claude_config = str(session_config_dir)
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+                config_file = config_dir / "config.json"
+                claude_bin = None
+                if config_file.exists():
+                    try:
+                        config = json.loads(config_file.read_text())
+                        if config.get("claude_binary"):
+                            claude_bin = config["claude_binary"]
+                    except:
+                        pass
+                if not claude_bin:
+                    claude_bin = shutil.which("claude") or "claude"
+
+                uid = os.getuid()
+                launcher = Path(f"/tmp/kc-cmds-{uid}.sh")
+                launcher.write_text(f'''#!/bin/sh
+export CLAUDE_CONFIG_DIR="{claude_config}"
+cd "{current_dir}"
+exec "{claude_bin}" --resume {session_id}
+''')
+                launcher.chmod(0o755)
+
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                response = {"continue": False, "stopReason": "✓ kitty-claude commands enabled. Reloading..."}
+                print(json.dumps(response))
+                return
+
+            # Multi-tab mode
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+                    capture_output=True, text=True, check=True
+                )
+                current_window_id = result.stdout.strip()
+            except:
+                current_window_id = None
+
+            cmd_parts = [kitty_claude_path]
+            if profile:
+                cmd_parts.extend(["--profile", profile])
+            cmd_parts.extend(["--new-window", "--resume-session", session_id])
+            cmd_str = " ".join(cmd_parts)
+
+            run([
+                "tmux", "-L", socket,
+                "new-window", "-c", current_dir, cmd_str
+            ])
+
+            if current_window_id:
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 0.5 && tmux -L {socket} kill-window -t {current_window_id}"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            response = {"continue": False, "stopReason": "✓ kitty-claude commands enabled. Reloading..."}
+            print(json.dumps(response))
+            return
+
         # Check for :god, :planner, or :plan command
         if prompt in [':god', ':planner', ':plan']:
             current_dir = input_data.get('cwd', os.getcwd())
@@ -2188,6 +2330,105 @@ Add your rule content here. This will be included in CLAUDE.md.
             print(json.dumps(response))
             return
 
+        # :send <message> - send a message to another kitty-claude window (picked via fzf)
+        if prompt.startswith(':send '):
+            message = prompt[6:].strip()
+            if not message:
+                send_tmux_message("❌ Usage: :send <message>", socket)
+                response = {"continue": False, "stopReason": "❌ Usage: :send <message>"}
+                print(json.dumps(response))
+                return
+
+            try:
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                from kitty_claude.claude import get_running_sessions
+                sessions = get_running_sessions(profile)
+
+                # Exclude our own session
+                my_session_id = input_data.get('session_id')
+                sessions = [s for s in sessions if s['session_id'] != my_session_id]
+
+                if not sessions:
+                    send_tmux_message("No other running sessions", socket)
+                    response = {"continue": False, "stopReason": "No other running sessions to send to"}
+                    print(json.dumps(response))
+                    return
+
+                # Build fzf input with session info
+                state_dir = get_state_dir()
+                fzf_lines = []
+                for s in sessions:
+                    sid = s['session_id']
+                    cwd = s.get('cwd', '?')
+                    # Load session name from metadata
+                    meta_file = state_dir / "sessions" / f"{sid}.json"
+                    name = sid[:8]
+                    if meta_file.exists():
+                        try:
+                            meta = json.loads(meta_file.read_text())
+                            name = meta.get("name", sid[:8])
+                        except:
+                            pass
+                    fzf_lines.append(f"{sid}\t{name}\t{cwd}")
+
+                uid = os.getuid()
+                tmp_input = Path(f"/tmp/kc-send-{uid}.txt")
+                tmp_output = Path(f"/tmp/kc-send-{uid}-out.txt")
+                tmp_input.write_text("\n".join(fzf_lines))
+                tmp_output.unlink(missing_ok=True)
+
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "70%", "-h", "40%",
+                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=2,3 --header='Send to:' > {tmp_output}"
+                ])
+
+                if tmp_output.exists():
+                    selected = tmp_output.read_text().strip()
+                    if selected:
+                        target_session_id = selected.split("\t")[0]
+
+                        # Find the tmux window with this session ID
+                        result = run(
+                            ["tmux", "-L", socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+                            capture_output=True, text=True, check=True
+                        )
+                        target_window = None
+                        for line in result.stdout.strip().split("\n"):
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[1] == target_session_id:
+                                target_window = parts[0]
+                                break
+
+                        if target_window:
+                            escaped = shlex.quote(message)
+                            run([
+                                "tmux", "-L", socket,
+                                "send-keys", "-t", target_window, "-l", message
+                            ])
+                            run([
+                                "tmux", "-L", socket,
+                                "send-keys", "-t", target_window, "Enter"
+                            ])
+                            send_tmux_message(f"✓ Sent to {target_session_id[:8]}", socket)
+                            response = {"continue": False, "stopReason": f"✓ Message sent"}
+                        else:
+                            send_tmux_message(f"❌ Could not find window for session", socket)
+                            response = {"continue": False, "stopReason": "❌ Could not find target window"}
+                    else:
+                        response = {"continue": False, "stopReason": "Cancelled"}
+                else:
+                    response = {"continue": False, "stopReason": "Cancelled"}
+
+                tmp_input.unlink(missing_ok=True)
+                tmp_output.unlink(missing_ok=True)
+            except Exception as e:
+                send_tmux_message(f"❌ Error: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
         # Check for plugin commands: :foo -> kitty-claude-foo on PATH
         if prompt.startswith(':'):
             parts = prompt[1:].split(None, 1)
@@ -2249,6 +2490,55 @@ Add your rule content here. This will be included in CLAUDE.md.
             print(input_data.get('prompt', ''))
         except:
             pass
+
+
+def handle_run_command(command):
+    """Handle --run-command - run a colon command directly, sharing the hook handler logic.
+
+    Constructs input_data from environment, feeds it via stdin to handle_user_prompt_submit,
+    and captures the output.
+    """
+    import io
+
+    config_dir = os.environ.get('CLAUDE_CONFIG_DIR', '')
+    session_id = Path(config_dir).name if config_dir else None
+
+    input_data = {
+        "session_id": session_id,
+        "cwd": os.getcwd(),
+        "prompt": command,
+    }
+
+    # Swap stdin so the handler reads our input_data
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO(json.dumps(input_data))
+
+    # Swap stdout so we capture the handler's output
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+
+    try:
+        handle_user_prompt_submit()
+    except SystemExit:
+        pass
+
+    output = sys.stdout.getvalue()
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+
+    # Parse and return the result
+    for line in output.strip().split('\n'):
+        if not line:
+            continue
+        try:
+            result = json.loads(line)
+            print(json.dumps(result))
+            return
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # If no JSON found, return the raw output
+    print(output)
 
 
 def handle_stop():

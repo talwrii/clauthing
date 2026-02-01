@@ -26,6 +26,7 @@ from kitty_claude.tmux import (
 from kitty_claude.claude import new_window
 from kitty_claude.colon_command import (
     handle_user_prompt_submit,
+    handle_run_command,
     handle_stop
 )
 from kitty_claude.session import (
@@ -446,14 +447,21 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False):
     # Get claude binary
     claude_bin = get_claude_binary(profile)
 
+    # Create a new session with session-specific config on startup
+    import uuid
+    from kitty_claude.claude import setup_session_config
+    new_session_id = str(uuid.uuid4())
+    session_config_dir = setup_session_config(new_session_id, profile)
+    log(f"Created session config for new session: {new_session_id}", profile)
+
     # Simplified tmux config - NO C-n, NO session restoration hooks
     tmux_config_path.write_text(f"""\
 # kitty-claude tmux config (ONE-TAB MODE)
 # No new tabs, no session management
 set -g destroy-unattached on
 {remain_config}
-# Set CLAUDE_CONFIG_DIR for isolated Claude data
-set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
+# Set CLAUDE_CONFIG_DIR for isolated Claude data (session-specific)
+set-environment -g CLAUDE_CONFIG_DIR "{session_config_dir}"
 
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
@@ -1162,6 +1170,9 @@ def main():
         parser.add_argument("--show-rule", metavar="NAME", help="Show content of a specific rule")
         parser.add_argument("--set-claude", metavar="PATH", help="Set path to claude binary")
         parser.add_argument("--mcp-exec", nargs=argparse.REMAINDER, help="Run mcp-exec with given arguments (internal use)")
+        parser.add_argument("--plan-mcp", action="store_true", help="Run planning MCP server (provides session/notes overview)")
+        parser.add_argument("--command-mcp", action="store_true", help="Run command MCP server (exposes colon commands to Claude)")
+        parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
 
         args = parser.parse_args()
 
@@ -1273,6 +1284,22 @@ def main():
             from kitty_claude.mcp_exec.__main__ import main as mcp_exec_main
             sys.argv = ['mcp-exec'] + args.mcp_exec
             mcp_exec_main()
+            sys.exit(0)
+
+        if args.plan_mcp:
+            # Run planning MCP server
+            from kitty_claude.plan_mcp_server import main as plan_mcp_main
+            plan_mcp_main()
+            sys.exit(0)
+
+        if args.command_mcp:
+            # Run command MCP server
+            from kitty_claude.command_mcp_server import main as command_mcp_main
+            command_mcp_main()
+            sys.exit(0)
+
+        if args.run_command:
+            handle_run_command(args.run_command)
             sys.exit(0)
 
         if args.notes:
