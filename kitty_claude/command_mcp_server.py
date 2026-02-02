@@ -24,13 +24,27 @@ def get_tmux_socket():
     return os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
 
 
-def run_command(command):
-    """Run a colon command after user confirms via tmux popup."""
-    socket = get_tmux_socket()
+def get_session_id():
+    """Extract session ID from CLAUDE_CONFIG_DIR path."""
+    config_dir = os.environ.get('CLAUDE_CONFIG_DIR', '')
+    if config_dir:
+        return Path(config_dir).name
+    return None
 
-    # Show confirmation popup - exits 0 if confirmed, 1 if cancelled
+
+def get_state_dir():
+    """Get the XDG state directory for kitty-claude."""
+    xdg_state = os.environ.get('XDG_STATE_HOME')
+    if xdg_state:
+        return Path(xdg_state) / "kitty-claude"
+    return Path.home() / ".local" / "state" / "kitty-claude"
+
+
+def confirm_popup(message):
+    """Show a tmux confirmation popup. Returns True if confirmed."""
+    socket = get_tmux_socket()
     confirm_script = f"""
-printf 'Run: {command}\\n\\n[Enter] to confirm, [q] to cancel\\n'
+printf '{message}\\n\\n[Enter] to confirm, [q] to cancel\\n'
 read -n1 key
 if [ "$key" = "q" ]; then exit 1; fi
 exit 0
@@ -41,10 +55,58 @@ exit 0
              "sh", "-c", confirm_script],
             capture_output=True, text=True, timeout=30,
         )
+        return result.returncode == 0
     except subprocess.TimeoutExpired:
-        return "Confirmation timed out."
+        return False
 
-    if result.returncode != 0:
+
+def read_linked_tmux():
+    """Read the linked tmux pane contents after user confirms."""
+    session_id = get_session_id()
+    if not session_id:
+        return "No session ID available."
+
+    state_dir = get_state_dir()
+    metadata_file = state_dir / "sessions" / f"{session_id}.json"
+    if not metadata_file.exists():
+        return "No session metadata found."
+
+    try:
+        metadata = json.loads(metadata_file.read_text())
+    except:
+        return "Could not read session metadata."
+
+    linked_window = metadata.get("linked_tmux_window")
+    if not linked_window:
+        return "No tmux window linked. User needs to run :tmux first."
+
+    # Ask for confirmation
+    if not confirm_popup(f"Let Claude read linked tmux pane ({linked_window})?"):
+        return "User denied access to tmux pane."
+
+    # Capture the pane contents
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", "default", "capture-pane", "-t", linked_window, "-p"],
+            capture_output=True, text=True, check=True
+        )
+        content = result.stdout
+
+        # Also get the cwd
+        cwd_result = subprocess.run(
+            ["tmux", "-L", "default", "display-message", "-p", "-t", linked_window, "#{pane_current_path}"],
+            capture_output=True, text=True, check=True
+        )
+        cwd = cwd_result.stdout.strip()
+
+        return f"Linked tmux window ({linked_window}) at: {cwd}\n\n{content}"
+    except subprocess.CalledProcessError as e:
+        return f"Could not capture pane: {e}"
+
+
+def run_command(command):
+    """Run a colon command after user confirms via tmux popup."""
+    if not confirm_popup(f"Run: {command}"):
         return f"Cancelled: {command}"
 
     # User confirmed — call the colon command handler
@@ -65,11 +127,20 @@ exit 0
         return result.stdout or result.stderr or "No output"
 
 
-async def run_command_mcp_server():
+async def run_command_mcp_server(enable_commands=False):
     """Run the command MCP server."""
     server = Server("kitty-claude-commands")
 
-    tool = Tool(
+    read_tmux_tool = Tool(
+        name="read_tmux",
+        description=(
+            "Read the contents of the linked tmux pane (the user's terminal). "
+            "Shows what's currently visible on screen. User must confirm via popup."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    )
+
+    kitty_command_tool = Tool(
         name="kitty_command",
         description=(
             "Run a kitty-claude colon command. The user will be asked to confirm via popup. "
@@ -87,13 +158,21 @@ async def run_command_mcp_server():
         },
     )
 
+    tools = [read_tmux_tool]
+    if enable_commands:
+        tools.append(kitty_command_tool)
+
     @server.list_tools()
     async def list_tools():
-        return [tool]
+        return tools
 
     @server.call_tool()
     async def call_tool(name, arguments):
-        if name == "kitty_command":
+        if name == "read_tmux":
+            result = read_linked_tmux()
+            return [TextContent(type="text", text=result)]
+
+        if name == "kitty_command" and enable_commands:
             command = arguments.get("command", "")
             if not command.startswith(':'):
                 command = ':' + command
@@ -108,7 +187,8 @@ async def run_command_mcp_server():
 
 def main():
     """Entry point for --command-mcp flag."""
-    asyncio.run(run_command_mcp_server())
+    enable_commands = "--with-commands" in os.sys.argv
+    asyncio.run(run_command_mcp_server(enable_commands))
 
 
 if __name__ == "__main__":

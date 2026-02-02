@@ -193,12 +193,13 @@ def setup_session_config(session_id, profile=None):
         except:
             pass
 
-    # Always include built-in command MCP server
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    mcp_servers["kitty-claude-commands"] = {
-        "command": kitty_claude_path,
-        "args": ["--command-mcp"],
-    }
+    # Include built-in command MCP server (only if not already set by :kitty-commands)
+    if "kitty-claude-commands" not in mcp_servers:
+        kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+        mcp_servers["kitty-claude-commands"] = {
+            "command": kitty_claude_path,
+            "args": ["--command-mcp"],
+        }
 
     # Auto-approve all MCP server tools in settings
     allow = merged_settings.get("permissions", {}).get("allow", [])

@@ -401,6 +401,8 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :note                Open session notes in vim
 :skill <name>        Create/edit a global Claude skill
 :rule <name>         Create/edit a global rule
+:todo [desc]         List todos or add one for current directory
+:done <num>          Mark a todo as done by number
 :kitty-commands      Enable kitty-claude command MCP server and reload
 :plan / :god         Enable planning MCP server (session overview) and reload
 ::skills             List all kitty-claude skills
@@ -408,13 +410,17 @@ def handle_user_prompt_submit(claude_data_dir=None):
 ::<skill> [prompt]   Run kitty-claude skill (injects context)
 :mcp <cmd> [args]    Add a native MCP server to this session
 :mcp-shell <cmd>     Expose shell command as MCP server
+:mcp-approve <cmd>   Add MCP server wrapped with tmux approval proxy
+:mcp-remove <name>   Remove an MCP server from session
 :roles               List available roles
 :role <name>         Load a role's MCP servers into session
 :save-role <name>    Save current session's MCP servers as a role
+:login               Refresh credentials from freshest session
 :send <message>      Send a message to another kitty-claude window (fzf)
 :current-sessions    List all currently running sessions
 :sessions            List recent sessions (last 10)
 :resume <num|id>     Resume a session in new window
+:resume-new [num|id] Resume a session in a new kitty-claude window
 :clear               Clear session and start fresh
 :reload              Reload Claude (same session, pick up config changes)
 :cd <path>           Change directory and move session
@@ -444,6 +450,7 @@ Examples:
   :sessions
   :resume 1
   :resume 58093da9-7922-4bc0-a89f-eea6691b02eb
+  :resume-new 1
   :cd ~/projects/myapp
   :checkpoint
   :rollback
@@ -548,6 +555,74 @@ Examples:
 
             send_tmux_message(f"✓ Resuming session", socket)
             response = {"continue": False, "stopReason": f"✓ Opening session {target_session_id[:8]}... in new window"}
+            print(json.dumps(response))
+            return
+
+        # Check for :resume-new command (spawn new kitty-claude window to resume)
+        if prompt.startswith(':resume-new') and (prompt == ':resume-new' or prompt[11:12] == ' '):
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            arg = prompt[12:].strip() if len(prompt) > 11 else ''
+
+            # If no arg, show sessions and ask user to pick
+            if not arg:
+                from kitty_claude.claude import get_recent_sessions
+                sessions = get_recent_sessions(profile, limit=10)
+                if not sessions:
+                    send_tmux_message("❌ No sessions found", socket)
+                    response = {"continue": False, "stopReason": "No recent sessions found"}
+                    print(json.dumps(response))
+                    return
+
+                from datetime import datetime
+                lines = ["Recent sessions:\n"]
+                for i, sess in enumerate(sessions, 1):
+                    sid = sess['session_id']
+                    cwd = sess.get('cwd', '?')
+                    mtime = datetime.fromtimestamp(sess['last_modified']).strftime('%Y-%m-%d %H:%M')
+                    lines.append(f"{i}. {sid[:8]}... - {cwd} (last: {mtime})")
+                lines.append(f"\nUse :resume-new <number> or :resume-new <session-id>")
+                msg = "\n".join(lines)
+                send_tmux_message(f"✓ {len(sessions)} sessions", socket)
+                response = {"continue": False, "stopReason": msg}
+                print(json.dumps(response))
+                return
+
+            # Resolve session ID from number or direct ID
+            target_session_id = None
+            if arg.isdigit():
+                from kitty_claude.claude import get_recent_sessions
+                sessions = get_recent_sessions(profile, limit=10)
+                index = int(arg) - 1
+                if 0 <= index < len(sessions):
+                    target_session_id = sessions[index]['session_id']
+                else:
+                    send_tmux_message(f"❌ Invalid session number", socket)
+                    response = {"continue": False, "stopReason": f"❌ Session number {arg} not found"}
+                    print(json.dumps(response))
+                    return
+            else:
+                target_session_id = arg
+
+            # Detect one-tab mode from socket name
+            is_one_tab = socket.startswith('kc1-')
+
+            # Build kitty-claude command
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            cmd = [kitty_claude_path]
+            if profile:
+                cmd.extend(["--profile", profile])
+            if is_one_tab:
+                cmd.append("--one-tab")
+            else:
+                cmd.append("--one-tab")  # Always spawn as one-tab for resume-new
+            cmd.extend(["--resume-session", target_session_id])
+
+            # Spawn the new window
+            import subprocess as sp
+            sp.Popen(cmd)
+
+            send_tmux_message(f"✓ Spawning new window", socket)
+            response = {"continue": False, "stopReason": f"✓ Resuming {target_session_id[:8]}... in new kitty-claude window"}
             print(json.dumps(response))
             return
 
@@ -890,17 +965,50 @@ Examples:
             except:
                 current_window_id = None
 
+            # Carry over session-level state from old session
+            state_dir = get_state_dir()
+            old_meta_file = state_dir / "sessions" / f"{session_id}.json"
+            new_meta_file = state_dir / "sessions" / f"{new_session_id}.json"
+            if old_meta_file.exists() and new_meta_file.exists():
+                try:
+                    old_meta = json.loads(old_meta_file.read_text())
+                    new_meta = json.loads(new_meta_file.read_text())
+                    for key in ("dir_stack", "mcpServers", "linked_tmux_window", "linked_tmux_windows"):
+                        if key in old_meta:
+                            new_meta[key] = old_meta[key]
+                    new_meta_file.write_text(json.dumps(new_meta, indent=2))
+                except:
+                    pass
+
             # Check if we're in one-tab mode
             if socket.startswith("kc1-"):
                 # One-tab mode: use launcher script
                 claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
+
+                # Get claude binary path from config, or resolve from PATH
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+                config_file = config_dir / "config.json"
+                claude_bin = None
+                if config_file.exists():
+                    try:
+                        config = json.loads(config_file.read_text())
+                        if config.get("claude_binary"):
+                            claude_bin = config["claude_binary"]
+                    except:
+                        pass
+                if not claude_bin:
+                    claude_bin = shutil.which("claude") or "claude"
 
                 uid = os.getuid()
                 launcher = Path(f"/tmp/kc-rollback-{uid}-{new_session_id[:8]}.sh")
                 launcher.write_text(f'''#!/bin/sh
 export CLAUDE_CONFIG_DIR="{claude_config}"
 cd "{current_dir}"
-exec claude --resume {new_session_id}
+exec "{claude_bin}" --resume {new_session_id}
 ''')
                 launcher.chmod(0o755)
 
@@ -1236,6 +1344,79 @@ fi
                 send_tmux_message(f"❌ Error: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
 
+            print(json.dumps(response))
+            return
+
+        # Check for :login command - refresh credentials from freshest session
+        if prompt == ':login':
+            session_id = input_data.get('session_id')
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+
+            if not session_id:
+                send_tmux_message("❌ No session ID available", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            from kitty_claude.claude import propagate_credentials
+
+            if profile:
+                base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                base_config = Path.home() / ".config" / "kitty-claude"
+
+            session_configs_dir = base_config / "session-configs"
+            current_session_creds = session_configs_dir / session_id / ".credentials.json"
+
+            # Find the freshest credentials across all sessions
+            best_expiry = 0
+            best_creds_content = None
+            best_source = None
+
+            for session_dir in session_configs_dir.iterdir():
+                if not session_dir.is_dir():
+                    continue
+                creds_file = session_dir / ".credentials.json"
+                if not creds_file.exists():
+                    continue
+                try:
+                    content = creds_file.read_text()
+                    data = json.loads(content)
+                    expiry = data.get("claudeAiOauth", {}).get("expiresAt", 0)
+                    if expiry > best_expiry:
+                        best_expiry = expiry
+                        best_creds_content = content
+                        best_source = session_dir.name[:8]
+                except Exception:
+                    continue
+
+            if not best_creds_content:
+                send_tmux_message("❌ No valid credentials found in any session", socket)
+                response = {"continue": False, "stopReason": "❌ No valid credentials found"}
+                print(json.dumps(response))
+                return
+
+            import time
+            now_ms = int(time.time() * 1000)
+            if best_expiry < now_ms:
+                send_tmux_message("❌ All credentials expired - need manual login", socket)
+                response = {"continue": False, "stopReason": "❌ All credentials expired"}
+                print(json.dumps(response))
+                return
+
+            # Copy freshest credentials to current session and shared location
+            try:
+                current_session_creds.write_text(best_creds_content)
+                shared_creds = base_config / "claude-data" / ".credentials.json"
+                if shared_creds.exists() or shared_creds.is_symlink():
+                    shared_creds.unlink()
+                shared_creds.write_text(best_creds_content)
+                remaining = (best_expiry - now_ms) // 60000
+                send_tmux_message(f"✓ Refreshed credentials from session {best_source} ({remaining}m remaining)", socket)
+                response = {"continue": False, "stopReason": f"✓ Credentials refreshed from {best_source}"}
+            except Exception as e:
+                send_tmux_message(f"❌ Failed to copy credentials: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ {e}"}
             print(json.dumps(response))
             return
 
@@ -1702,6 +1883,87 @@ This will be injected as context when you run ::{skill_name}
             print(json.dumps(response))
             return
 
+        # Check for :todo command - per-directory todo list
+        if prompt == ':todo' or prompt.startswith(':todo '):
+            current_dir = input_data.get('cwd', os.getcwd())
+            state_dir = get_state_dir()
+            todos_dir = state_dir / "todos"
+            todos_dir.mkdir(parents=True, exist_ok=True)
+
+            # Key by directory path
+            encoded_dir = current_dir.replace('/', '-').strip('-')
+            todos_file = todos_dir / f"{encoded_dir}.json"
+
+            # Load existing todos
+            if todos_file.exists():
+                try:
+                    todos = json.loads(todos_file.read_text())
+                except:
+                    todos = []
+            else:
+                todos = []
+
+            description = prompt[5:].strip() if len(prompt) > 5 else ""
+
+            if description:
+                # Add a todo
+                todos.append({"text": description, "done": False})
+                todos_file.write_text(json.dumps(todos, indent=2))
+                send_tmux_message(f"✓ Todo added ({len(todos)} total)", socket)
+                response = {"continue": False, "stopReason": f"✓ Todo added: {description}"}
+            else:
+                # List todos
+                if not todos:
+                    send_tmux_message("No todos for this directory.", socket)
+                    response = {"continue": False, "stopReason": f"No todos for {current_dir}"}
+                else:
+                    lines = [f"Todos for {current_dir}:"]
+                    for i, todo in enumerate(todos, 1):
+                        marker = "x" if todo.get("done") else " "
+                        lines.append(f"  [{marker}] {i}. {todo['text']}")
+                    todo_text = "\n".join(lines)
+                    send_tmux_message(f"{len(todos)} todo(s) for this dir", socket)
+                    response = {"continue": False, "stopReason": todo_text}
+
+            print(json.dumps(response))
+            return
+
+        # Check for :done command - mark a todo as done
+        if prompt.startswith(':done '):
+            current_dir = input_data.get('cwd', os.getcwd())
+            state_dir = get_state_dir()
+            todos_dir = state_dir / "todos"
+
+            encoded_dir = current_dir.replace('/', '-').strip('-')
+            todos_file = todos_dir / f"{encoded_dir}.json"
+
+            if not todos_file.exists():
+                send_tmux_message("No todos for this directory.", socket)
+                response = {"continue": False, "stopReason": "No todos for this directory."}
+                print(json.dumps(response))
+                return
+
+            try:
+                todos = json.loads(todos_file.read_text())
+            except:
+                todos = []
+
+            num_str = prompt[6:].strip()
+            try:
+                num = int(num_str)
+                if 1 <= num <= len(todos):
+                    todos[num - 1]["done"] = True
+                    todos_file.write_text(json.dumps(todos, indent=2))
+                    send_tmux_message(f"✓ Marked #{num} as done", socket)
+                    response = {"continue": False, "stopReason": f"✓ Done: {todos[num - 1]['text']}"}
+                else:
+                    response = {"continue": False, "stopReason": f"❌ Invalid number. Have {len(todos)} todos."}
+            except ValueError:
+                response = {"continue": False, "stopReason": "❌ Usage: :done <number>"}
+
+            print(json.dumps(response))
+            return
+
         # Check for :kitty-commands command - enable command MCP server and reload
         if prompt == ':kitty-commands':
             current_dir = input_data.get('cwd', os.getcwd())
@@ -1713,8 +1975,25 @@ This will be injected as context when you run ::{skill_name}
                 print(json.dumps(response))
                 return
 
-            # The command MCP server is auto-registered by setup_session_config,
-            # so we just need to reload to pick it up.
+            # Store kitty-commands MCP with --with-commands in session metadata
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = {}
+            if metadata_file.exists():
+                try:
+                    metadata = json.loads(metadata_file.read_text())
+                except:
+                    pass
+            if "mcpServers" not in metadata:
+                metadata["mcpServers"] = {}
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            metadata["mcpServers"]["kitty-claude-commands"] = {
+                "command": kitty_claude_path,
+                "args": ["--command-mcp", "--with-commands"],
+            }
+            metadata_file.parent.mkdir(parents=True, exist_ok=True)
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+
             send_tmux_message("✓ Enabling kitty-claude commands MCP. Reloading...", socket)
 
             profile = os.environ.get('KITTY_CLAUDE_PROFILE')
@@ -1791,6 +2070,65 @@ exec "{claude_bin}" --resume {session_id}
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             response = {"continue": False, "stopReason": "✓ kitty-claude commands enabled. Reloading..."}
+            print(json.dumps(response))
+            return
+
+        # Check for :mcp-approve command - add MCP server wrapped with approval proxy
+        if prompt.startswith(':mcp-approve '):
+            parts = prompt[13:].strip().split()
+            session_id = input_data.get('session_id')
+
+            if not parts:
+                send_tmux_message("❌ Usage: :mcp-approve <cmd> [args...]", socket)
+                response = {"continue": False, "stopReason": "Usage: :mcp-approve <command> [args...]"}
+                print(json.dumps(response))
+                return
+
+            if not session_id:
+                send_tmux_message("❌ No session ID available", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            command_name = parts[0]
+            extra_args = parts[1:]
+
+            # Resolve command path
+            command_path = shutil.which(command_name)
+            if not command_path:
+                send_tmux_message(f"❌ Command '{command_name}' not found in PATH", socket)
+                response = {"continue": False, "stopReason": f"❌ Command '{command_name}' not found in PATH"}
+                print(json.dumps(response))
+                return
+
+            # Build the real server definition
+            server_name = command_name.rsplit("/", 1)[-1]
+            original_def = {"command": command_path}
+            if extra_args:
+                original_def["args"] = extra_args
+
+            # Wrap with proxy
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            proxy_def = {
+                "command": kitty_claude_path,
+                "args": ["--proxy-mcp", json.dumps(original_def)],
+            }
+
+            # Save to session metadata
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+            if "mcpServers" not in metadata:
+                metadata["mcpServers"] = {}
+            metadata["mcpServers"][server_name] = proxy_def
+            metadata_file.parent.mkdir(parents=True, exist_ok=True)
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+
+            send_tmux_message(f"✓ Added '{server_name}' with approval proxy - use :reload", socket)
+            response = {
+                "continue": False,
+                "stopReason": f"✓ MCP server '{server_name}' added with approval proxy.\n\nUse :reload to start Claude with the new MCP server."
+            }
             print(json.dumps(response))
             return
 
@@ -2030,6 +2368,38 @@ Add your rule content here. This will be included in CLAUDE.md.
 
         # Check for :mcp-shell command
         # :mcp <command> [args...] - add a native stdio MCP server to this session
+        # Check for :mcp-remove command - remove an MCP server from session
+        if prompt.startswith(':mcp-remove '):
+            server_name = prompt[12:].strip()
+            session_id = input_data.get('session_id')
+
+            if not session_id or not server_name:
+                send_tmux_message("❌ Usage: :mcp-remove <server-name>", socket)
+                response = {"continue": False, "stopReason": "Usage: :mcp-remove <server-name>"}
+                print(json.dumps(response))
+                return
+
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+            mcp_servers = metadata.get("mcpServers", {})
+
+            if server_name not in mcp_servers:
+                send_tmux_message(f"❌ '{server_name}' not found", socket)
+                available = ", ".join(mcp_servers.keys()) if mcp_servers else "none"
+                response = {"continue": False, "stopReason": f"MCP server '{server_name}' not in session metadata.\nAvailable: {available}"}
+                print(json.dumps(response))
+                return
+
+            del mcp_servers[server_name]
+            metadata["mcpServers"] = mcp_servers
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+
+            send_tmux_message(f"✓ Removed '{server_name}' - use :reload", socket)
+            response = {"continue": False, "stopReason": f"✓ MCP server '{server_name}' removed.\n\nUse :reload to apply."}
+            print(json.dumps(response))
+            return
+
         if prompt.startswith(':mcp '):
             parts = prompt[5:].strip().split()
 

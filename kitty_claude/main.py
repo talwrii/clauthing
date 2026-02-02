@@ -394,7 +394,7 @@ def handle_session_picker(profile, socket="kitty-claude"):
     except FileNotFoundError:
         print("Error: fzf not found. Install: sudo apt install fzf")
 
-def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False):
+def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, resume_session_id=None):
     """Launch kitty-claude in single-tab mode.
 
     Uses tmux but disables new tab creation and skips session restoration.
@@ -447,12 +447,22 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False):
     # Get claude binary
     claude_bin = get_claude_binary(profile)
 
-    # Create a new session with session-specific config on startup
+    # Set up session config - reuse existing if resuming, create new otherwise
     import uuid
     from kitty_claude.claude import setup_session_config
-    new_session_id = str(uuid.uuid4())
-    session_config_dir = setup_session_config(new_session_id, profile)
-    log(f"Created session config for new session: {new_session_id}", profile)
+    if resume_session_id:
+        session_id = resume_session_id
+        log(f"Resuming session: {session_id}", profile)
+    else:
+        session_id = str(uuid.uuid4())
+    session_config_dir = setup_session_config(session_id, profile)
+    log(f"Session config ready for: {session_id}", profile)
+
+    # Build the claude command (with --resume if resuming)
+    if resume_session_id:
+        claude_command = f"{claude_bin} --resume {resume_session_id}"
+    else:
+        claude_command = claude_bin
 
     # Simplified tmux config - NO C-n, NO session restoration hooks
     tmux_config_path.write_text(f"""\
@@ -467,7 +477,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{session_config_dir}"
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
 
 # Default command is claude
-set -g default-command "{claude_bin}"
+set -g default-command "{claude_command}"
 
 # DISABLED: C-n does nothing in one-tab mode
 bind -n C-n display-message "New tabs disabled in --one-tab mode"
@@ -1173,6 +1183,7 @@ def main():
         parser.add_argument("--plan-mcp", action="store_true", help="Run planning MCP server (provides session/notes overview)")
         parser.add_argument("--command-mcp", action="store_true", help="Run command MCP server (exposes colon commands to Claude)")
         parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
+        parser.add_argument("--proxy-mcp", type=str, metavar="MCPDEF_JSON", help="Run MCP proxy with tmux approval (internal use)")
 
         args = parser.parse_args()
 
@@ -1253,11 +1264,11 @@ def main():
         if args.one_tab:
             if args.log:
                 fork_with_log_tailing(
-                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty),
+                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session),
                     profile
                 )
             else:
-                handle_one_tab(config_dir, profile, args.remain, args.no_kitty)
+                handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session)
             # execvp doesn't return
             sys.exit(0)
 
@@ -1296,6 +1307,12 @@ def main():
             # Run command MCP server
             from kitty_claude.command_mcp_server import main as command_mcp_main
             command_mcp_main()
+            sys.exit(0)
+
+        if args.proxy_mcp:
+            # Run MCP proxy with approval popups
+            from kitty_claude.proxy_mcp_server import main as proxy_mcp_main
+            proxy_mcp_main()
             sys.exit(0)
 
         if args.run_command:
