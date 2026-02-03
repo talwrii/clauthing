@@ -491,6 +491,9 @@ bind -n C-v send-keys C-v
 # M-e opens session notes in vim popup
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
 
+# C-q: queue a command for when Claude finishes responding
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+
 # Some sensible defaults
 set -g mouse on
 set -g history-limit 10000
@@ -807,6 +810,9 @@ bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}
 # C-p for session picker (fuzzy find with popup)
 bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} ' if profile else ''}--picker"
 
+# C-q: queue a command for when Claude finishes responding
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+
 # Some sensible defaults
 set -g mouse on
 set -g history-limit 10000
@@ -902,6 +908,9 @@ set -g history-limit 10000
 set -g base-index 1
 setw -g pane-base-index 1
 
+# C-q: queue a command for when Claude finishes responding
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
 """)
@@ -991,6 +1000,9 @@ bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}
 
 # C-p for session picker (fuzzy find) - use popup for interactive fzf
 bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} ' if profile else ''}--picker"
+
+# C-q: queue a command for when Claude finishes responding
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # Some sensible defaults
 set -g mouse on

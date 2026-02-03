@@ -1459,6 +1459,7 @@ fi
 
             # Copy freshest credentials to current session and shared location
             try:
+                current_session_creds.parent.mkdir(parents=True, exist_ok=True)
                 current_session_creds.write_text(best_creds_content)
                 shared_creds = base_config / "claude-data" / ".credentials.json"
                 if shared_creds.exists() or shared_creds.is_symlink():
@@ -2965,7 +2966,7 @@ def handle_run_command(command):
 
 
 def handle_stop():
-    """Handle Stop hook - calculate and save response duration."""
+    """Handle Stop hook - calculate and save response duration, drain command queue."""
     try:
         # Read JSON from stdin
         input_data = json.loads(sys.stdin.read())
@@ -2976,6 +2977,38 @@ def handle_stop():
             # Remove from open sessions list
             profile = os.environ.get('KITTY_CLAUDE_PROFILE')
             remove_open_session(session_id, profile)
+
+        # Drain command queue - send next queued command to the tmux pane
+        socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+        if socket:
+            uid = os.getuid()
+            queue_file = Path(f"/run/user/{uid}/kc-queue-{socket}.txt")
+            if queue_file.exists():
+                try:
+                    lines = queue_file.read_text().splitlines()
+                    if lines:
+                        command = lines[0]
+                        # Write remaining lines back (or remove file if empty)
+                        remaining = lines[1:]
+                        if remaining:
+                            queue_file.write_text("\n".join(remaining) + "\n")
+                        else:
+                            queue_file.unlink()
+                        # Send command to tmux pane, then press Enter
+                        # Delay to let Claude's input be ready
+                        import time
+                        time.sleep(1)
+                        subprocess.run(
+                            ["tmux", "-L", socket, "send-keys", "-l", command],
+                            capture_output=True, timeout=5,
+                        )
+                        time.sleep(0.3)
+                        subprocess.run(
+                            ["tmux", "-L", socket, "send-keys", "Enter"],
+                            capture_output=True, timeout=5,
+                        )
+                except Exception:
+                    pass
     except Exception as e:
         # Log error silently
         with open("/tmp/kitty-claude-stop-hook-error.log", "a") as f:
