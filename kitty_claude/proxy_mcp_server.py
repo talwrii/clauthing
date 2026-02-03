@@ -45,7 +45,7 @@ exit 0
     try:
         result = subprocess.run(
             ["tmux", "-L", socket, "display-popup", "-E", "-w", "70%", "-h", "40%",
-             "sh", "-c", confirm_script],
+             "bash", "-c", confirm_script],
             capture_output=True, text=True, timeout=60,
         )
         return result.returncode == 0

@@ -52,7 +52,7 @@ exit 0
     try:
         result = subprocess.run(
             ["tmux", "-L", socket, "display-popup", "-E", "-w", "60%", "-h", "20%",
-             "sh", "-c", confirm_script],
+             "bash", "-c", confirm_script],
             capture_output=True, text=True, timeout=30,
         )
         return result.returncode == 0
@@ -185,9 +185,8 @@ async def run_command_mcp_server(enable_commands=False):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-def main():
+def main(enable_commands=False):
     """Entry point for --command-mcp flag."""
-    enable_commands = "--with-commands" in os.sys.argv
     asyncio.run(run_command_mcp_server(enable_commands))
 
 
