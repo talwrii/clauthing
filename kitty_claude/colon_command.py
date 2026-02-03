@@ -429,6 +429,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :tmux                Link/switch to a tmux window on default server
 :tmux-unlink         Unlink the associated tmux window
 :tmuxpath            Show path of linked tmux window
+:tmuxscreen          Capture and show content of linked tmux window
 :tmuxs-link          Add current tmux window to linked windows list
 :tmuxs               Pick a linked tmux window (fzf)
 :call                Open popup with context, returns result
@@ -1227,6 +1228,58 @@ fi
                 else:
                     send_tmux_message("❌ Could not get path from linked window", socket)
                     response = {"continue": False, "stopReason": "❌ Could not get path from linked tmux window"}
+            except subprocess.CalledProcessError:
+                send_tmux_message(f"❌ Linked window {linked_window} not found", socket)
+                response = {"continue": False, "stopReason": f"❌ Linked window {linked_window} not found - use :tmux-unlink to reset"}
+            except Exception as e:
+                send_tmux_message(f"❌ Error: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # :tmuxscreen - capture content of linked tmux window
+        if prompt == ':tmuxscreen':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                send_tmux_message("❌ No session ID", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID"}
+                print(json.dumps(response))
+                return
+
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+
+            try:
+                if metadata_file.exists():
+                    metadata = json.loads(metadata_file.read_text())
+                else:
+                    metadata = {}
+
+                linked_window = metadata.get("linked_tmux_window")
+
+                if not linked_window:
+                    send_tmux_message("No tmux window linked. Use :tmux first.", socket)
+                    response = {"continue": False, "stopReason": "No tmux window linked. Use :tmux to link a window first."}
+                    print(json.dumps(response))
+                    return
+
+                result = run(
+                    ["tmux", "-L", "default", "capture-pane", "-p", "-t", linked_window],
+                    capture_output=True, text=True, check=True
+                )
+                content = result.stdout.rstrip()
+                if content:
+                    # Strip leading blank lines
+                    lines = content.split('\n')
+                    while lines and not lines[0].strip():
+                        lines.pop(0)
+                    content = '\n'.join(lines)
+                    send_tmux_message(f"✓ Captured {len(lines)} lines from window {linked_window}", socket)
+                    response = {"continue": False, "stopReason": f"Content of linked tmux window ({linked_window}):\n\n```\n{content}\n```"}
+                else:
+                    send_tmux_message("Linked window is empty", socket)
+                    response = {"continue": False, "stopReason": f"Linked tmux window ({linked_window}) is empty."}
             except subprocess.CalledProcessError:
                 send_tmux_message(f"❌ Linked window {linked_window} not found", socket)
                 response = {"continue": False, "stopReason": f"❌ Linked window {linked_window} not found - use :tmux-unlink to reset"}
