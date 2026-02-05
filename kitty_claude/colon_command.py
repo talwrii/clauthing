@@ -405,6 +405,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :done <num>          Mark a todo as done by number
 :kitty-commands      Enable kitty-claude command MCP server and reload
 :plan / :god         Enable planning MCP server (session overview) and reload
+:skills-mcp          Enable skills MCP server (lets Claude create kc-skills)
 ::skills             List all kitty-claude skills
 ::skill <name>       Create/edit a kitty-claude skill
 ::<skill> [prompt]   Run kitty-claude skill (injects context)
@@ -2183,6 +2184,35 @@ exec "{claude_bin}" --resume {session_id}
                 "continue": False,
                 "stopReason": f"✓ MCP server '{server_name}' added with approval proxy.\n\nUse :reload to start Claude with the new MCP server."
             }
+            print(json.dumps(response))
+            return
+
+        # Check for :skills-mcp command
+        if prompt == ':skills-mcp':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                send_tmux_message("❌ No session ID available", socket)
+                response = {"continue": False, "stopReason": "❌ No session ID available"}
+                print(json.dumps(response))
+                return
+
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
+            # Store in session metadata
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+            if "mcpServers" not in metadata:
+                metadata["mcpServers"] = {}
+            metadata["mcpServers"]["kitty-claude-skills"] = {
+                "command": kitty_claude_path,
+                "args": ["--skills-mcp"],
+            }
+            metadata_file.parent.mkdir(parents=True, exist_ok=True)
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+
+            send_tmux_message("✓ Skills MCP added - use :reload to apply", socket)
+            response = {"continue": False, "stopReason": "✓ Skills MCP server added.\n\nUse :reload to start Claude with the skills MCP server."}
             print(json.dumps(response))
             return
 
