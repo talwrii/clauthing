@@ -435,6 +435,8 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :call                Open popup with context, returns result
 :ask                 Open popup without context, returns result
 :fork                Clone conversation to new window (independent)
+:permissions          Show allowed commands in this session
+:disallow <num>      Remove an allowed command by number
 :time                Show duration of last response
 :checkpoint          Save a checkpoint in the current session
 :rollback            Rollback to the last checkpoint (clones session)
@@ -476,6 +478,123 @@ Examples:
 
             send_tmux_message("📖 See console for help", socket)
             response = {"continue": False, "stopReason": help_text}
+            print(json.dumps(response))
+            return
+
+        # Check for :permissions command
+        if prompt == ':permissions':
+            allow_rules = []  # list of (rule, source_file)
+
+            # Session-level permissions (MCP auto-approvals)
+            settings_file = claude_data_dir / "settings.json"
+            if settings_file.exists():
+                try:
+                    settings = json.loads(settings_file.read_text())
+                    for rule in settings.get("permissions", {}).get("allow", []):
+                        allow_rules.append((rule, str(settings_file)))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Project-level permissions (user-approved tools)
+            cwd = input_data.get('cwd', os.getcwd())
+            project_settings = Path(cwd) / ".claude" / "settings.local.json"
+            if project_settings.exists():
+                try:
+                    proj = json.loads(project_settings.read_text())
+                    for rule in proj.get("permissions", {}).get("allow", []):
+                        allow_rules.append((rule, str(project_settings)))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Deduplicate while preserving order
+            seen = set()
+            unique_rules = []
+            for rule, source in allow_rules:
+                if rule not in seen:
+                    seen.add(rule)
+                    unique_rules.append((rule, source))
+
+            if unique_rules:
+                lines = "Allowed commands in this session:\n\n"
+                current_source = None
+                for i, (rule, source) in enumerate(unique_rules, 1):
+                    if source != current_source:
+                        current_source = source
+                        if source == str(settings_file):
+                            lines += "  [session]\n"
+                        else:
+                            lines += "  [project]\n"
+                    lines += f"  {i:3d}. {rule}\n"
+                lines += "\nUse :disallow <num> to remove a permission."
+            else:
+                lines = "No allowed commands configured."
+
+            response = {"continue": False, "stopReason": lines}
+            print(json.dumps(response))
+            return
+
+        # Check for :disallow command
+        if prompt.startswith(':disallow'):
+            arg = prompt[len(':disallow'):].strip()
+            if not arg or not arg.isdigit():
+                response = {"continue": False, "stopReason": "Usage: :disallow <num>\nRun :permissions to see numbered list."}
+                print(json.dumps(response))
+                return
+
+            target_num = int(arg)
+
+            # Rebuild the same numbered list as :permissions
+            allow_rules = []  # list of (rule, source_file)
+
+            settings_file = claude_data_dir / "settings.json"
+            if settings_file.exists():
+                try:
+                    settings = json.loads(settings_file.read_text())
+                    for rule in settings.get("permissions", {}).get("allow", []):
+                        allow_rules.append((rule, str(settings_file)))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            cwd = input_data.get('cwd', os.getcwd())
+            project_settings = Path(cwd) / ".claude" / "settings.local.json"
+            if project_settings.exists():
+                try:
+                    proj = json.loads(project_settings.read_text())
+                    for rule in proj.get("permissions", {}).get("allow", []):
+                        allow_rules.append((rule, str(project_settings)))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Deduplicate
+            seen = set()
+            unique_rules = []
+            for rule, source in allow_rules:
+                if rule not in seen:
+                    seen.add(rule)
+                    unique_rules.append((rule, source))
+
+            if target_num < 1 or target_num > len(unique_rules):
+                response = {"continue": False, "stopReason": f"Invalid number {target_num}. Run :permissions to see valid range (1-{len(unique_rules)})."}
+                print(json.dumps(response))
+                return
+
+            rule_to_remove, source_file = unique_rules[target_num - 1]
+
+            # Remove from the source file
+            source_path = Path(source_file)
+            try:
+                data = json.loads(source_path.read_text())
+                allow_list = data.get("permissions", {}).get("allow", [])
+                if rule_to_remove in allow_list:
+                    allow_list.remove(rule_to_remove)
+                    source_path.write_text(json.dumps(data, indent=2))
+                    send_tmux_message(f"Removed: {rule_to_remove[:50]}", socket)
+                    response = {"continue": False, "stopReason": f"Removed permission: {rule_to_remove}"}
+                else:
+                    response = {"continue": False, "stopReason": f"Rule not found in {source_file}"}
+            except Exception as e:
+                response = {"continue": False, "stopReason": f"Error removing permission: {e}"}
+
             print(json.dumps(response))
             return
 
