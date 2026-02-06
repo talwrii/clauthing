@@ -547,6 +547,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :permissions-gui     Open permissions editor GUI
 :disallow <num> ...  Remove allowed command(s) by number
 :allow-for <dur> <p|n> Allow tool for duration (pattern or # from :permissions)
+:allow-last          Allow the last tool that was used
 :time                Show duration of last response
 :checkpoint          Save a checkpoint in the current session
 :rollback            Rollback to the last checkpoint (clones session)
@@ -913,6 +914,46 @@ Examples:
             readable_duration = format_remaining_time(duration_secs)
             send_tmux_message(f"Timed {pattern[:30]}... for {readable_duration}", socket)
             response = {"continue": False, "stopReason": f"Allowed for {readable_duration}: {pattern}\n\nThis permission will be denied after {readable_duration}."}
+            print(json.dumps(response))
+            return
+
+        # Check for :allow-last command
+        if prompt == ':allow-last':
+            # Read the last tool from the state file
+            last_tool_file = get_last_tool_file()
+            if not last_tool_file.exists():
+                response = {"continue": False, "stopReason": "No recent tool found. Run a tool first."}
+                print(json.dumps(response))
+                return
+
+            pattern = last_tool_file.read_text().strip()
+            if not pattern:
+                response = {"continue": False, "stopReason": "No recent tool found. Run a tool first."}
+                print(json.dumps(response))
+                return
+
+            # Add to Claude's session permissions.allow
+            settings_file = claude_data_dir / "settings.json"
+            try:
+                if settings_file.exists():
+                    settings = json.loads(settings_file.read_text())
+                else:
+                    settings = {}
+                if 'permissions' not in settings:
+                    settings['permissions'] = {}
+                if 'allow' not in settings['permissions']:
+                    settings['permissions']['allow'] = []
+                if pattern not in settings['permissions']['allow']:
+                    settings['permissions']['allow'].append(pattern)
+                    settings_file.write_text(json.dumps(settings, indent=2))
+                    send_tmux_message(f"✓ Allowed: {pattern[:50]}", socket)
+                    response = {"continue": False, "stopReason": f"✓ Allowed: {pattern}"}
+                else:
+                    send_tmux_message(f"Already allowed: {pattern[:50]}", socket)
+                    response = {"continue": False, "stopReason": f"Already allowed: {pattern}"}
+            except Exception as e:
+                response = {"continue": False, "stopReason": f"Error updating settings: {e}"}
+
             print(json.dumps(response))
             return
 
@@ -4067,6 +4108,19 @@ def handle_stop():
             f.write(f"Stop hook error: {str(e)}\n")
 
 
+def get_last_tool_file():
+    """Get the file path for storing the last tool used."""
+    uid = os.getuid()
+    # Use session-specific file if we can determine session
+    claude_config = os.environ.get('CLAUDE_CONFIG_DIR', '')
+    if claude_config and '/session-configs/' in claude_config:
+        session_id = Path(claude_config).name
+        return Path(f"/run/user/{uid}/kc-last-tool-{session_id}.txt")
+    # Fallback to tmux socket
+    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'default')
+    return Path(f"/run/user/{uid}/kc-last-tool-{socket}.txt")
+
+
 def handle_pre_tool_use():
     """Handle PreToolUse hook - deny expired timed permissions."""
     import time
@@ -4086,6 +4140,14 @@ def handle_pre_tool_use():
             tool_string = tool_name
         else:
             tool_string = tool_name
+
+        # Save last tool for :allow-last command
+        try:
+            last_tool_file = get_last_tool_file()
+            last_tool_file.parent.mkdir(parents=True, exist_ok=True)
+            last_tool_file.write_text(tool_string)
+        except:
+            pass  # Don't fail if we can't save
 
         # Load timed permissions
         timed_perms = load_timed_permissions()
