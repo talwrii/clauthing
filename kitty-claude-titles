@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""kitty-claude-titles: Track and pick recent session titles.
+
+Usage:
+  kitty-claude-titles          # fzf picker for recent titles
+  kitty-claude-titles --events # daemon mode, reads events from stdin
+  kitty-claude-titles --list   # list recent titles
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def get_titles_file():
+    """Get path to recent titles storage."""
+    uid = os.getuid()
+    runtime_dir = Path(f"/run/user/{uid}")
+    if not runtime_dir.exists():
+        runtime_dir = Path(f"/tmp/kitty-claude-{uid}")
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return runtime_dir / "recent-titles.json"
+
+
+def load_titles():
+    """Load recent titles from file."""
+    path = get_titles_file()
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except:
+            pass
+    return []
+
+
+def save_titles(titles):
+    """Save recent titles to file."""
+    path = get_titles_file()
+    path.write_text(json.dumps(titles, indent=2))
+
+
+def add_title(name, session_id=None, path=None):
+    """Add a title to recent list (dedup, max 50)."""
+    titles = load_titles()
+
+    # Remove existing entry with same name
+    titles = [t for t in titles if t.get("name") != name]
+
+    # Add to front
+    entry = {"name": name}
+    if session_id:
+        entry["session_id"] = session_id
+    if path:
+        entry["path"] = path
+    titles.insert(0, entry)
+
+    # Keep max 50
+    titles = titles[:50]
+    save_titles(titles)
+
+
+def handle_events():
+    """Read events from stdin and track title changes."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+            event_type = event.get("type")
+
+            if event_type == "sync":
+                # Initial sync - add all current sessions
+                for session in event.get("sessions", []):
+                    name = session.get("name")
+                    if name and name != session.get("session_id"):
+                        add_title(name, session.get("session_id"), session.get("path"))
+
+            elif event_type == "title_changed":
+                name = event.get("name")
+                if name:
+                    add_title(name, event.get("session_id"))
+
+            elif event_type == "session_opened":
+                name = event.get("name")
+                if name and name != event.get("session_id"):
+                    add_title(name, event.get("session_id"), event.get("path"))
+        except:
+            continue
+
+
+def show_picker():
+    """Show fzf picker for recent titles."""
+    titles = load_titles()
+    if not titles:
+        print("No recent titles")
+        return
+
+    # Format for fzf
+    items = []
+    for t in titles:
+        name = t.get("name", "")
+        path = t.get("path", "")
+        if path:
+            items.append(f"{name} | {path}")
+        else:
+            items.append(name)
+
+    try:
+        result = subprocess.run(
+            ["fzf", "--height=100%", "--reverse", "--prompt=Recent title: "],
+            input="\n".join(items),
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            selected = result.stdout.strip().split(" | ")[0]
+            # Output as :title command to set the title
+            print(f":title {selected}")
+    except FileNotFoundError:
+        print("fzf not found")
+
+
+def list_titles():
+    """List recent titles."""
+    titles = load_titles()
+    for t in titles:
+        name = t.get("name", "")
+        path = t.get("path", "")
+        if path:
+            print(f"{name} | {path}")
+        else:
+            print(name)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Track and pick recent session titles")
+    parser.add_argument("--events", action="store_true", help="Daemon mode: read events from stdin")
+    parser.add_argument("--list", action="store_true", help="List recent titles")
+    args = parser.parse_args()
+
+    if args.events:
+        handle_events()
+    elif args.list:
+        list_titles()
+    else:
+        show_picker()
+
+
+if __name__ == "__main__":
+    main()
