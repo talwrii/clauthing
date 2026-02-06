@@ -2609,7 +2609,7 @@ exec "{claude_bin}" --resume {session_id}
                 print(json.dumps(response))
                 return
 
-            # Multi-tab mode
+            # Multi-tab mode (same logic as :reload)
             kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
             try:
                 result = run(
@@ -2620,21 +2620,34 @@ exec "{claude_bin}" --resume {session_id}
             except:
                 current_window_id = None
 
+            # Get current window name
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+                    capture_output=True, text=True, check=True
+                )
+                window_name = result.stdout.strip()
+            except:
+                window_name = None
+
             cmd_parts = [kitty_claude_path]
             if profile:
                 cmd_parts.extend(["--profile", profile])
             cmd_parts.extend(["--new-window", "--resume-session", session_id])
             cmd_str = " ".join(cmd_parts)
 
-            run([
-                "tmux", "-L", socket,
-                "new-window", "-c", current_dir, cmd_str
-            ])
+            new_window_cmd = ["tmux", "-L", socket, "new-window"]
+            if window_name:
+                new_window_cmd.extend(["-n", window_name])
+            new_window_cmd.extend(["-c", current_dir, cmd_str])
 
+            run(new_window_cmd)
+
+            # Close old window after delay
             if current_window_id:
                 subprocess.Popen([
                     "sh", "-c",
-                    f"sleep 0.5 && tmux -L {socket} kill-window -t {current_window_id}"
+                    f"sleep 2 && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             response = {"continue": False, "stopReason": "✓ kitty-claude commands enabled. Reloading..."}
