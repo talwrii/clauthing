@@ -19,8 +19,12 @@ Event types:
 import bisect
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
+
+# Track running plugin processes
+_plugin_processes = []
 
 
 def get_runtime_dir(profile=None):
@@ -44,7 +48,7 @@ def get_events_log_path(profile=None):
 
 
 def emit_event(event, profile=None):
-    """Append an event to the events log file.
+    """Append an event to the events log file and send to plugins.
 
     Adds a timestamp if not present. Safe to call from any context.
     Uses atomic append (O_APPEND) so concurrent writers don't corrupt.
@@ -61,6 +65,9 @@ def emit_event(event, profile=None):
         os.write(fd, line.encode())
     finally:
         os.close(fd)
+
+    # Also send to running plugins
+    send_to_plugins(event)
 
 
 def read_events(profile=None, since=None):
@@ -286,3 +293,102 @@ def set_title(session_id, name, profile=None):
         "session_id": session_id,
         "name": name,
     }, profile)
+
+
+def get_plugins_dir(profile=None):
+    """Get the plugins directory."""
+    if profile:
+        return Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "plugins"
+    return Path.home() / ".config" / "kitty-claude" / "plugins"
+
+
+def discover_plugins(profile=None):
+    """Find all executable plugins in the plugins directory."""
+    plugins_dir = get_plugins_dir(profile)
+    if not plugins_dir.exists():
+        return []
+
+    plugins = []
+    for path in plugins_dir.iterdir():
+        if path.is_file() and os.access(path, os.X_OK):
+            plugins.append(path)
+    return plugins
+
+
+def start_event_plugins(profile=None):
+    """Start all plugins with --events, piping events to their stdin.
+
+    Spawns each plugin with --events flag. If plugin doesn't support it,
+    it will exit with error and we ignore it.
+
+    Returns list of (plugin_path, process) tuples for running plugins.
+    """
+    global _plugin_processes
+
+    plugins = discover_plugins(profile)
+    if not plugins:
+        return []
+
+    started = []
+    for plugin_path in plugins:
+        try:
+            # Spawn plugin with --events, we'll write to its stdin
+            proc = subprocess.Popen(
+                [str(plugin_path), "--events"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            started.append((plugin_path, proc))
+            _plugin_processes.append(proc)
+        except Exception:
+            # Plugin failed to start, ignore
+            pass
+
+    # Send initial sync to all plugins
+    if started:
+        sessions = get_current_sessions(profile)
+        sync_event = json.dumps({"type": "sync", "sessions": sessions}) + "\n"
+        for plugin_path, proc in started:
+            try:
+                proc.stdin.write(sync_event.encode())
+                proc.stdin.flush()
+            except Exception:
+                pass
+
+    return started
+
+
+def send_to_plugins(event):
+    """Send an event to all running plugin processes."""
+    global _plugin_processes
+
+    line = json.dumps(event) + "\n"
+    line_bytes = line.encode()
+
+    # Clean up dead processes and send to live ones
+    alive = []
+    for proc in _plugin_processes:
+        if proc.poll() is None:  # Still running
+            try:
+                proc.stdin.write(line_bytes)
+                proc.stdin.flush()
+                alive.append(proc)
+            except Exception:
+                # Process died or pipe broken, skip
+                pass
+
+    _plugin_processes = alive
+
+
+def stop_event_plugins():
+    """Stop all running plugin processes."""
+    global _plugin_processes
+
+    for proc in _plugin_processes:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+    _plugin_processes = []
