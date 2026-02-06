@@ -256,16 +256,28 @@ def setup_session_config(session_id, profile=None):
                     pass
 
     # Include built-in command MCP server (only if not already set by :kitty-commands)
+    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
     if "kitty-claude-commands" not in mcp_servers:
-        kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
         mcp_servers["kitty-claude-commands"] = {
             "command": kitty_claude_path,
             "args": ["--command-mcp"],
         }
 
+    # Include Claude Code skills MCP server (for managing /skills)
+    # NOTE: This is dangerous and should NOT be auto-approved
+    if "claude-skills" not in mcp_servers:
+        mcp_servers["claude-skills"] = {
+            "command": kitty_claude_path,
+            "args": ["--claude-skills-mcp"],
+        }
+
     # Auto-approve all MCP server tools + role permissions in settings
+    # NOTE: claude-skills is explicitly NOT auto-approved (dangerous - can write arbitrary code)
+    dangerous_mcp_servers = {"claude-skills"}
     allow = merged_settings.get("permissions", {}).get("allow", [])
     for server_name in mcp_servers:
+        if server_name in dangerous_mcp_servers:
+            continue  # Skip dangerous servers
         rule = f"mcp__{server_name}__*"
         if rule not in allow:
             allow.append(rule)

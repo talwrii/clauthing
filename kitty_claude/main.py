@@ -1243,6 +1243,7 @@ def main():
         parser.add_argument("--plan-mcp", action="store_true", help="Run planning MCP server (provides session/notes overview)")
         parser.add_argument("--command-mcp", action="store_true", help="Run command MCP server (exposes colon commands to Claude)")
         parser.add_argument("--skills-mcp", action="store_true", help="Run skills MCP server (lets Claude create kc-skills)")
+        parser.add_argument("--claude-skills-mcp", action="store_true", help="Run Claude Code skills MCP server (lets Claude manage /skills)")
         parser.add_argument("--with-commands", action="store_true", help="Enable kitty_command tool in command MCP server")
         parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
         parser.add_argument("--proxy-mcp", type=str, metavar="MCPDEF_JSON", help="Run MCP proxy with tmux approval (internal use)")
@@ -1376,6 +1377,12 @@ def main():
             # Run skills MCP server
             from kitty_claude.skills_mcp_server import main as skills_mcp_main
             skills_mcp_main()
+            sys.exit(0)
+
+        if args.claude_skills_mcp:
+            # Run Claude Code skills MCP server
+            from kitty_claude.claude_skills_mcp_server import main as claude_skills_mcp_main
+            claude_skills_mcp_main()
             sys.exit(0)
 
         if args.proxy_mcp:
