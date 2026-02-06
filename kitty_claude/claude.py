@@ -275,6 +275,16 @@ def setup_session_config(session_id, profile=None):
     merged_settings.setdefault("permissions", {})["allow"] = allow
     merged_settings_file.write_text(json.dumps(merged_settings, indent=2))
 
+    # Auto-trust the current working directory
+    cwd = os.getcwd()
+    if "projects" not in saved_auth:
+        saved_auth["projects"] = {}
+    if cwd not in saved_auth["projects"]:
+        saved_auth["projects"][cwd] = {}
+    if not saved_auth["projects"][cwd].get("hasTrustDialogAccepted"):
+        saved_auth["projects"][cwd]["hasTrustDialogAccepted"] = True
+        log(f"Auto-trusted directory: {cwd}", profile)
+
     # Build new config with saved auth + session MCP servers
     session_config = {"mcpServers": mcp_servers, **saved_auth}
     session_claude_json.write_text(json.dumps(session_config, indent=2))
