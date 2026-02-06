@@ -1262,7 +1262,6 @@ def main():
         parser.add_argument("--events", action="store_true", help="Tail events log to stdout (blocks, uses inotify)")
         parser.add_argument("--events-since", type=float, metavar="TIMESTAMP", help="With --events, replay from this unix timestamp")
         parser.add_argument("--set-title", nargs=2, metavar=("SESSION_ID", "NAME"), help="Set session title (updates metadata, tmux, emits event)")
-        parser.add_argument("--start-plugins", action="store_true", help="Start event plugins (spawn plugins with --events)")
 
         args = parser.parse_args()
 
@@ -1431,29 +1430,6 @@ def main():
             from kitty_claude.events import set_title
             set_title(session_id, name, profile)
             print(f"Title set: {session_id} -> {name}")
-            sys.exit(0)
-
-        if args.start_plugins:
-            from kitty_claude.events import start_event_plugins, discover_plugins
-            plugins = discover_plugins()
-            if not plugins:
-                print("No kitty-claude-* plugins found on PATH")
-                sys.exit(0)
-            print(f"Found {len(plugins)} plugin(s): {', '.join(p.name for p in plugins)}")
-            started = start_event_plugins(profile)
-            print(f"Started {len(started)} with --events support")
-            for path, proc in started:
-                print(f"  {path.name} (pid {proc.pid})")
-            # Keep running to maintain plugin processes
-            print("Press Ctrl+C to stop")
-            try:
-                import time
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                from kitty_claude.events import stop_event_plugins
-                stop_event_plugins()
-                print("\nStopped")
             sys.exit(0)
 
         if args.run_command:

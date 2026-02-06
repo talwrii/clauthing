@@ -23,9 +23,6 @@ import subprocess
 import time
 from pathlib import Path
 
-# Track running plugin processes
-_plugin_processes = []
-
 
 def get_runtime_dir(profile=None):
     """Get the runtime directory for kitty-claude."""
@@ -48,10 +45,12 @@ def get_events_log_path(profile=None):
 
 
 def emit_event(event, profile=None):
-    """Append an event to the events log file and send to plugins.
+    """Append an event to the events log file.
 
     Adds a timestamp if not present. Safe to call from any context.
     Uses atomic append (O_APPEND) so concurrent writers don't corrupt.
+
+    Plugins subscribe via: kitty-claude --events | plugin --events
     """
     if "ts" not in event:
         event["ts"] = time.time()
@@ -65,9 +64,6 @@ def emit_event(event, profile=None):
         os.write(fd, line.encode())
     finally:
         os.close(fd)
-
-    # Also send to running plugins
-    send_to_plugins(event)
 
 
 def read_events(profile=None, since=None):
@@ -295,109 +291,3 @@ def set_title(session_id, name, profile=None):
     }, profile)
 
 
-def discover_plugins():
-    """Find all kitty-claude-* executables on PATH."""
-    plugins = []
-    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-    seen = set()
-
-    for dir_path in path_dirs:
-        dir_path = Path(dir_path)
-        if not dir_path.is_dir():
-            continue
-        try:
-            for entry in dir_path.iterdir():
-                if entry.name.startswith("kitty-claude-") and entry.name not in seen:
-                    if entry.is_file() and os.access(entry, os.X_OK):
-                        plugins.append(entry)
-                        seen.add(entry.name)
-        except PermissionError:
-            continue
-
-    return plugins
-
-
-def get_plugin_command(name):
-    """Get the full path to kitty-claude-{name} if it exists on PATH."""
-    import shutil
-    cmd = f"kitty-claude-{name}"
-    return shutil.which(cmd)
-
-
-def start_event_plugins(profile=None):
-    """Start all plugins with --events, piping events to their stdin.
-
-    Spawns each plugin with --events flag. If plugin doesn't support it,
-    it will exit with error and we ignore it.
-
-    Returns list of (plugin_path, process) tuples for running plugins.
-    """
-    global _plugin_processes
-
-    plugins = discover_plugins()
-    if not plugins:
-        return []
-
-    started = []
-    for plugin_path in plugins:
-        try:
-            # Spawn plugin with --events, we'll write to its stdin
-            proc = subprocess.Popen(
-                [str(plugin_path), "--events"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            started.append((plugin_path, proc))
-            _plugin_processes.append(proc)
-        except Exception:
-            # Plugin failed to start, ignore
-            pass
-
-    # Send initial sync to all plugins
-    if started:
-        sessions = get_current_sessions(profile)
-        sync_event = json.dumps({"type": "sync", "sessions": sessions}) + "\n"
-        for plugin_path, proc in started:
-            try:
-                proc.stdin.write(sync_event.encode())
-                proc.stdin.flush()
-            except Exception:
-                pass
-
-    return started
-
-
-def send_to_plugins(event):
-    """Send an event to all running plugin processes."""
-    global _plugin_processes
-
-    line = json.dumps(event) + "\n"
-    line_bytes = line.encode()
-
-    # Clean up dead processes and send to live ones
-    alive = []
-    for proc in _plugin_processes:
-        if proc.poll() is None:  # Still running
-            try:
-                proc.stdin.write(line_bytes)
-                proc.stdin.flush()
-                alive.append(proc)
-            except Exception:
-                # Process died or pipe broken, skip
-                pass
-
-    _plugin_processes = alive
-
-
-def stop_event_plugins():
-    """Stop all running plugin processes."""
-    global _plugin_processes
-
-    for proc in _plugin_processes:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-
-    _plugin_processes = []
