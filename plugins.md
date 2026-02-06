@@ -8,11 +8,13 @@ Plugins are executables on PATH named `kitty-claude-*`.
 
 ## Events
 
-Events are written to a JSONL file. Plugins subscribe via:
+On startup, kitty-claude spawns pipelines for each plugin:
 
 ```bash
 kitty-claude --events | kitty-claude-foo --events
 ```
+
+PIDs are tracked and restarted if they die.
 
 Event types:
 - `{"type": "sync", "sessions": [...]}`
@@ -24,4 +26,4 @@ Event types:
 
 `kitty-claude-titles`:
 - `:titles` - show recent titles picker
-- `--events` - track title changes (run as daemon via pipe above)
+- `--events` - track title changes in background

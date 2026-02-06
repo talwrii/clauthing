@@ -1003,6 +1003,11 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
     run_id_file.write_text(str(run_num))
     log(f"=== NEW RUN {run_num} ===", profile)
 
+    # Start plugin event pipelines
+    from kitty_claude.events import start_all_plugins
+    start_all_plugins(profile)
+    log("Started plugin event pipelines", profile)
+
     # Remove old config files if they exist (they're read-only)
     if tmux_config_path.exists():
         tmux_config_path.unlink()

@@ -19,9 +19,13 @@ Event types:
 import bisect
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
+
+# Track plugin pipelines: {plugin_name: Popen}
+_plugin_pipelines = {}
 
 
 def get_runtime_dir(profile=None):
@@ -289,5 +293,98 @@ def set_title(session_id, name, profile=None):
         "session_id": session_id,
         "name": name,
     }, profile)
+
+
+def discover_plugins():
+    """Find all kitty-claude-* executables on PATH."""
+    plugins = []
+    seen = set()
+
+    for dir_path in os.environ.get("PATH", "").split(os.pathsep):
+        dir_path = Path(dir_path)
+        if not dir_path.is_dir():
+            continue
+        try:
+            for entry in dir_path.iterdir():
+                if entry.name.startswith("kitty-claude-") and entry.name not in seen:
+                    if entry.is_file() and os.access(entry, os.X_OK):
+                        plugins.append(entry.name)
+                        seen.add(entry.name)
+        except PermissionError:
+            continue
+
+    return plugins
+
+
+def start_plugin_pipeline(plugin_name, profile=None):
+    """Start a plugin pipeline: kitty-claude --events | plugin --events.
+
+    Returns the shell process Popen object.
+    """
+    kc_path = shutil.which("kitty-claude") or "kitty-claude"
+    plugin_path = shutil.which(plugin_name)
+    if not plugin_path:
+        return None
+
+    profile_arg = f"--profile {profile} " if profile else ""
+
+    # Run as shell pipeline
+    cmd = f"{kc_path} {profile_arg}--events | {plugin_path} --events"
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc
+
+
+def start_all_plugins(profile=None):
+    """Start event pipelines for all discovered plugins."""
+    global _plugin_pipelines
+
+    plugins = discover_plugins()
+    for plugin_name in plugins:
+        if plugin_name not in _plugin_pipelines or _plugin_pipelines[plugin_name].poll() is not None:
+            proc = start_plugin_pipeline(plugin_name, profile)
+            if proc:
+                _plugin_pipelines[plugin_name] = proc
+
+
+def check_and_restart_plugins(profile=None):
+    """Check plugin pipelines and restart any that died."""
+    global _plugin_pipelines
+
+    for plugin_name, proc in list(_plugin_pipelines.items()):
+        if proc.poll() is not None:  # Process died
+            new_proc = start_plugin_pipeline(plugin_name, profile)
+            if new_proc:
+                _plugin_pipelines[plugin_name] = new_proc
+
+
+def stop_all_plugins():
+    """Stop all plugin pipelines."""
+    global _plugin_pipelines
+
+    for plugin_name, proc in _plugin_pipelines.items():
+        try:
+            proc.terminate()
+        except:
+            pass
+
+    _plugin_pipelines = {}
+
+
+def get_plugin_status():
+    """Get status of all plugin pipelines."""
+    status = {}
+    for plugin_name, proc in _plugin_pipelines.items():
+        poll = proc.poll()
+        status[plugin_name] = {
+            "pid": proc.pid,
+            "running": poll is None,
+            "exit_code": poll,
+        }
+    return status
 
 
