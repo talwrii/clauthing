@@ -4007,37 +4007,42 @@ Add your rule content here. This will be included in CLAUDE.md.
             plugin_bin = shutil.which(f"kitty-claude-{cmd_name}")
             if plugin_bin:
                 session_id = input_data.get('session_id')
-                env = os.environ.copy()
+
+                # Build env vars for plugin
+                env_exports = []
                 if session_id:
-                    env["KITTY_CLAUDE_SESSION_ID"] = session_id
-                env["KITTY_CLAUDE_SOCKET"] = socket
-                env["KITTY_CLAUDE_CWD"] = input_data.get('cwd', os.getcwd())
+                    env_exports.append(f"KITTY_CLAUDE_SESSION_ID={session_id}")
+                env_exports.append(f"KITTY_CLAUDE_SOCKET={socket}")
+                env_exports.append(f"KITTY_CLAUDE_CWD={input_data.get('cwd', os.getcwd())}")
+                env_str = " ".join(env_exports)
 
-                try:
-                    result = subprocess.run(
-                        [plugin_bin] + (cmd_args.split() if cmd_args else []),
-                        capture_output=True, text=True, timeout=30, env=env
-                    )
-                    output = result.stdout.strip()
+                # Run plugin in tmux popup (allows fzf etc), output to temp file
+                import tempfile
+                tmp_output = Path(tempfile.mktemp())
 
-                    if output.startswith(':'):
-                        # Re-dispatch as a colon command — recursive call
-                        # Replace the prompt and fall through from the top
-                        # We do this by writing to stdout so the hook re-runs
-                        print(output)
-                    elif output:
-                        response = {"continue": False, "stopReason": output}
-                        print(json.dumps(response))
-                    else:
-                        response = {"continue": False, "stopReason": f"✓ {cmd_name} completed"}
-                        print(json.dumps(response))
-                except subprocess.TimeoutExpired:
-                    send_tmux_message(f"❌ Plugin '{cmd_name}' timed out", socket)
-                    response = {"continue": False, "stopReason": f"❌ Plugin '{cmd_name}' timed out"}
+                plugin_cmd = f"{plugin_bin}"
+                if cmd_args:
+                    plugin_cmd += f" {cmd_args}"
+
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "60%", "-h", "50%",
+                    f"{env_str} {plugin_cmd} > {tmp_output}"
+                ])
+
+                output = ""
+                if tmp_output.exists():
+                    output = tmp_output.read_text().strip()
+                    tmp_output.unlink(missing_ok=True)
+
+                if output.startswith(':'):
+                    # Re-dispatch as a colon command
+                    print(output)
+                elif output:
+                    response = {"continue": False, "stopReason": output}
                     print(json.dumps(response))
-                except Exception as e:
-                    send_tmux_message(f"❌ Plugin error: {e}", socket)
-                    response = {"continue": False, "stopReason": f"❌ Plugin error: {str(e)}"}
+                else:
+                    response = {"continue": False, "stopReason": f"✓ {cmd_name}"}
                     print(json.dumps(response))
                 return
 
