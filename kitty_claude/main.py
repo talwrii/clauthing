@@ -1435,17 +1435,17 @@ def main():
 
         if args.start_plugins:
             from kitty_claude.events import start_event_plugins, discover_plugins
-            plugins = discover_plugins(profile)
+            plugins = discover_plugins()
             if not plugins:
-                print("No plugins found in plugins directory")
+                print("No kitty-claude-* plugins found on PATH")
                 sys.exit(0)
-            print(f"Starting {len(plugins)} plugin(s)...")
+            print(f"Found {len(plugins)} plugin(s): {', '.join(p.name for p in plugins)}")
             started = start_event_plugins(profile)
-            print(f"Started {len(started)} plugin(s) with --events")
+            print(f"Started {len(started)} with --events support")
             for path, proc in started:
                 print(f"  {path.name} (pid {proc.pid})")
             # Keep running to maintain plugin processes
-            print("Press Ctrl+C to stop plugins")
+            print("Press Ctrl+C to stop")
             try:
                 import time
                 while True:
@@ -1453,7 +1453,7 @@ def main():
             except KeyboardInterrupt:
                 from kitty_claude.events import stop_event_plugins
                 stop_event_plugins()
-                print("\nPlugins stopped")
+                print("\nStopped")
             sys.exit(0)
 
         if args.run_command:

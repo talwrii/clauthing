@@ -295,24 +295,33 @@ def set_title(session_id, name, profile=None):
     }, profile)
 
 
-def get_plugins_dir(profile=None):
-    """Get the plugins directory."""
-    if profile:
-        return Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "plugins"
-    return Path.home() / ".config" / "kitty-claude" / "plugins"
-
-
-def discover_plugins(profile=None):
-    """Find all executable plugins in the plugins directory."""
-    plugins_dir = get_plugins_dir(profile)
-    if not plugins_dir.exists():
-        return []
-
+def discover_plugins():
+    """Find all kitty-claude-* executables on PATH."""
     plugins = []
-    for path in plugins_dir.iterdir():
-        if path.is_file() and os.access(path, os.X_OK):
-            plugins.append(path)
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    seen = set()
+
+    for dir_path in path_dirs:
+        dir_path = Path(dir_path)
+        if not dir_path.is_dir():
+            continue
+        try:
+            for entry in dir_path.iterdir():
+                if entry.name.startswith("kitty-claude-") and entry.name not in seen:
+                    if entry.is_file() and os.access(entry, os.X_OK):
+                        plugins.append(entry)
+                        seen.add(entry.name)
+        except PermissionError:
+            continue
+
     return plugins
+
+
+def get_plugin_command(name):
+    """Get the full path to kitty-claude-{name} if it exists on PATH."""
+    import shutil
+    cmd = f"kitty-claude-{name}"
+    return shutil.which(cmd)
 
 
 def start_event_plugins(profile=None):
@@ -325,7 +334,7 @@ def start_event_plugins(profile=None):
     """
     global _plugin_processes
 
-    plugins = discover_plugins(profile)
+    plugins = discover_plugins()
     if not plugins:
         return []
 
