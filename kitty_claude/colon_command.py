@@ -500,8 +500,8 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :skills              List available slash commands (skills)
 :rules               List all rules
 :note                Open session notes in vim
-:skill <name>        Create/edit a global Claude skill
-:rule <name>         Create/edit a global rule
+:skill [name]        Create/edit a global Claude skill (fzf if no name)
+:rule [name]         Create/edit a global rule (fzf if no name)
 :todo [desc]         List todos or add one for current directory
 :done <num>          Mark a todo as done by number
 :kitty-commands      Enable kitty-claude command MCP server and reload
@@ -2827,15 +2827,61 @@ exec "{claude_bin}" --resume {session_id}
             print(json.dumps(response))
             return
 
-        # Check for :skill command
-        if prompt.startswith(':skill '):
-            skill_name = prompt[7:].strip()
+        # Check for :skill command (fzf picker if no name given)
+        if prompt == ':skill' or prompt.startswith(':skill '):
+            skill_name = prompt[7:].strip() if prompt.startswith(':skill ') else ''
 
+            # If no name, show fzf picker of existing skills
             if not skill_name:
-                send_tmux_message("❌ Usage: :skill <name>", socket)
-                response = {"continue": False, "stopReason": "❌ Usage: :skill <name>"}
-                print(json.dumps(response))
-                return
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    global_skills_base = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "claude-data" / "skills"
+                else:
+                    global_skills_base = Path.home() / ".config" / "kitty-claude" / "claude-data" / "skills"
+
+                skills = []
+                if global_skills_base.exists():
+                    for skill_dir in sorted(global_skills_base.iterdir()):
+                        if skill_dir.is_dir():
+                            skill_file = skill_dir / "SKILL.md"
+                            desc = "(no description)"
+                            if skill_file.exists():
+                                content = skill_file.read_text()
+                                for line in content.split('\n'):
+                                    if line.startswith('description:'):
+                                        desc = line[12:].strip()
+                                        break
+                            skills.append((skill_dir.name, desc))
+
+                if not skills:
+                    send_tmux_message("No skills found. Use :skill <name> to create one.", socket)
+                    response = {"continue": False, "stopReason": "No skills found.\n\nUse :skill <name> to create a new skill."}
+                    print(json.dumps(response))
+                    return
+
+                # Build fzf input
+                import tempfile
+                fzf_lines = [f"{name}\t{desc}" for name, desc in skills]
+                tmp_input = Path(tempfile.mktemp())
+                tmp_output = Path(tempfile.mktemp())
+                tmp_input.write_text("\n".join(fzf_lines))
+
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "60%", "-h", "50%",
+                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=1,2 --header='Select skill to edit' > {tmp_output}"
+                ])
+
+                if tmp_output.exists() and tmp_output.read_text().strip():
+                    skill_name = tmp_output.read_text().strip().split('\t')[0]
+                    tmp_input.unlink(missing_ok=True)
+                    tmp_output.unlink(missing_ok=True)
+                else:
+                    tmp_input.unlink(missing_ok=True)
+                    tmp_output.unlink(missing_ok=True)
+                    response = {"continue": False, "stopReason": "No skill selected."}
+                    print(json.dumps(response))
+                    return
 
             # Validate skill name (alphanumeric, dash, underscore only)
             if not all(c.isalnum() or c in '-_' for c in skill_name):
@@ -2884,15 +2930,64 @@ Add your skill content here.
             print(json.dumps(response))
             return
 
-        # Check for :rule command
-        if prompt.startswith(':rule '):
-            rule_name = prompt[6:].strip()
+        # Check for :rule command (fzf picker if no name given)
+        if prompt == ':rule' or prompt.startswith(':rule '):
+            rule_name = prompt[6:].strip() if prompt.startswith(':rule ') else ''
 
+            # Determine config directory based on profile
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+            rules_dir = config_dir / "rules"
+
+            # If no name, show fzf picker of existing rules
             if not rule_name:
-                send_tmux_message("❌ Usage: :rule <name>", socket)
-                response = {"continue": False, "stopReason": "❌ Usage: :rule <name>"}
-                print(json.dumps(response))
-                return
+                rules = []
+                if rules_dir.exists():
+                    for rule_file in sorted(rules_dir.iterdir()):
+                        if rule_file.suffix == '.md':
+                            name = rule_file.stem
+                            # Get first non-header line as description
+                            content = rule_file.read_text()
+                            desc = "(no description)"
+                            for line in content.split('\n'):
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    desc = line[:50] + ('...' if len(line) > 50 else '')
+                                    break
+                            rules.append((name, desc))
+
+                if not rules:
+                    send_tmux_message("No rules found. Use :rule <name> to create one.", socket)
+                    response = {"continue": False, "stopReason": "No rules found.\n\nUse :rule <name> to create a new rule."}
+                    print(json.dumps(response))
+                    return
+
+                # Build fzf input
+                import tempfile
+                fzf_lines = [f"{name}\t{desc}" for name, desc in rules]
+                tmp_input = Path(tempfile.mktemp())
+                tmp_output = Path(tempfile.mktemp())
+                tmp_input.write_text("\n".join(fzf_lines))
+
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "60%", "-h", "50%",
+                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=1,2 --header='Select rule to edit' > {tmp_output}"
+                ])
+
+                if tmp_output.exists() and tmp_output.read_text().strip():
+                    rule_name = tmp_output.read_text().strip().split('\t')[0]
+                    tmp_input.unlink(missing_ok=True)
+                    tmp_output.unlink(missing_ok=True)
+                else:
+                    tmp_input.unlink(missing_ok=True)
+                    tmp_output.unlink(missing_ok=True)
+                    response = {"continue": False, "stopReason": "No rule selected."}
+                    print(json.dumps(response))
+                    return
 
             # Validate rule name (alphanumeric, dash, underscore only)
             if not all(c.isalnum() or c in '-_' for c in rule_name):
@@ -2902,15 +2997,7 @@ Add your skill content here.
                 return
 
             try:
-                # Determine config directory based on profile
-                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
-                if profile:
-                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
-                else:
-                    config_dir = Path.home() / ".config" / "kitty-claude"
-
-                # Create rules directory
-                rules_dir = config_dir / "rules"
+                # Ensure rules directory exists
                 rules_dir.mkdir(parents=True, exist_ok=True)
 
                 rule_file = rules_dir / f"{rule_name}.md"
@@ -3411,13 +3498,48 @@ Add your rule content here. This will be included in CLAUDE.md.
                 print(json.dumps(response))
                 return
 
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
             state_dir = get_state_dir()
             metadata_file = state_dir / "sessions" / f"{session_id}.json"
             metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
             active_roles = metadata.get("activeRoles", [])
 
-            if active_roles:
-                lines = "Active roles in this session:\n\n" + "\n".join(f"  {r}" for r in active_roles)
+            # Check for implicit roles
+            implicit_roles = []
+
+            # Default role (always active if exists)
+            default_role_file = config_dir / "mcp-roles" / "default.json"
+            if default_role_file.exists() and "default" not in active_roles:
+                implicit_roles.append("default (implicit)")
+
+            # Title-based roles
+            title_roles_file = config_dir / "title-roles.json"
+            if title_roles_file.exists():
+                try:
+                    title_mappings = json.loads(title_roles_file.read_text())
+                    tmux_socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+                    result = subprocess.run(
+                        ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_name}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        window_name = result.stdout.strip()
+                        if window_name in title_mappings:
+                            for role_name in title_mappings[window_name]:
+                                if role_name not in active_roles:
+                                    implicit_roles.append(f"{role_name} (from title '{window_name}')")
+                except:
+                    pass
+
+            all_roles = [f"  {r}" for r in active_roles] + [f"  {r}" for r in implicit_roles]
+
+            if all_roles:
+                lines = "Active roles in this session:\n\n" + "\n".join(all_roles)
             else:
                 lines = "No active roles. Use :role <name> to activate one."
 

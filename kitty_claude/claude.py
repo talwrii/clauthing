@@ -210,6 +210,18 @@ def setup_session_config(session_id, profile=None):
         except:
             pass
 
+    # Always include "default" role (create if doesn't exist)
+    roles_dir = base_config / "mcp-roles"
+    roles_dir.mkdir(parents=True, exist_ok=True)
+    default_role_file = roles_dir / "default.json"
+    if not default_role_file.exists():
+        default_role_file.write_text(json.dumps({
+            "permissions": {"allow": []},
+            "mcpServers": {}
+        }, indent=2))
+    if "default" not in active_roles:
+        active_roles.insert(0, "default")
+
     # Auto-activate roles from tmux window title
     title_roles_file = base_config / "title-roles.json"
     if title_roles_file.exists():
