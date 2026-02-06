@@ -670,6 +670,18 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     # Add to open sessions list
     add_open_session(session_id, profile)
 
+    # Emit session_opened event
+    try:
+        from kitty_claude.events import emit_event
+        emit_event({
+            "type": "session_opened",
+            "session_id": session_id,
+            "name": default_name,
+            "path": current_path,
+        }, profile)
+    except Exception as e:
+        log(f"Error emitting session_opened event: {e}", profile)
+
     # Build CLAUDE.md from rules before launching
     build_claude_md(profile)
 
@@ -702,6 +714,15 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
             log(f"Clean exit - removing session {session_id} from open sessions", profile)
             remove_open_session(session_id, profile)
             cleanup_session_config(session_id, profile)
+            # Emit session_closed event
+            try:
+                from kitty_claude.events import emit_event
+                emit_event({
+                    "type": "session_closed",
+                    "session_id": session_id,
+                }, profile)
+            except Exception as e:
+                log(f"Error emitting session_closed event: {e}", profile)
         else:
             log(f"Non-zero exit code {result.returncode} - keeping session {session_id} in open sessions", profile)
             # Don't cleanup config on error in case user wants to debug

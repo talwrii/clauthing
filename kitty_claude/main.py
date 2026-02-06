@@ -786,6 +786,17 @@ def rename_session(session_id, new_name, profile, tmux_socket):
     except Exception as e:
         log(f"Error renaming window: {e}", profile)
 
+    # Emit title_changed event
+    try:
+        from kitty_claude.events import emit_event
+        emit_event({
+            "type": "title_changed",
+            "session_id": session_id,
+            "name": new_name,
+        }, profile)
+    except Exception as e:
+        log(f"Error emitting title_changed event: {e}", profile)
+
     sys.exit(0)
 
 def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd, tmux_socket, remain_on_exit=False):
@@ -1248,6 +1259,9 @@ def main():
         parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
         parser.add_argument("--proxy-mcp", type=str, metavar="MCPDEF_JSON", help="Run MCP proxy with tmux approval (internal use)")
         parser.add_argument("--permissions-gui", type=str, metavar="SESSION_ID", help="Open permissions editor GUI (internal use)")
+        parser.add_argument("--events", action="store_true", help="Tail events log to stdout (blocks, uses inotify)")
+        parser.add_argument("--events-since", type=float, metavar="TIMESTAMP", help="With --events, replay from this unix timestamp")
+        parser.add_argument("--set-title", nargs=2, metavar=("SESSION_ID", "NAME"), help="Set session title (updates metadata, tmux, emits event)")
 
         args = parser.parse_args()
 
@@ -1405,6 +1419,17 @@ def main():
             roles_dir = config_dir / "mcp-roles"
             from kitty_claude.permissions_gui import run_gui
             run_gui(str(session_config_dir), cwd, roles_dir, config_dir=str(config_dir), session_id=session_id)
+            sys.exit(0)
+
+        if args.events:
+            from kitty_claude.events import subscribe_events
+            sys.exit(subscribe_events(profile, since=args.events_since))
+
+        if args.set_title:
+            session_id, name = args.set_title
+            from kitty_claude.events import set_title
+            set_title(session_id, name, profile)
+            print(f"Title set: {session_id} -> {name}")
             sys.exit(0)
 
         if args.run_command:
