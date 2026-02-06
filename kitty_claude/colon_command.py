@@ -70,6 +70,107 @@ def get_state_dir():
     return state_dir
 
 
+def get_timed_permissions_file():
+    """Get path to timed permissions file."""
+    config_dir = Path.home() / ".config" / "kitty-claude"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / "timed-permissions.json"
+
+
+def load_timed_permissions():
+    """Load timed permissions from config file."""
+    perm_file = get_timed_permissions_file()
+    if perm_file.exists():
+        try:
+            return json.loads(perm_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def save_timed_permissions(permissions):
+    """Save timed permissions to config file."""
+    perm_file = get_timed_permissions_file()
+    perm_file.write_text(json.dumps(permissions, indent=2))
+
+
+def parse_duration(duration_str):
+    """Parse duration string like '1h', '30m', '2h30m' into seconds.
+
+    Returns None if invalid.
+    """
+    import re
+    total_seconds = 0
+    pattern = re.compile(r'(\d+)([hms])')
+    matches = pattern.findall(duration_str.lower())
+    if not matches:
+        return None
+    for value, unit in matches:
+        value = int(value)
+        if unit == 'h':
+            total_seconds += value * 3600
+        elif unit == 'm':
+            total_seconds += value * 60
+        elif unit == 's':
+            total_seconds += value
+    return total_seconds if total_seconds > 0 else None
+
+
+def format_remaining_time(seconds):
+    """Format remaining seconds as human-readable string."""
+    if seconds <= 0:
+        return "expired"
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h{minutes}m"
+    elif minutes > 0:
+        return f"{minutes}m{secs}s"
+    else:
+        return f"{secs}s"
+
+
+def cleanup_expired_timed_permissions(claude_data_dir=None):
+    """Remove expired timed permissions from both kitty-claude and Claude's settings.
+
+    Called on session startup to clean up any permissions that expired
+    while the session was not running.
+    """
+    import time
+    now = time.time()
+
+    timed_perms = load_timed_permissions()
+    expired_patterns = []
+    active_perms = []
+
+    for perm in timed_perms:
+        if now > perm.get('expires', 0):
+            expired_patterns.append(perm.get('pattern'))
+        else:
+            active_perms.append(perm)
+
+    if not expired_patterns:
+        return  # Nothing to clean up
+
+    # Update timed permissions file
+    save_timed_permissions(active_perms)
+
+    # Remove expired patterns from Claude's settings.json
+    if claude_data_dir:
+        settings_file = Path(claude_data_dir) / "settings.json"
+        if settings_file.exists():
+            try:
+                settings = json.loads(settings_file.read_text())
+                allow_list = settings.get("permissions", {}).get("allow", [])
+                original_len = len(allow_list)
+                allow_list = [p for p in allow_list if p not in expired_patterns]
+                if len(allow_list) != original_len:
+                    settings["permissions"]["allow"] = allow_list
+                    settings_file.write_text(json.dumps(settings, indent=2))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+
 def save_session_metadata(session_id, name, path):
     """Save session metadata to state directory."""
     state_dir = get_state_dir()
@@ -396,7 +497,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
             help_text = """kitty-claude colon commands:
 
 :help                Show this help message
-:list                List available slash commands (skills)
+:skills              List available slash commands (skills)
 :rules               List all rules
 :note                Open session notes in vim
 :skill <name>        Create/edit a global Claude skill
@@ -411,16 +512,22 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :mcp <cmd> [args]    Add a native MCP server to this session
 :mcp-shell <cmd>     Expose shell command as MCP server
 :mcp-approve <cmd>   Add MCP server wrapped with tmux approval proxy
+:mcps                List MCP servers in this session
 :mcp-remove <name>   Remove an MCP server from session
 :roles               List available roles
-:role <name>         Load a role's MCP servers into session
-:save-role <name>    Save current session's MCP servers as a role
+:role [name]         Activate a role (fzf picker if no name given)
+:role-add <role> <n> Add permission #n (from :permissions) to a role
+:role-add-all <role> Add all current permissions to a role
+:role-add-mcp <role> <server>  Add MCP server from session to a role
+:roles-current       Show active roles in this session
+:title-role [t] [r]  Map tmux window title to a role (no args: show)
 :login               Refresh credentials from freshest session
 :send <message>      Send a message to another kitty-claude window (fzf)
 :current-sessions    List all currently running sessions
 :sessions            List recent sessions (last 10)
 :resume <num|id>     Resume a session in new window
 :resume-new [num|id] Resume a session in a new kitty-claude window
+:spawn <title>       Spawn a new kitty-claude window with given title
 :clear               Clear session and start fresh
 :reload              Reload Claude (same session, pick up config changes)
 :cd <path>           Change directory and move session
@@ -436,13 +543,16 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :ask                 Open popup without context, returns result
 :fork                Clone conversation to new window (independent)
 :permissions          Show allowed commands in this session
-:disallow <num>      Remove an allowed command by number
+:permissions-gui     Open permissions editor GUI
+:disallow <num> ...  Remove allowed command(s) by number
+:allow-for <dur> <p|n> Allow tool for duration (pattern or # from :permissions)
 :time                Show duration of last response
 :checkpoint          Save a checkpoint in the current session
 :rollback            Rollback to the last checkpoint (clones session)
 
 Examples:
-  :list, :rules, ::skills
+  :skills, :rules, ::skills
+  :allow-for 1h 5  (make permission #5 expire in 1 hour)
   :note
   :skill my-skill
   :rule my-rule
@@ -483,7 +593,7 @@ Examples:
 
         # Check for :permissions command
         if prompt == ':permissions':
-            allow_rules = []  # list of (rule, source_file)
+            allow_rules = []  # list of (rule, source_label, source_file)
 
             # Session-level permissions (MCP auto-approvals)
             settings_file = claude_data_dir / "settings.json"
@@ -491,7 +601,7 @@ Examples:
                 try:
                     settings = json.loads(settings_file.read_text())
                     for rule in settings.get("permissions", {}).get("allow", []):
-                        allow_rules.append((rule, str(settings_file)))
+                        allow_rules.append((rule, "session", str(settings_file)))
                 except (json.JSONDecodeError, OSError):
                     pass
 
@@ -502,30 +612,72 @@ Examples:
                 try:
                     proj = json.loads(project_settings.read_text())
                     for rule in proj.get("permissions", {}).get("allow", []):
-                        allow_rules.append((rule, str(project_settings)))
+                        allow_rules.append((rule, "project", str(project_settings)))
                 except (json.JSONDecodeError, OSError):
                     pass
+
+            # Build a lookup: which active roles contain each rule
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                roles_base = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "mcp-roles"
+            else:
+                roles_base = Path.home() / ".config" / "kitty-claude" / "mcp-roles"
+
+            rule_in_roles = {}  # rule -> list of role names
+            session_id = input_data.get('session_id')
+            if session_id:
+                state_dir = get_state_dir()
+                metadata_file = state_dir / "sessions" / f"{session_id}.json"
+                metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+                active_roles = metadata.get("activeRoles", [])
+
+                for role_name in active_roles:
+                    role_file = roles_base / f"{role_name}.json"
+                    if role_file.exists():
+                        try:
+                            role = json.loads(role_file.read_text())
+                            for rule in role.get("permissions", {}).get("allow", []):
+                                rule_in_roles.setdefault(rule, []).append(role_name)
+                        except (json.JSONDecodeError, OSError):
+                            pass
 
             # Deduplicate while preserving order
             seen = set()
             unique_rules = []
-            for rule, source in allow_rules:
+            for rule, label, source_file in allow_rules:
                 if rule not in seen:
                     seen.add(rule)
-                    unique_rules.append((rule, source))
+                    unique_rules.append((rule, label, source_file))
+
+            # Load timed permissions to show remaining time
+            import time
+            now = time.time()
+            timed_perms = load_timed_permissions()
+            timed_lookup = {}  # pattern -> remaining time string
+            for perm in timed_perms:
+                pattern = perm.get('pattern', '')
+                expires = perm.get('expires', 0)
+                remaining = expires - now
+                if remaining > 0:
+                    timed_lookup[pattern] = format_remaining_time(remaining)
+                else:
+                    timed_lookup[pattern] = "expired"
 
             if unique_rules:
                 lines = "Allowed commands in this session:\n\n"
-                current_source = None
-                for i, (rule, source) in enumerate(unique_rules, 1):
-                    if source != current_source:
-                        current_source = source
-                        if source == str(settings_file):
-                            lines += "  [session]\n"
-                        else:
-                            lines += "  [project]\n"
-                    lines += f"  {i:3d}. {rule}\n"
-                lines += "\nUse :disallow <num> to remove a permission."
+                current_label = None
+                for i, (rule, label, _source_file) in enumerate(unique_rules, 1):
+                    if label != current_label:
+                        current_label = label
+                        lines += f"  [{label}]\n"
+                    tags = []
+                    if rule in rule_in_roles:
+                        tags.append(", ".join(rule_in_roles[rule]))
+                    if rule in timed_lookup:
+                        tags.append(f"⏱ {timed_lookup[rule]}")
+                    tags_str = f"  [{', '.join(tags)}]" if tags else ""
+                    lines += f"  {i:3d}. {rule}{tags_str}\n"
+                lines += "\nUse :disallow <num> [num2 ...] to remove permission(s)."
             else:
                 lines = "No allowed commands configured."
 
@@ -533,15 +685,38 @@ Examples:
             print(json.dumps(response))
             return
 
-        # Check for :disallow command
-        if prompt.startswith(':disallow'):
-            arg = prompt[len(':disallow'):].strip()
-            if not arg or not arg.isdigit():
-                response = {"continue": False, "stopReason": "Usage: :disallow <num>\nRun :permissions to see numbered list."}
+        # Check for :permissions-gui command
+        if prompt == ':permissions-gui':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                response = {"continue": False, "stopReason": "No session ID."}
                 print(json.dumps(response))
                 return
 
-            target_num = int(arg)
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            subprocess.Popen([kitty_claude_path, "--permissions-gui", session_id])
+            send_tmux_message("Opening permissions editor...", socket)
+            response = {"continue": False, "stopReason": ""}
+            print(json.dumps(response))
+            return
+
+        # Check for :disallow command
+        if prompt.startswith(':disallow'):
+            arg = prompt[len(':disallow'):].strip()
+            if not arg:
+                response = {"continue": False, "stopReason": "Usage: :disallow <num> [num2 num3 ...]\nRun :permissions to see numbered list."}
+                print(json.dumps(response))
+                return
+
+            # Parse multiple numbers
+            parts = arg.split()
+            target_nums = []
+            for p in parts:
+                if not p.isdigit():
+                    response = {"continue": False, "stopReason": f"Invalid number: {p}\nUsage: :disallow <num> [num2 num3 ...]"}
+                    print(json.dumps(response))
+                    return
+                target_nums.append(int(p))
 
             # Rebuild the same numbered list as :permissions
             allow_rules = []  # list of (rule, source_file)
@@ -565,6 +740,30 @@ Examples:
                 except (json.JSONDecodeError, OSError):
                     pass
 
+            # Active role permissions
+            session_id = input_data.get('session_id')
+            if session_id:
+                state_dir = get_state_dir()
+                metadata_file = state_dir / "sessions" / f"{session_id}.json"
+                metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+                active_roles = metadata.get("activeRoles", [])
+
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    roles_base = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "mcp-roles"
+                else:
+                    roles_base = Path.home() / ".config" / "kitty-claude" / "mcp-roles"
+
+                for role_name in active_roles:
+                    role_file = roles_base / f"{role_name}.json"
+                    if role_file.exists():
+                        try:
+                            role = json.loads(role_file.read_text())
+                            for rule in role.get("permissions", {}).get("allow", []):
+                                allow_rules.append((rule, str(role_file)))
+                        except (json.JSONDecodeError, OSError):
+                            pass
+
             # Deduplicate
             seen = set()
             unique_rules = []
@@ -573,28 +772,146 @@ Examples:
                     seen.add(rule)
                     unique_rules.append((rule, source))
 
-            if target_num < 1 or target_num > len(unique_rules):
-                response = {"continue": False, "stopReason": f"Invalid number {target_num}. Run :permissions to see valid range (1-{len(unique_rules)})."}
+            # Validate all numbers first
+            for num in target_nums:
+                if num < 1 or num > len(unique_rules):
+                    response = {"continue": False, "stopReason": f"Invalid number {num}. Run :permissions to see valid range (1-{len(unique_rules)})."}
+                    print(json.dumps(response))
+                    return
+
+            # Sort descending so we remove from highest index first (avoids index shifting)
+            target_nums_sorted = sorted(set(target_nums), reverse=True)
+            removed = []
+            errors = []
+
+            for target_num in target_nums_sorted:
+                rule_to_remove, source_file = unique_rules[target_num - 1]
+
+                # Remove from the source file
+                source_path = Path(source_file)
+                try:
+                    data = json.loads(source_path.read_text())
+                    allow_list = data.get("permissions", {}).get("allow", [])
+                    if rule_to_remove in allow_list:
+                        allow_list.remove(rule_to_remove)
+                        source_path.write_text(json.dumps(data, indent=2))
+                        removed.append(rule_to_remove)
+                    else:
+                        errors.append(f"Rule not found in {source_file}")
+                except Exception as e:
+                    errors.append(f"Error removing {rule_to_remove[:30]}: {e}")
+
+            # Build response
+            msgs = []
+            if removed:
+                if len(removed) == 1:
+                    msgs.append(f"Removed: {removed[0]}")
+                else:
+                    msgs.append(f"Removed {len(removed)} permissions:")
+                    for r in removed:
+                        msgs.append(f"  - {r[:60]}")
+                send_tmux_message(f"Removed {len(removed)} permission(s)", socket)
+            if errors:
+                msgs.append("Errors:")
+                msgs.extend(f"  - {e}" for e in errors)
+
+            response = {"continue": False, "stopReason": "\n".join(msgs) if msgs else "Nothing removed."}
+            print(json.dumps(response))
+            return
+
+        # Check for :allow-for command
+        if prompt.startswith(':allow-for'):
+            import time
+            arg = prompt[len(':allow-for'):].strip()
+            parts = arg.split(None, 1)  # Split into duration and pattern/number
+            if len(parts) < 2:
+                response = {"continue": False, "stopReason": "Usage: :allow-for <duration> <pattern|num>\nExamples:\n  :allow-for 1h Bash(npm:*)\n  :allow-for 1h 5  (use number from :permissions)"}
                 print(json.dumps(response))
                 return
 
-            rule_to_remove, source_file = unique_rules[target_num - 1]
+            duration_str, pattern_or_num = parts
+            duration_secs = parse_duration(duration_str)
+            if duration_secs is None:
+                response = {"continue": False, "stopReason": f"Invalid duration: {duration_str}\nUse format like: 1h, 30m, 2h30m, 90s"}
+                print(json.dumps(response))
+                return
 
-            # Remove from the source file
-            source_path = Path(source_file)
+            # Check if pattern_or_num is a number (retroactive timed permission)
+            if pattern_or_num.isdigit():
+                target_num = int(pattern_or_num)
+                # Rebuild the permissions list (same as :permissions)
+                allow_rules = []
+                settings_file = claude_data_dir / "settings.json"
+                if settings_file.exists():
+                    try:
+                        settings = json.loads(settings_file.read_text())
+                        for rule in settings.get("permissions", {}).get("allow", []):
+                            allow_rules.append((rule, str(settings_file)))
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+                cwd = input_data.get('cwd', os.getcwd())
+                project_settings = Path(cwd) / ".claude" / "settings.local.json"
+                if project_settings.exists():
+                    try:
+                        proj = json.loads(project_settings.read_text())
+                        for rule in proj.get("permissions", {}).get("allow", []):
+                            allow_rules.append((rule, str(project_settings)))
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+                # Deduplicate
+                seen = set()
+                unique_rules = []
+                for rule, source in allow_rules:
+                    if rule not in seen:
+                        seen.add(rule)
+                        unique_rules.append((rule, source))
+
+                if target_num < 1 or target_num > len(unique_rules):
+                    response = {"continue": False, "stopReason": f"Invalid number {target_num}. Run :permissions to see valid range (1-{len(unique_rules)})."}
+                    print(json.dumps(response))
+                    return
+
+                pattern = unique_rules[target_num - 1][0]
+            else:
+                pattern = pattern_or_num
+
+            expires_at = time.time() + duration_secs
+
+            # Add to timed permissions file
+            timed_perms = load_timed_permissions()
+            # Remove any existing entry for the same pattern
+            timed_perms = [p for p in timed_perms if p.get('pattern') != pattern]
+            timed_perms.append({
+                'pattern': pattern,
+                'expires': expires_at,
+                'created': time.time()
+            })
+            save_timed_permissions(timed_perms)
+
+            # Also add to Claude's session permissions.allow (if not already there)
+            settings_file = claude_data_dir / "settings.json"
             try:
-                data = json.loads(source_path.read_text())
-                allow_list = data.get("permissions", {}).get("allow", [])
-                if rule_to_remove in allow_list:
-                    allow_list.remove(rule_to_remove)
-                    source_path.write_text(json.dumps(data, indent=2))
-                    send_tmux_message(f"Removed: {rule_to_remove[:50]}", socket)
-                    response = {"continue": False, "stopReason": f"Removed permission: {rule_to_remove}"}
+                if settings_file.exists():
+                    settings = json.loads(settings_file.read_text())
                 else:
-                    response = {"continue": False, "stopReason": f"Rule not found in {source_file}"}
+                    settings = {}
+                if 'permissions' not in settings:
+                    settings['permissions'] = {}
+                if 'allow' not in settings['permissions']:
+                    settings['permissions']['allow'] = []
+                if pattern not in settings['permissions']['allow']:
+                    settings['permissions']['allow'].append(pattern)
+                settings_file.write_text(json.dumps(settings, indent=2))
             except Exception as e:
-                response = {"continue": False, "stopReason": f"Error removing permission: {e}"}
+                response = {"continue": False, "stopReason": f"Error updating settings: {e}"}
+                print(json.dumps(response))
+                return
 
+            readable_duration = format_remaining_time(duration_secs)
+            send_tmux_message(f"Timed {pattern[:30]}... for {readable_duration}", socket)
+            response = {"continue": False, "stopReason": f"Allowed for {readable_duration}: {pattern}\n\nThis permission will be denied after {readable_duration}."}
             print(json.dumps(response))
             return
 
@@ -746,6 +1063,33 @@ Examples:
             print(json.dumps(response))
             return
 
+        # Check for :spawn command
+        if prompt.startswith(':spawn'):
+            arg = prompt[len(':spawn'):].strip()
+            if not arg:
+                response = {"continue": False, "stopReason": "Usage: :spawn <title>\nSpawns a new kitty-claude window with the given title."}
+                print(json.dumps(response))
+                return
+
+            window_title = arg
+
+            # Build kitty-claude command - always use --one-tab for independent windows
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            cmd = [kitty_claude_path]
+            if profile:
+                cmd.extend(["--profile", profile])
+            cmd.append("--one-tab")
+            cmd.extend(["--window-name", window_title])
+
+            # Spawn the new window
+            import subprocess as sp
+            sp.Popen(cmd)
+
+            send_tmux_message(f"✓ Spawning: {window_title}", socket)
+            response = {"continue": False, "stopReason": f"✓ Spawning new kitty-claude window: {window_title}"}
+            print(json.dumps(response))
+            return
+
         # Check for :rules command
         if prompt == ':rules':
             # Determine config directory based on profile
@@ -782,8 +1126,8 @@ Examples:
             print(json.dumps(response))
             return
 
-        # Check for :list command
-        if prompt == ':list':
+        # Check for :skills command
+        if prompt == ':skills':
             skills_dir = claude_data_dir / "skills"
 
             if not skills_dir.exists() or not any(skills_dir.iterdir()):
@@ -1585,11 +1929,61 @@ fi
                     shared_creds.unlink()
                 shared_creds.write_text(best_creds_content)
                 remaining = (best_expiry - now_ms) // 60000
-                send_tmux_message(f"✓ Refreshed credentials from session {best_source} ({remaining}m remaining)", socket)
-                response = {"continue": False, "stopReason": f"✓ Credentials refreshed from {best_source}"}
+                send_tmux_message(f"✓ Credentials from {best_source} - reloading...", socket)
             except Exception as e:
                 send_tmux_message(f"❌ Failed to copy credentials: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ {e}"}
+                print(json.dumps(response))
+                return
+
+            # Auto-reload after successful credentials refresh
+            current_dir = input_data.get('cwd', os.getcwd())
+            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+            build_claude_md(profile)
+            from kitty_claude.claude import save_auth_from_session, setup_session_config
+            save_auth_from_session(session_id, profile)
+            session_config_dir = setup_session_config(session_id, profile)
+
+            if socket.startswith("kc1-"):
+                claude_config = str(session_config_dir)
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+                config_file = config_dir / "config.json"
+                claude_bin = None
+                if config_file.exists():
+                    try:
+                        config = json.loads(config_file.read_text())
+                        if config.get("claude_binary"):
+                            claude_bin = config["claude_binary"]
+                    except:
+                        pass
+                if not claude_bin:
+                    claude_bin = shutil.which("claude") or "claude"
+
+                uid = os.getuid()
+                launcher = Path(f"/tmp/kc-reload-{uid}.sh")
+                launcher.write_text(f'''#!/bin/sh
+export CLAUDE_CONFIG_DIR="{claude_config}"
+cd "{current_dir}"
+exec "{claude_bin}" --resume {session_id}
+''')
+                launcher.chmod(0o755)
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
+                ])
+            else:
+                subprocess.Popen([
+                    kitty_claude_path, "--resume-session", session_id
+                ])
+                subprocess.Popen([
+                    "sh", "-c",
+                    f"sleep 1.5 && tmux -L {socket} kill-pane"
+                ])
+
+            response = {"continue": False, "stopReason": ""}
             print(json.dumps(response))
             return
 
@@ -2451,8 +2845,14 @@ exec "{claude_bin}" --resume {session_id}
                 return
 
             try:
-                # Create skill directory
-                skills_dir = claude_data_dir / "skills" / skill_name
+                # Use global skills directory (not session-local) so all sessions share skills
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    global_skills_base = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "claude-data" / "skills"
+                else:
+                    global_skills_base = Path.home() / ".config" / "kitty-claude" / "claude-data" / "skills"
+
+                skills_dir = global_skills_base / skill_name
                 skills_dir.mkdir(parents=True, exist_ok=True)
 
                 skill_file = skills_dir / "SKILL.md"
@@ -2541,6 +2941,32 @@ Add your rule content here. This will be included in CLAUDE.md.
 
         # Check for :mcp-shell command
         # :mcp <command> [args...] - add a native stdio MCP server to this session
+        # :mcps - list MCP servers in current session
+        if prompt == ':mcps':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                response = {"continue": False, "stopReason": "No session ID."}
+                print(json.dumps(response))
+                return
+
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+            servers = metadata.get("mcpServers", {})
+
+            if servers:
+                lines = "MCP servers in this session:\n\n"
+                for name, config in servers.items():
+                    cmd = config.get("command", "?")
+                    args = " ".join(config.get("args", []))
+                    lines += f"  {name}: {cmd} {args}\n"
+            else:
+                lines = "No MCP servers in this session."
+
+            response = {"continue": False, "stopReason": lines}
+            print(json.dumps(response))
+            return
+
         # Check for :mcp-remove command - remove an MCP server from session
         if prompt.startswith(':mcp-remove '):
             server_name = prompt[12:].strip()
@@ -2741,7 +3167,7 @@ Add your rule content here. This will be included in CLAUDE.md.
             roles_dir = config_dir / "mcp-roles"
             if not roles_dir.exists() or not any(roles_dir.glob("*.json")):
                 send_tmux_message("No roles found", socket)
-                response = {"continue": False, "stopReason": "No roles found. Use :save-role <name> to create one."}
+                response = {"continue": False, "stopReason": "No roles found. Use :role-add <name> <num> to create one."}
                 print(json.dumps(response))
                 return
 
@@ -2750,7 +3176,14 @@ Add your rule content here. This will be included in CLAUDE.md.
                 try:
                     role = json.loads(role_file.read_text())
                     servers = list(role.get("mcpServers", {}).keys())
-                    lines.append(f"  {role_file.stem}: {', '.join(servers)}")
+                    perms = role.get("permissions", {}).get("allow", [])
+                    parts = []
+                    if servers:
+                        parts.append(f"servers: {', '.join(servers)}")
+                    if perms:
+                        parts.append(f"{len(perms)} permissions")
+                    desc = "; ".join(parts) if parts else "(empty)"
+                    lines.append(f"  {role_file.stem}: {desc}")
                 except:
                     lines.append(f"  {role_file.stem}: (error reading)")
 
@@ -2760,22 +3193,298 @@ Add your rule content here. This will be included in CLAUDE.md.
             print(json.dumps(response))
             return
 
-        # :save-role <name> - save current session MCP servers as a named role
-        if prompt.startswith(':save-role '):
-            role_name = prompt[11:].strip()
-
+        # :role-add-all <role> - add all current permissions to a role
+        if prompt.startswith(':role-add-all '):
+            role_name = prompt[14:].strip()
             if not role_name:
-                send_tmux_message("❌ Usage: :save-role <name>", socket)
-                response = {"continue": False, "stopReason": "❌ Usage: :save-role <name>"}
+                response = {"continue": False, "stopReason": "Usage: :role-add-all <role-name>"}
                 print(json.dumps(response))
                 return
 
             if not all(c.isalnum() or c in '-_' for c in role_name):
-                send_tmux_message("❌ Role name can only contain letters, numbers, dash, underscore", socket)
-                response = {"continue": False, "stopReason": "❌ Invalid role name"}
+                response = {"continue": False, "stopReason": "Role name can only contain letters, numbers, dash, underscore."}
                 print(json.dumps(response))
                 return
 
+            # Gather all permissions (same as :permissions)
+            allow_rules = []
+            settings_file = claude_data_dir / "settings.json"
+            if settings_file.exists():
+                try:
+                    settings = json.loads(settings_file.read_text())
+                    allow_rules.extend(settings.get("permissions", {}).get("allow", []))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            cwd = input_data.get('cwd', os.getcwd())
+            project_settings = Path(cwd) / ".claude" / "settings.local.json"
+            if project_settings.exists():
+                try:
+                    proj = json.loads(project_settings.read_text())
+                    allow_rules.extend(proj.get("permissions", {}).get("allow", []))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Deduplicate
+            seen = set()
+            unique_rules = []
+            for rule in allow_rules:
+                if rule not in seen:
+                    seen.add(rule)
+                    unique_rules.append(rule)
+
+            if not unique_rules:
+                response = {"continue": False, "stopReason": "No permissions to add."}
+                print(json.dumps(response))
+                return
+
+            # Load or create role file
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
+            roles_dir = config_dir / "mcp-roles"
+            roles_dir.mkdir(parents=True, exist_ok=True)
+            role_file = roles_dir / f"{role_name}.json"
+
+            if role_file.exists():
+                role_data = json.loads(role_file.read_text())
+            else:
+                role_data = {"mcpServers": {}, "permissions": {"allow": []}}
+
+            existing = set(role_data.setdefault("permissions", {}).setdefault("allow", []))
+            added = 0
+            for rule in unique_rules:
+                if rule not in existing:
+                    role_data["permissions"]["allow"].append(rule)
+                    existing.add(rule)
+                    added += 1
+
+            role_file.write_text(json.dumps(role_data, indent=2))
+            send_tmux_message(f"Added {added} permissions to '{role_name}'", socket)
+            response = {"continue": False, "stopReason": f"Added {added} permissions to role '{role_name}' ({len(role_data['permissions']['allow'])} total)."}
+            print(json.dumps(response))
+            return
+
+        # :role-add-mcp <role> <server-name> - add MCP server from session to a role
+        if prompt.startswith(':role-add-mcp '):
+            parts = prompt[14:].strip().split(None, 1)
+            if len(parts) != 2:
+                response = {"continue": False, "stopReason": "Usage: :role-add-mcp <role-name> <server-name>"}
+                print(json.dumps(response))
+                return
+
+            role_name, server_name = parts
+
+            if not all(c.isalnum() or c in '-_' for c in role_name):
+                response = {"continue": False, "stopReason": "Role name can only contain letters, numbers, dash, underscore."}
+                print(json.dumps(response))
+                return
+
+            # Get MCP servers from session metadata
+            session_id = input_data.get('session_id')
+            if not session_id:
+                response = {"continue": False, "stopReason": "No session ID."}
+                print(json.dumps(response))
+                return
+
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+            session_servers = metadata.get("mcpServers", {})
+
+            if server_name not in session_servers:
+                available = ", ".join(session_servers.keys()) if session_servers else "none"
+                response = {"continue": False, "stopReason": f"Server '{server_name}' not in session. Available: {available}"}
+                print(json.dumps(response))
+                return
+
+            # Load or create role file
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
+            roles_dir = config_dir / "mcp-roles"
+            roles_dir.mkdir(parents=True, exist_ok=True)
+            role_file = roles_dir / f"{role_name}.json"
+
+            if role_file.exists():
+                role_data = json.loads(role_file.read_text())
+            else:
+                role_data = {"mcpServers": {}, "permissions": {"allow": []}}
+
+            role_data.setdefault("mcpServers", {})[server_name] = session_servers[server_name]
+            role_file.write_text(json.dumps(role_data, indent=2))
+            send_tmux_message(f"Added '{server_name}' to role '{role_name}'", socket)
+            response = {"continue": False, "stopReason": f"Added MCP server '{server_name}' to role '{role_name}'."}
+            print(json.dumps(response))
+            return
+
+        # :role-add <role> <num> - add permission by number to a role
+        if prompt.startswith(':role-add '):
+            parts = prompt[10:].strip().split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                response = {"continue": False, "stopReason": "Usage: :role-add <role-name> <num>\nRun :permissions to see numbered list."}
+                print(json.dumps(response))
+                return
+
+            role_name, num_str = parts
+            target_num = int(num_str)
+
+            if not all(c.isalnum() or c in '-_' for c in role_name):
+                response = {"continue": False, "stopReason": "Role name can only contain letters, numbers, dash, underscore."}
+                print(json.dumps(response))
+                return
+
+            # Rebuild the same numbered list as :permissions
+            allow_rules = []
+            settings_file = claude_data_dir / "settings.json"
+            if settings_file.exists():
+                try:
+                    settings = json.loads(settings_file.read_text())
+                    for rule in settings.get("permissions", {}).get("allow", []):
+                        allow_rules.append((rule, str(settings_file)))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            cwd = input_data.get('cwd', os.getcwd())
+            project_settings = Path(cwd) / ".claude" / "settings.local.json"
+            if project_settings.exists():
+                try:
+                    proj = json.loads(project_settings.read_text())
+                    for rule in proj.get("permissions", {}).get("allow", []):
+                        allow_rules.append((rule, str(project_settings)))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            seen = set()
+            unique_rules = []
+            for rule, source in allow_rules:
+                if rule not in seen:
+                    seen.add(rule)
+                    unique_rules.append((rule, source))
+
+            if target_num < 1 or target_num > len(unique_rules):
+                response = {"continue": False, "stopReason": f"Invalid number {target_num}. Run :permissions to see valid range (1-{len(unique_rules)})."}
+                print(json.dumps(response))
+                return
+
+            rule_to_add = unique_rules[target_num - 1][0]
+
+            # Load or create role file
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
+            roles_dir = config_dir / "mcp-roles"
+            roles_dir.mkdir(parents=True, exist_ok=True)
+            role_file = roles_dir / f"{role_name}.json"
+
+            if role_file.exists():
+                role_data = json.loads(role_file.read_text())
+            else:
+                role_data = {"mcpServers": {}, "permissions": {"allow": []}}
+
+            role_data.setdefault("permissions", {}).setdefault("allow", [])
+            if rule_to_add in role_data["permissions"]["allow"]:
+                response = {"continue": False, "stopReason": f"Already in role '{role_name}': {rule_to_add}"}
+            else:
+                role_data["permissions"]["allow"].append(rule_to_add)
+                role_file.write_text(json.dumps(role_data, indent=2))
+                send_tmux_message(f"Added to role '{role_name}'", socket)
+                response = {"continue": False, "stopReason": f"Added to role '{role_name}': {rule_to_add}"}
+
+            print(json.dumps(response))
+            return
+
+        # :roles-current - show active roles in this session
+        if prompt == ':roles-current':
+            session_id = input_data.get('session_id')
+            if not session_id:
+                response = {"continue": False, "stopReason": "No session ID."}
+                print(json.dumps(response))
+                return
+
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+            active_roles = metadata.get("activeRoles", [])
+
+            if active_roles:
+                lines = "Active roles in this session:\n\n" + "\n".join(f"  {r}" for r in active_roles)
+            else:
+                lines = "No active roles. Use :role <name> to activate one."
+
+            response = {"continue": False, "stopReason": lines}
+            print(json.dumps(response))
+            return
+
+        # :title-role <title> <role> - map a tmux window title to a role
+        if prompt.startswith(':title-role'):
+            parts = prompt[11:].strip().split()
+            if len(parts) < 1:
+                # Show current mappings
+                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                if profile:
+                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    config_dir = Path.home() / ".config" / "kitty-claude"
+
+                title_roles_file = config_dir / "title-roles.json"
+                if title_roles_file.exists():
+                    mappings = json.loads(title_roles_file.read_text())
+                else:
+                    mappings = {}
+
+                if mappings:
+                    lines = "Title-role mappings:\n\n"
+                    for title, role_list in mappings.items():
+                        lines += f"  {title} -> {', '.join(role_list)}\n"
+                else:
+                    lines = "No title-role mappings. Use :title-role <title> <role> to add one."
+
+                response = {"continue": False, "stopReason": lines}
+                print(json.dumps(response))
+                return
+
+            if len(parts) < 2:
+                response = {"continue": False, "stopReason": "Usage: :title-role <title> <role>\n       :title-role (show mappings)"}
+                print(json.dumps(response))
+                return
+
+            title, role_name = parts[0], parts[1]
+
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                config_dir = Path.home() / ".config" / "kitty-claude"
+
+            title_roles_file = config_dir / "title-roles.json"
+            if title_roles_file.exists():
+                mappings = json.loads(title_roles_file.read_text())
+            else:
+                mappings = {}
+
+            if title not in mappings:
+                mappings[title] = []
+            if role_name not in mappings[title]:
+                mappings[title].append(role_name)
+
+            title_roles_file.write_text(json.dumps(mappings, indent=2))
+            send_tmux_message(f"Mapped '{title}' -> {role_name}", socket)
+            response = {"continue": False, "stopReason": f"Mapped title '{title}' -> role '{role_name}'\nCurrent: {title} -> {', '.join(mappings[title])}"}
+            print(json.dumps(response))
+            return
+
+        # :role (no args) - fuzzy pick a role to activate
+        if prompt == ':role':
             session_id = input_data.get('session_id')
             if not session_id:
                 send_tmux_message("❌ No session ID", socket)
@@ -2784,17 +3493,6 @@ Add your rule content here. This will be included in CLAUDE.md.
                 return
 
             try:
-                state_dir = get_state_dir()
-                metadata_file = state_dir / "sessions" / f"{session_id}.json"
-                metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
-                mcp_servers = metadata.get("mcpServers", {})
-
-                if not mcp_servers:
-                    send_tmux_message("❌ No MCP servers in current session", socket)
-                    response = {"continue": False, "stopReason": "❌ No MCP servers in current session to save"}
-                    print(json.dumps(response))
-                    return
-
                 profile = os.environ.get('KITTY_CLAUDE_PROFILE')
                 if profile:
                     config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
@@ -2802,22 +3500,86 @@ Add your rule content here. This will be included in CLAUDE.md.
                     config_dir = Path.home() / ".config" / "kitty-claude"
 
                 roles_dir = config_dir / "mcp-roles"
-                roles_dir.mkdir(parents=True, exist_ok=True)
+                if not roles_dir.exists() or not any(roles_dir.glob("*.json")):
+                    send_tmux_message("No roles found", socket)
+                    response = {"continue": False, "stopReason": "No roles found. Use :role-add <name> <num> to create one."}
+                    print(json.dumps(response))
+                    return
 
-                role_file = roles_dir / f"{role_name}.json"
-                role_file.write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
+                # Build fzf input: "role_name\tdescription"
+                fzf_lines = []
+                for role_file in sorted(roles_dir.glob("*.json")):
+                    try:
+                        role = json.loads(role_file.read_text())
+                        servers = list(role.get("mcpServers", {}).keys())
+                        perms = role.get("permissions", {}).get("allow", [])
+                        parts = []
+                        if servers:
+                            parts.append(f"{len(servers)} servers")
+                        if perms:
+                            parts.append(f"{len(perms)} perms")
+                        desc = ", ".join(parts) if parts else "empty"
+                        fzf_lines.append(f"{role_file.stem}\t{desc}")
+                    except:
+                        fzf_lines.append(f"{role_file.stem}\t(error reading)")
 
-                server_names = ", ".join(mcp_servers.keys())
-                send_tmux_message(f"✓ Role '{role_name}' saved ({server_names})", socket)
-                response = {"continue": False, "stopReason": f"✓ Role '{role_name}' saved with: {server_names}"}
+                uid = os.getuid()
+                tmp_input = Path(f"/tmp/kc-role-{uid}.txt")
+                tmp_output = Path(f"/tmp/kc-role-{uid}-out.txt")
+                tmp_input.write_text("\n".join(fzf_lines))
+                tmp_output.unlink(missing_ok=True)
+
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "60%", "-h", "40%",
+                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=1,2 --header='Select role to activate' > {tmp_output}"
+                ])
+
+                if tmp_output.exists():
+                    selection = tmp_output.read_text().strip()
+                    tmp_output.unlink(missing_ok=True)
+                    if selection:
+                        role_name = selection.split('\t')[0]
+                        # Activate the selected role (same logic as :role <name>)
+                        role_file = roles_dir / f"{role_name}.json"
+                        role = json.loads(role_file.read_text())
+                        role_servers = role.get("mcpServers", {})
+
+                        state_dir = get_state_dir()
+                        metadata_file = state_dir / "sessions" / f"{session_id}.json"
+                        metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+                        if "mcpServers" not in metadata:
+                            metadata["mcpServers"] = {}
+                        metadata["mcpServers"].update(role_servers)
+
+                        active_roles = metadata.get("activeRoles", [])
+                        if role_name not in active_roles:
+                            active_roles.append(role_name)
+                        metadata["activeRoles"] = active_roles
+                        metadata_file.write_text(json.dumps(metadata, indent=2))
+
+                        server_names = ", ".join(role_servers.keys()) if role_servers else "none"
+                        perm_count = len(role.get("permissions", {}).get("allow", []))
+                        send_tmux_message(f"✓ Role '{role_name}' activated - use :reload", socket)
+                        response = {
+                            "continue": False,
+                            "stopReason": f"✓ Role '{role_name}' activated (servers: {server_names}, permissions: {perm_count})\n\nUse :reload to apply."
+                        }
+                        print(json.dumps(response))
+                        return
+
+                send_tmux_message("No role selected", socket)
+                response = {"continue": False, "stopReason": "No role selected."}
+                print(json.dumps(response))
+                return
+
             except Exception as e:
                 send_tmux_message(f"❌ Error: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+                print(json.dumps(response))
+                return
 
-            print(json.dumps(response))
-            return
-
-        # :role <name> - load a role's MCP servers into the current session
+        # :role <name> - activate a role in the current session
         if prompt.startswith(':role '):
             role_name = prompt[6:].strip()
 
@@ -2851,20 +3613,26 @@ Add your rule content here. This will be included in CLAUDE.md.
                 role = json.loads(role_file.read_text())
                 role_servers = role.get("mcpServers", {})
 
-                # Merge into session metadata
+                # Add to session metadata: merge MCP servers + track as active role
                 state_dir = get_state_dir()
                 metadata_file = state_dir / "sessions" / f"{session_id}.json"
                 metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
                 if "mcpServers" not in metadata:
                     metadata["mcpServers"] = {}
                 metadata["mcpServers"].update(role_servers)
+
+                active_roles = metadata.get("activeRoles", [])
+                if role_name not in active_roles:
+                    active_roles.append(role_name)
+                metadata["activeRoles"] = active_roles
                 metadata_file.write_text(json.dumps(metadata, indent=2))
 
-                server_names = ", ".join(role_servers.keys())
-                send_tmux_message(f"✓ Role '{role_name}' loaded - use :reload", socket)
+                server_names = ", ".join(role_servers.keys()) if role_servers else "none"
+                perm_count = len(role.get("permissions", {}).get("allow", []))
+                send_tmux_message(f"✓ Role '{role_name}' activated - use :reload", socket)
                 response = {
                     "continue": False,
-                    "stopReason": f"✓ Role '{role_name}' loaded ({server_names})\n\nUse :reload to start Claude with the new MCP servers."
+                    "stopReason": f"✓ Role '{role_name}' activated (servers: {server_names}, permissions: {perm_count})\n\nUse :reload to apply."
                 }
             except Exception as e:
                 send_tmux_message(f"❌ Error: {e}", socket)
@@ -3132,3 +3900,73 @@ def handle_stop():
         # Log error silently
         with open("/tmp/kitty-claude-stop-hook-error.log", "a") as f:
             f.write(f"Stop hook error: {str(e)}\n")
+
+
+def handle_pre_tool_use():
+    """Handle PreToolUse hook - deny expired timed permissions."""
+    import time
+    import fnmatch
+
+    try:
+        input_data = json.loads(sys.stdin.read())
+        tool_name = input_data.get('tool_name', '')
+        tool_input = input_data.get('tool_input', {})
+
+        # Build the tool string to match against patterns
+        # Format: ToolName or ToolName(param:value) for Bash
+        if tool_name == 'Bash':
+            command = tool_input.get('command', '')
+            tool_string = f"Bash({command})"
+        elif tool_name.startswith('mcp__'):
+            tool_string = tool_name
+        else:
+            tool_string = tool_name
+
+        # Load timed permissions
+        timed_perms = load_timed_permissions()
+        now = time.time()
+
+        for perm in timed_perms:
+            pattern = perm.get('pattern', '')
+            expires = perm.get('expires', 0)
+
+            # Check if pattern matches
+            # Support glob-style matching: Bash(npm:*) matches Bash(npm run test)
+            # Convert pattern to regex-friendly form
+            if pattern.endswith(':*)'):
+                # Pattern like Bash(npm:*) should match Bash(npm anything)
+                prefix = pattern[:-2]  # Remove :*)
+                if tool_string.startswith(prefix):
+                    # This tool matches the pattern
+                    if now > expires:
+                        # Permission expired - deny
+                        print(json.dumps({
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": f"Timed permission expired: {pattern}"
+                            }
+                        }))
+                        return
+                    # Not expired - let Claude's normal permission handle it
+                    return
+            elif fnmatch.fnmatch(tool_string, pattern) or tool_string == pattern:
+                # Exact match or glob match
+                if now > expires:
+                    print(json.dumps({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": f"Timed permission expired: {pattern}"
+                        }
+                    }))
+                    return
+                return
+
+        # No matching timed permission - let normal flow continue
+        # Exit 0 without JSON output
+
+    except Exception as e:
+        with open("/tmp/kitty-claude-pre-tool-use-error.log", "a") as f:
+            f.write(f"PreToolUse hook error: {str(e)}\n")
+        # On error, don't block - let normal flow continue

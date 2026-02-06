@@ -27,7 +27,9 @@ from kitty_claude.claude import new_window
 from kitty_claude.colon_command import (
     handle_user_prompt_submit,
     handle_run_command,
-    handle_stop
+    handle_stop,
+    handle_pre_tool_use,
+    cleanup_expired_timed_permissions
 )
 from kitty_claude.session import (
     save_session_metadata,
@@ -170,11 +172,11 @@ def setup_claude_config(config_dir):
         except Exception as e:
             print(f"Warning: Could not link credentials: {e}")
 
-    # Create settings.json with UserPromptSubmit and Stop hooks
+    # Create settings.json with hooks (or add missing hooks to existing file)
     settings_file = claude_data_dir / "settings.json"
+    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+
     if not settings_file.exists():
-        # Get the kitty-claude executable path
-        kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
         settings_file.write_text(json.dumps({
             "hooks": {
                 "UserPromptSubmit": [
@@ -196,10 +198,44 @@ def setup_claude_config(config_dir):
                             }
                         ]
                     }
+                ],
+                "PreToolUse": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{kitty_claude_path} --pre-tool-use"
+                            }
+                        ]
+                    }
                 ]
             }
         }, indent=2))
-        print(f"Created settings with UserPromptSubmit and Stop hooks at {settings_file}")
+        print(f"Created settings with hooks at {settings_file}")
+    else:
+        # Add PreToolUse hook if missing
+        try:
+            settings = json.loads(settings_file.read_text())
+            if "hooks" not in settings:
+                settings["hooks"] = {}
+            if "PreToolUse" not in settings["hooks"]:
+                settings["hooks"]["PreToolUse"] = [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{kitty_claude_path} --pre-tool-use"
+                            }
+                        ]
+                    }
+                ]
+                settings_file.write_text(json.dumps(settings, indent=2))
+                print(f"Added PreToolUse hook to {settings_file}")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: Could not update settings.json: {e}")
+
+    # Clean up any expired timed permissions from previous sessions
+    cleanup_expired_timed_permissions(claude_data_dir)
 
     return claude_data_dir
 
@@ -394,7 +430,7 @@ def handle_session_picker(profile, socket="kitty-claude"):
     except FileNotFoundError:
         print("Error: fzf not found. Install: sudo apt install fzf")
 
-def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, resume_session_id=None):
+def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, resume_session_id=None, window_name=None):
     """Launch kitty-claude in single-tab mode.
 
     Uses tmux but disables new tab creation and skips session restoration.
@@ -513,10 +549,11 @@ set -g status-right " #{{pane_current_path}} "
     log(f"Created one-tab tmux config at {tmux_config_path}", profile)
 
     # Kitty config
+    window_name_arg = f" -n '{window_name}'" if window_name else ""
     kitty_config_path.write_text(f"""\
 # kitty-claude config (ONE-TAB MODE)
 include {Path.home()}/.config/kitty/kitty.conf
-shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir}
+shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir}{window_name_arg}
 """)
     kitty_config_path.chmod(0o444)
     log(f"Created one-tab kitty config at {kitty_config_path}", profile)
@@ -536,12 +573,15 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
     if no_kitty:
         # Launch tmux directly (for testing)
         log(f"Launching tmux directly in one-tab mode (no kitty)", profile)
-        os.execvp("tmux", [
+        tmux_cmd = [
             "tmux", "-L", tmux_socket,
             "-f", str(tmux_config_path),
             "new-session", "-As", tmux_socket,
             "-c", str(jail_dir)
-        ])
+        ]
+        if window_name:
+            tmux_cmd.extend(["-n", window_name])
+        os.execvp("tmux", tmux_cmd)
     else:
         # Launch kitty - NO session restoration, just start fresh
         log(f"Launching kitty in one-tab mode", profile)
@@ -804,6 +844,9 @@ bind -n C-v send-keys C-v
 # Alt-r to restart kitty-claude
 bind -n M-r run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--restart"
 
+# Alt-l to reload (send :reload to pane)
+bind -n M-l send-keys ':reload' Enter
+
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
 
@@ -995,6 +1038,9 @@ bind -n C-v send-keys C-v
 # Alt-r to restart kitty-claude
 bind -n M-r run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--restart"
 
+# Alt-l to reload (send :reload to pane)
+bind -n M-l send-keys ':reload' Enter
+
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
 
@@ -1168,6 +1214,7 @@ def main():
         parser.add_argument("--reinstall", action="store_true", help="Remove all config except credentials and exit")
         parser.add_argument("--user-prompt-submit", action="store_true", help="Handle UserPromptSubmit hook (internal use)")
         parser.add_argument("--stop", action="store_true", help="Handle Stop hook (internal use)")
+        parser.add_argument("--pre-tool-use", action="store_true", help="Handle PreToolUse hook (internal use)")
         parser.add_argument("--new-window", action="store_true", help="Create new window with session tracking (internal use)")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
         parser.add_argument("--restart", action="store_true", help="Restart kitty-claude with state preservation")
@@ -1186,6 +1233,7 @@ def main():
         parser.add_argument("--list-sessions", action="store_true", help="List all open sessions with metadata")
         parser.add_argument("--picker", action="store_true", help="Fuzzy find and switch to a session (internal use)")
         parser.add_argument("--one-tab", action="store_true", help="Single-tab mode - no session restoration, no new tabs")
+        parser.add_argument("--window-name", type=str, metavar="NAME", help="Set tmux window name (used with --one-tab)")
         parser.add_argument("--log", action="store_true", help="Stream logs to stderr while running")
         parser.add_argument("--add-rules", nargs='+', metavar="NAME [FILE]", help="Add a rule: --add-rules NAME (reads stdin) or --add-rules NAME FILE")
         parser.add_argument("--list-rules", action="store_true", help="List all rules")
@@ -1197,6 +1245,7 @@ def main():
         parser.add_argument("--with-commands", action="store_true", help="Enable kitty_command tool in command MCP server")
         parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
         parser.add_argument("--proxy-mcp", type=str, metavar="MCPDEF_JSON", help="Run MCP proxy with tmux approval (internal use)")
+        parser.add_argument("--permissions-gui", type=str, metavar="SESSION_ID", help="Open permissions editor GUI (internal use)")
 
         args = parser.parse_args()
 
@@ -1277,11 +1326,11 @@ def main():
         if args.one_tab:
             if args.log:
                 fork_with_log_tailing(
-                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session),
+                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session, args.window_name),
                     profile
                 )
             else:
-                handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session)
+                handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session, args.window_name)
             # execvp doesn't return
             sys.exit(0)
 
@@ -1328,6 +1377,22 @@ def main():
             proxy_mcp_main()
             sys.exit(0)
 
+        if args.permissions_gui:
+            session_id = args.permissions_gui
+            session_config_dir = config_dir / "session-configs" / session_id
+            cwd_file = get_state_dir() / "sessions" / f"{session_id}.json"
+            cwd = "."
+            if cwd_file.exists():
+                try:
+                    meta = json.loads(cwd_file.read_text())
+                    cwd = meta.get("path", ".")
+                except:
+                    pass
+            roles_dir = config_dir / "mcp-roles"
+            from kitty_claude.permissions_gui import run_gui
+            run_gui(str(session_config_dir), cwd, roles_dir, config_dir=str(config_dir), session_id=session_id)
+            sys.exit(0)
+
         if args.run_command:
             handle_run_command(args.run_command)
             sys.exit(0)
@@ -1342,6 +1407,10 @@ def main():
 
         if args.stop:
             handle_stop()
+            sys.exit(0)
+
+        if args.pre_tool_use:
+            handle_pre_tool_use()
             sys.exit(0)
 
         if args.new_window:

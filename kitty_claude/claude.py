@@ -125,6 +125,10 @@ def setup_session_config(session_id, profile=None):
     canonical_projects = base_config / "claude-data" / "projects"
     canonical_projects.mkdir(parents=True, exist_ok=True)
 
+    # Canonical shared skills location (so all sessions share skills)
+    canonical_skills = base_config / "claude-data" / "skills"
+    canonical_skills.mkdir(parents=True, exist_ok=True)
+
     # Create session-specific config directory
     session_configs = base_config / "session-configs"
     session_configs.mkdir(parents=True, exist_ok=True)
@@ -138,6 +142,17 @@ def setup_session_config(session_id, profile=None):
         global_settings = json.loads(canonical_settings_file.read_text())
     else:
         global_settings = {"model": "sonnet"}
+
+    # Ensure Skill tool is always allowed globally (so all sessions can use skills)
+    if "permissions" not in global_settings:
+        global_settings["permissions"] = {}
+    if "allow" not in global_settings["permissions"]:
+        global_settings["permissions"]["allow"] = []
+    if "Skill" not in global_settings["permissions"]["allow"]:
+        global_settings["permissions"]["allow"].append("Skill")
+        canonical_settings_file.parent.mkdir(parents=True, exist_ok=True)
+        canonical_settings_file.write_text(json.dumps(global_settings, indent=2))
+        log(f"Added Skill to global permissions", profile)
 
     # Load session overrides (if exist)
     session_overrides_file = session_config_dir / "session.json"
@@ -182,16 +197,51 @@ def setup_session_config(session_id, profile=None):
     else:
         saved_auth = {}
 
-    # Load MCP servers from session metadata
+    # Load MCP servers and active roles from session metadata
     state_dir = get_state_dir()
     metadata_file = state_dir / "sessions" / f"{session_id}.json"
     mcp_servers = {}
+    active_roles = []
     if metadata_file.exists():
         try:
             metadata = json.loads(metadata_file.read_text())
             mcp_servers = metadata.get("mcpServers", {})
+            active_roles = metadata.get("activeRoles", [])
         except:
             pass
+
+    # Auto-activate roles from tmux window title
+    title_roles_file = base_config / "title-roles.json"
+    if title_roles_file.exists():
+        try:
+            title_mappings = json.loads(title_roles_file.read_text())
+            tmux_socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+            result = subprocess.run(
+                ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_name}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                window_name = result.stdout.strip()
+                if window_name in title_mappings:
+                    for role_name in title_mappings[window_name]:
+                        if role_name not in active_roles:
+                            active_roles.append(role_name)
+        except:
+            pass
+
+    # Merge active roles: MCP servers + permissions
+    role_permissions = []
+    if active_roles:
+        roles_dir = base_config / "mcp-roles"
+        for role_name in active_roles:
+            role_file = roles_dir / f"{role_name}.json"
+            if role_file.exists():
+                try:
+                    role = json.loads(role_file.read_text())
+                    mcp_servers.update(role.get("mcpServers", {}))
+                    role_permissions.extend(role.get("permissions", {}).get("allow", []))
+                except:
+                    pass
 
     # Include built-in command MCP server (only if not already set by :kitty-commands)
     if "kitty-claude-commands" not in mcp_servers:
@@ -201,10 +251,13 @@ def setup_session_config(session_id, profile=None):
             "args": ["--command-mcp"],
         }
 
-    # Auto-approve all MCP server tools in settings
+    # Auto-approve all MCP server tools + role permissions in settings
     allow = merged_settings.get("permissions", {}).get("allow", [])
     for server_name in mcp_servers:
         rule = f"mcp__{server_name}__*"
+        if rule not in allow:
+            allow.append(rule)
+    for rule in role_permissions:
         if rule not in allow:
             allow.append(rule)
     merged_settings.setdefault("permissions", {})["allow"] = allow
