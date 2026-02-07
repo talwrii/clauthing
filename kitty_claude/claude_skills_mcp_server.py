@@ -134,9 +134,24 @@ async def run_claude_skills_mcp_server():
         },
     )
 
+    delete_skill_tool = Tool(
+        name="delete_claude_skill",
+        description="Delete an existing Claude Code skill.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name to delete"
+                },
+            },
+            "required": ["name"],
+        },
+    )
+
     @server.list_tools()
     async def list_tools():
-        return [create_skill_tool, update_skill_tool, read_skill_tool, list_skills_tool, patch_skill_tool]
+        return [create_skill_tool, update_skill_tool, read_skill_tool, list_skills_tool, patch_skill_tool, delete_skill_tool]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
@@ -239,6 +254,21 @@ async def run_claude_skills_mcp_server():
                 return [TextContent(type="text", text="Error: 'patch' command not found. Install with: sudo apt install patch")]
             except Exception as e:
                 return [TextContent(type="text", text=f"Error applying patch: {e}")]
+
+        elif name == "delete_claude_skill":
+            import shutil
+            skill_name = arguments.get("name", "").strip()
+
+            if err := validate_skill_name(skill_name):
+                return [TextContent(type="text", text=err)]
+
+            skill_dir = skills_dir / skill_name
+
+            if not skill_dir.exists():
+                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+
+            shutil.rmtree(skill_dir)
+            return [TextContent(type="text", text=f"Deleted skill '{skill_name}'. Reload to pick up changes.")]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
