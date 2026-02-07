@@ -937,10 +937,8 @@ Examples:
                 base_config = Path.home() / ".config" / "kitty-claude"
 
             projects_dir = base_config / "claude-data" / "projects"
-            # Path hash format: replace / with - and remove leading -
+            # Path hash format: replace / with -
             path_hash = cwd.replace('/', '-')
-            if path_hash.startswith('-'):
-                path_hash = path_hash[1:]
             session_file = projects_dir / path_hash / f"{session_id}.jsonl"
 
             if not session_file.exists():
@@ -4050,11 +4048,15 @@ Add your rule content here. This will be included in CLAUDE.md.
         print(prompt)
 
     except Exception as e:
-        # Log error and send notification
+        import traceback
+        # Log error with full traceback
         error_msg = f"Hook error: {str(e)}"
+        tb = traceback.format_exc()
         send_tmux_message(f"❌ {error_msg}", socket)
+        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        log(f"COLON COMMAND ERROR: {error_msg}\n{tb}", profile)
         with open("/tmp/kitty-claude-hook-error.log", "a") as f:
-            f.write(f"{error_msg}\n")
+            f.write(f"{error_msg}\n{tb}\n")
         # Pass through the original prompt on error
         try:
             input_data = json.loads(sys.stdin.read()) if 'input_data' not in locals() else input_data
