@@ -65,7 +65,8 @@ async def run_skills_mcp_server():
         name="update_skill",
         description=(
             "Update an existing kc-skill. Overwrites the skill content. "
-            "Use read_skill first to get current content if you need to modify it."
+            "PREFER patch_skill instead - it's more readable. "
+            "Only use this for complete rewrites."
         ),
         inputSchema={
             "type": "object",
@@ -107,9 +108,32 @@ async def run_skills_mcp_server():
         },
     )
 
+    patch_skill_tool = Tool(
+        name="patch_skill",
+        description=(
+            "Apply a unified diff patch to an existing kc-skill. "
+            "Preferred over update_skill for readability. "
+            "The patch should be in unified diff format (like 'diff -u' output)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name to patch"
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "Unified diff to apply"
+                },
+            },
+            "required": ["name", "patch"],
+        },
+    )
+
     @server.list_tools()
     async def list_tools():
-        return [create_skill_tool, update_skill_tool, read_skill_tool, list_skills_tool]
+        return [create_skill_tool, update_skill_tool, read_skill_tool, list_skills_tool, patch_skill_tool]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
@@ -173,6 +197,35 @@ async def run_skills_mcp_server():
                 return [TextContent(type="text", text="No kc-skills found.")]
 
             return [TextContent(type="text", text="\n".join(skills))]
+
+        elif name == "patch_skill":
+            import subprocess
+            skill_name = arguments.get("name", "").strip()
+            patch_content = arguments.get("patch", "")
+
+            if err := validate_skill_name(skill_name):
+                return [TextContent(type="text", text=err)]
+
+            skill_file = skills_dir / f"{skill_name}.md"
+
+            if not skill_file.exists():
+                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+
+            # Apply patch using subprocess
+            try:
+                result = subprocess.run(
+                    ["patch", "-u", str(skill_file)],
+                    input=patch_content,
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    return [TextContent(type="text", text=f"Patch failed:\n{result.stderr}\n{result.stdout}")]
+                return [TextContent(type="text", text=f"Patched skill '{skill_name}'.\n{result.stdout}")]
+            except FileNotFoundError:
+                return [TextContent(type="text", text="Error: 'patch' command not found. Install with: sudo apt install patch")]
+            except Exception as e:
+                return [TextContent(type="text", text=f"Error applying patch: {e}")]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
