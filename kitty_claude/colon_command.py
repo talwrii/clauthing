@@ -919,18 +919,72 @@ Examples:
 
         # Check for :allow-last command
         if prompt == ':allow-last':
-            # Read the last tool from the state file
-            last_tool_file = get_last_tool_file()
-            if not last_tool_file.exists():
-                response = {"continue": False, "stopReason": "No recent tool found. Run a tool first."}
+            # Find the last tool from session logs
+            session_id = input_data.get('session_id')
+            cwd = input_data.get('cwd', os.getcwd())
+
+            if not session_id:
+                response = {"continue": False, "stopReason": "No session ID available"}
                 print(json.dumps(response))
                 return
 
-            pattern = last_tool_file.read_text().strip()
-            if not pattern:
-                response = {"continue": False, "stopReason": "No recent tool found. Run a tool first."}
+            # Find the session JSONL file
+            # Path format: claude-data/projects/<path-hash>/<session-id>.jsonl
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                base_config = Path.home() / ".config" / "kitty-claude"
+
+            projects_dir = base_config / "claude-data" / "projects"
+            # Path hash format: replace / with - and remove leading -
+            path_hash = cwd.replace('/', '-')
+            if path_hash.startswith('-'):
+                path_hash = path_hash[1:]
+            session_file = projects_dir / path_hash / f"{session_id}.jsonl"
+
+            if not session_file.exists():
+                response = {"continue": False, "stopReason": f"Session log not found: {session_file}"}
                 print(json.dumps(response))
                 return
+
+            # Read the file and find the last tool_use
+            last_tool = None
+            try:
+                with open(session_file, 'r') as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line)
+                            content = entry.get('message', {}).get('content', [])
+                            if isinstance(content, list):
+                                for item in content:
+                                    if item.get('type') == 'tool_use':
+                                        last_tool = item
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                response = {"continue": False, "stopReason": f"Error reading session log: {e}"}
+                print(json.dumps(response))
+                return
+
+            if not last_tool:
+                response = {"continue": False, "stopReason": "No tool use found in session"}
+                print(json.dumps(response))
+                return
+
+            # Build the permission pattern
+            tool_name = last_tool.get('name', '')
+            tool_input = last_tool.get('input', {})
+
+            if tool_name == 'Bash':
+                command = tool_input.get('command', '')
+                # Extract the base command for the pattern
+                base_cmd = command.split()[0] if command else ''
+                pattern = f"Bash({base_cmd}:*)"
+            elif tool_name.startswith('mcp__'):
+                pattern = tool_name
+            else:
+                pattern = tool_name
 
             # Add to Claude's session permissions.allow
             settings_file = claude_data_dir / "settings.json"
@@ -4108,19 +4162,6 @@ def handle_stop():
             f.write(f"Stop hook error: {str(e)}\n")
 
 
-def get_last_tool_file():
-    """Get the file path for storing the last tool used."""
-    uid = os.getuid()
-    # Use session-specific file if we can determine session
-    claude_config = os.environ.get('CLAUDE_CONFIG_DIR', '')
-    if claude_config and '/session-configs/' in claude_config:
-        session_id = Path(claude_config).name
-        return Path(f"/run/user/{uid}/kc-last-tool-{session_id}.txt")
-    # Fallback to tmux socket
-    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'default')
-    return Path(f"/run/user/{uid}/kc-last-tool-{socket}.txt")
-
-
 def handle_pre_tool_use():
     """Handle PreToolUse hook - deny expired timed permissions."""
     import time
@@ -4140,14 +4181,6 @@ def handle_pre_tool_use():
             tool_string = tool_name
         else:
             tool_string = tool_name
-
-        # Save last tool for :allow-last command
-        try:
-            last_tool_file = get_last_tool_file()
-            last_tool_file.parent.mkdir(parents=True, exist_ok=True)
-            last_tool_file.write_text(tool_string)
-        except:
-            pass  # Don't fail if we can't save
 
         # Load timed permissions
         timed_perms = load_timed_permissions()
