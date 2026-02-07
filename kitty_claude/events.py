@@ -48,6 +48,54 @@ def get_events_log_path(profile=None):
     return runtime_dir / "events.jsonl"
 
 
+def get_windows_file(profile=None):
+    """Get the windows mapping file path."""
+    runtime_dir = get_runtime_dir(profile)
+    return runtime_dir / "windows.json"
+
+
+def load_windows(profile=None):
+    """Load window mappings from file."""
+    path = get_windows_file(profile)
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except:
+            pass
+    return {}
+
+
+def save_windows(windows, profile=None):
+    """Save window mappings to file."""
+    path = get_windows_file(profile)
+    path.write_text(json.dumps(windows, indent=2))
+
+
+def update_window(session_id, title, socket, path=None, profile=None):
+    """Update a window entry in the mappings file."""
+    windows = load_windows(profile)
+    windows[session_id] = {
+        "title": title,
+        "socket": socket,
+        "path": path or "",
+        "updated": time.time(),
+    }
+    save_windows(windows, profile)
+
+
+def remove_window(session_id, profile=None):
+    """Remove a window from the mappings file."""
+    windows = load_windows(profile)
+    if session_id in windows:
+        del windows[session_id]
+        save_windows(windows, profile)
+
+
+def get_all_windows(profile=None):
+    """Get all windows from the mappings file."""
+    return load_windows(profile)
+
+
 def emit_event(event, profile=None):
     """Append an event to the events log file.
 
@@ -293,6 +341,16 @@ def set_title(session_id, name, profile=None):
         "session_id": session_id,
         "name": name,
     }, profile)
+
+    # Update windows mapping file
+    path = ""
+    if metadata_file.exists():
+        try:
+            metadata = json.loads(metadata_file.read_text())
+            path = metadata.get("path", "")
+        except:
+            pass
+    update_window(session_id, name, tmux_socket, path, profile)
 
 
 def discover_plugins():

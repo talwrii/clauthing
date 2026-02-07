@@ -670,15 +670,16 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     # Add to open sessions list
     add_open_session(session_id, profile)
 
-    # Emit session_opened event
+    # Emit session_opened event and update windows file
     try:
-        from kitty_claude.events import emit_event
+        from kitty_claude.events import emit_event, update_window
         emit_event({
             "type": "session_opened",
             "session_id": session_id,
             "name": default_name,
             "path": current_path,
         }, profile)
+        update_window(session_id, default_name, socket, current_path, profile)
     except Exception as e:
         log(f"Error emitting session_opened event: {e}", profile)
 
@@ -714,13 +715,14 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
             log(f"Clean exit - removing session {session_id} from open sessions", profile)
             remove_open_session(session_id, profile)
             cleanup_session_config(session_id, profile)
-            # Emit session_closed event
+            # Emit session_closed event and remove from windows file
             try:
-                from kitty_claude.events import emit_event
+                from kitty_claude.events import emit_event, remove_window
                 emit_event({
                     "type": "session_closed",
                     "session_id": session_id,
                 }, profile)
+                remove_window(session_id, profile)
             except Exception as e:
                 log(f"Error emitting session_closed event: {e}", profile)
         else:

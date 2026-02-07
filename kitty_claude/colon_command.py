@@ -3909,32 +3909,21 @@ Add your rule content here. This will be included in CLAUDE.md.
                 return
 
             try:
-                # Get windows directly from tmux with their titles
-                result = run(
-                    ["tmux", "-L", socket, "list-windows", "-F", "#{window_id}\t#{window_name}\t#{pane_current_path}"],
-                    capture_output=True, text=True, check=True
-                )
+                from kitty_claude.events import get_all_windows
 
-                # Get current window to exclude
-                current = run(
-                    ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
-                    capture_output=True, text=True, check=True
-                )
-                current_window_id = current.stdout.strip()
+                # Get all windows from the central file
+                windows = get_all_windows()
+                my_session_id = input_data.get('session_id')
 
-                # Build fzf lines: window_id, title, path
+                # Build fzf lines: session_id, title, socket, path
                 fzf_lines = []
-                for line in result.stdout.strip().split("\n"):
-                    if not line:
-                        continue
-                    parts = line.split("\t")
-                    if len(parts) >= 2:
-                        window_id = parts[0]
-                        if window_id == current_window_id:
-                            continue  # Skip current window
-                        title = parts[1] if len(parts) > 1 else "?"
-                        path = parts[2] if len(parts) > 2 else ""
-                        fzf_lines.append(f"{window_id}\t{title}\t{path}")
+                for session_id, info in windows.items():
+                    if session_id == my_session_id:
+                        continue  # Skip current window
+                    title = info.get("title", session_id[:8])
+                    win_socket = info.get("socket", "")
+                    path = info.get("path", "")
+                    fzf_lines.append(f"{session_id}\t{title}\t{win_socket}\t{path}")
 
                 if not fzf_lines:
                     send_tmux_message("No other windows", socket)
@@ -3951,25 +3940,43 @@ Add your rule content here. This will be included in CLAUDE.md.
                 subprocess.run([
                     "tmux", "-L", socket,
                     "display-popup", "-E", "-w", "70%", "-h", "40%",
-                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=2,3 --header='Send to:' > {tmp_output}"
+                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=2,4 --header='Send to:' > {tmp_output}"
                 ])
 
                 if tmp_output.exists():
                     selected = tmp_output.read_text().strip()
                     if selected:
-                        target_window = selected.split("\t")[0]
-                        target_title = selected.split("\t")[1] if "\t" in selected else target_window
+                        parts = selected.split("\t")
+                        target_session_id = parts[0]
+                        target_title = parts[1] if len(parts) > 1 else target_session_id[:8]
+                        target_socket = parts[2] if len(parts) > 2 else socket
 
-                        run([
-                            "tmux", "-L", socket,
-                            "send-keys", "-t", target_window, "-l", message
-                        ])
-                        run([
-                            "tmux", "-L", socket,
-                            "send-keys", "-t", target_window, "Enter"
-                        ])
-                        send_tmux_message(f"✓ Sent to {target_title}", socket)
-                        response = {"continue": False, "stopReason": f"✓ Message sent to {target_title}"}
+                        # Find the tmux window with this session ID in target socket
+                        result = run(
+                            ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+                            capture_output=True, text=True, check=True
+                        )
+                        target_window = None
+                        for line in result.stdout.strip().split("\n"):
+                            line_parts = line.split()
+                            if len(line_parts) >= 2 and line_parts[1] == target_session_id:
+                                target_window = line_parts[0]
+                                break
+
+                        if target_window:
+                            run([
+                                "tmux", "-L", target_socket,
+                                "send-keys", "-t", target_window, "-l", message
+                            ])
+                            run([
+                                "tmux", "-L", target_socket,
+                                "send-keys", "-t", target_window, "Enter"
+                            ])
+                            send_tmux_message(f"✓ Sent to {target_title}", socket)
+                            response = {"continue": False, "stopReason": f"✓ Message sent to {target_title}"}
+                        else:
+                            send_tmux_message(f"❌ Could not find window (stale?)", socket)
+                            response = {"continue": False, "stopReason": "❌ Could not find target window"}
                     else:
                         response = {"continue": False, "stopReason": "Cancelled"}
                 else:
