@@ -272,7 +272,8 @@ def setup_session_config(session_id, profile=None):
         }
 
     # Auto-approve all MCP server tools + role permissions in settings
-    # NOTE: claude-skills is explicitly NOT auto-approved (dangerous - can write arbitrary code)
+    # NOTE: claude-skills write tools are NOT auto-approved (dangerous - can write arbitrary code)
+    # But read/list are safe and auto-approved
     dangerous_mcp_servers = {"claude-skills"}
     allow = merged_settings.get("permissions", {}).get("allow", [])
     for server_name in mcp_servers:
@@ -281,6 +282,10 @@ def setup_session_config(session_id, profile=None):
         rule = f"mcp__{server_name}__*"
         if rule not in allow:
             allow.append(rule)
+    # Auto-approve read-only claude-skills tools
+    for safe_tool in ["mcp__claude-skills__read_claude_skill", "mcp__claude-skills__list_claude_skills"]:
+        if safe_tool not in allow:
+            allow.append(safe_tool)
     for rule in role_permissions:
         if rule not in allow:
             allow.append(rule)
