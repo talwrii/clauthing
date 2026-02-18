@@ -781,9 +781,23 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     if resume_session_id:
         default_name = get_session_name(session_id)
     else:
-        # Generate default session name from path
-        default_name = Path(current_path).name or "claude"
-        # Save session metadata with default name
+        # Check if tmux window already has a custom name (from :spawn --window-name)
+        try:
+            result = run(
+                ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+                capture_output=True,
+                text=True,
+                profile=profile
+            )
+            tmux_window_name = result.stdout.strip() if result.returncode == 0 else None
+            # Use tmux window name if it's not a default tmux name
+            if tmux_window_name and not tmux_window_name.startswith("bash") and not tmux_window_name.startswith("zsh"):
+                default_name = tmux_window_name
+            else:
+                default_name = Path(current_path).name or "claude"
+        except:
+            default_name = Path(current_path).name or "claude"
+        # Save session metadata with name
         save_session_metadata(session_id, default_name, current_path)
     
     # Set window name to default and store session ID in window option
