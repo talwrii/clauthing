@@ -1429,6 +1429,22 @@ Examples:
             # Detect one-tab mode from socket name
             is_one_tab = socket.startswith('kc1-')
 
+            # Look up session title from metadata
+            from kitty_claude.state import get_state_dir
+            session_title = None
+            try:
+                state_dir = get_state_dir()
+                metadata_file = state_dir / "sessions" / f"{target_session_id}.json"
+                if metadata_file.exists():
+                    metadata = json.loads(metadata_file.read_text())
+                    name = metadata.get("name")
+                    # Only use if it's meaningful
+                    if name and name != target_session_id and not name.startswith("kitty-claude-"):
+                        if not (len(name) == 36 and name.count('-') == 4):
+                            session_title = name
+            except:
+                pass
+
             # Build kitty-claude command
             kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
             cmd = [kitty_claude_path]
@@ -1442,6 +1458,9 @@ Examples:
             # Pass working directory for resumed session
             if target_cwd and Path(target_cwd).exists():
                 cmd.extend(["--cwd", target_cwd])
+            # Pass window name/title for resumed session
+            if session_title:
+                cmd.extend(["--window-name", session_title])
 
             # Spawn the new window
             import subprocess as sp
