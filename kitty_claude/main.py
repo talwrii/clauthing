@@ -25,6 +25,7 @@ from kitty_claude.tmux import (
 )
 from kitty_claude.claude import new_window
 from kitty_claude.colon_command import (
+    handle_session_start,
     handle_user_prompt_submit,
     handle_run_command,
     handle_stop,
@@ -41,6 +42,107 @@ from kitty_claude.session import (
 )
 from kitty_claude.tmux_status import handle_tmux_status
 from kitty_claude.rules import save_rule, build_claude_md, list_rules, show_rule
+
+def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
+    """Regenerate the tmux.conf file and source it if tmux is running.
+
+    This ensures hooks and bindings are updated when code changes.
+    """
+    if tmux_socket is None:
+        tmux_socket = f"kitty-claude-{profile}" if profile else "kitty-claude"
+
+    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    profile_arg = f"--profile {profile} " if profile else ""
+    jail_dir = f"/tmp/{tmux_socket}"
+    kitty_claude_cmd = f"'{kitty_claude_path}' {profile_arg}--session"
+
+    tmux_config_path = Path(config_dir) / "tmux.conf"
+
+    config_content = f"""\
+# kitty-claude tmux config (auto-regenerated)
+# Kill session when kitty window closes
+set -g destroy-unattached on
+
+# Set tmux socket name so hooks can find it
+set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+
+# Default command is claude wrapper for session tracking
+set -g default-command "{kitty_claude_cmd}"
+
+# Bind C-n directly (no prefix) to open new window with claude in jail
+bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
+
+# Also override default C-b c
+bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
+
+# C-w closes current window, but not the last one
+bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
+
+# C-v passthrough for paste
+bind -n C-v send-keys C-v
+
+# Alt-r to restart kitty-claude
+bind -n M-r run-shell "kitty-claude {profile_arg}--restart"
+
+# Alt-l to reload (send :reload to pane)
+bind -n M-l send-keys ':reload' Enter
+
+# Alt-e to open session notes
+bind -n M-e run-shell "kitty-claude {profile_arg}--notes"
+
+# C-p for session picker (fuzzy find with popup)
+bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {profile_arg}--picker"
+
+# C-q: queue a command for when Claude finishes responding
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+
+# Some sensible defaults
+set -g mouse on
+set -g history-limit 10000
+set -g base-index 1
+setw -g pane-base-index 1
+
+# Easier window switching
+bind -n C-j previous-window
+bind -n C-k next-window
+bind -n M-o last-window
+
+# Disable automatic window renaming (we manage names manually)
+set -g automatic-rename off
+set -g allow-rename off
+
+# Bind M-n to prompt for window name and update session metadata
+bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {profile_arg}--socket {tmux_socket} --rename \\"%%\\"'"
+
+# Simple status bar (use status-format to avoid conflicts)
+set -g status on
+set -g status-style bg=colour235,fg=colour248
+set -g status-format[0] '#[align=left] #W #[align=right] #{{pane_current_path}} '
+set -gu status-format[1]
+set -gu status-format[2]
+
+# Refresh status bar on window changes
+set-hook -g window-renamed 'run-shell "kitty-claude {profile_arg}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log"'
+"""
+
+    tmux_config_path.write_text(config_content)
+
+    # Source the new config if tmux is running
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", tmux_socket, "source-file", str(tmux_config_path)],
+            capture_output=True, text=True
+        )
+        with open("/tmp/kc-reload-debug.txt", "a") as f:
+            f.write(f"source-file returncode: {result.returncode}\n")
+            if result.stderr:
+                f.write(f"source-file stderr: {result.stderr}\n")
+    except Exception as e:
+        with open("/tmp/kc-reload-debug.txt", "a") as f:
+            f.write(f"source-file exception: {e}\n")
+
+    return tmux_config_path
+
 
 def fork_with_log_tailing(exec_func, profile=None):
     """Fork process: child execs, parent tails logs to stderr.
@@ -179,6 +281,16 @@ def setup_claude_config(config_dir):
     if not settings_file.exists():
         settings_file.write_text(json.dumps({
             "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{kitty_claude_path} --session-start"
+                            }
+                        ]
+                    }
+                ],
                 "UserPromptSubmit": [
                     {
                         "hooks": [
@@ -213,11 +325,24 @@ def setup_claude_config(config_dir):
         }, indent=2))
         print(f"Created settings with hooks at {settings_file}")
     else:
-        # Add PreToolUse hook if missing
+        # Add missing hooks
         try:
             settings = json.loads(settings_file.read_text())
             if "hooks" not in settings:
                 settings["hooks"] = {}
+            modified = False
+            if "SessionStart" not in settings["hooks"]:
+                settings["hooks"]["SessionStart"] = [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{kitty_claude_path} --session-start"
+                            }
+                        ]
+                    }
+                ]
+                modified = True
             if "PreToolUse" not in settings["hooks"]:
                 settings["hooks"]["PreToolUse"] = [
                     {
@@ -229,8 +354,9 @@ def setup_claude_config(config_dir):
                         ]
                     }
                 ]
+                modified = True
+            if modified:
                 settings_file.write_text(json.dumps(settings, indent=2))
-                print(f"Added PreToolUse hook to {settings_file}")
         except (json.JSONDecodeError, OSError) as e:
             print(f"Warning: Could not update settings.json: {e}")
 
@@ -430,23 +556,25 @@ def handle_session_picker(profile, socket="kitty-claude"):
     except FileNotFoundError:
         print("Error: fzf not found. Install: sudo apt install fzf")
 
-def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, resume_session_id=None, window_name=None):
+def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, resume_session_id=None, window_name=None, cwd=None):
     """Launch kitty-claude in single-tab mode.
 
     Uses tmux but disables new tab creation and skips session restoration.
     Each invocation creates a completely independent instance.
+
+    Args:
+        cwd: Working directory override (used when resuming sessions in their original dir)
     """
     import time
 
     # Unique ID for this instance
     instance_id = f"{int(time.time())}-{os.getpid()}"
 
-    # Put ephemeral configs in temp directory
+    # Put ephemeral kitty config in temp directory (tmux config goes in session dir)
     tmp_config_dir = Path(f"/tmp/kitty-claude-one-tab-{os.getuid()}")
     tmp_config_dir.mkdir(parents=True, exist_ok=True)
 
     kitty_config_path = tmp_config_dir / f"kitty-{instance_id}.conf"
-    tmux_config_path = tmp_config_dir / f"tmux-{instance_id}.conf"
 
     # Unique socket and session name for each instance
     if profile:
@@ -457,8 +585,11 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
 
-    # Set up jail directory
-    jail_dir = setup_jail_directory()
+    # Set up working directory - use cwd override if provided, otherwise jail dir
+    if cwd and Path(cwd).exists():
+        working_dir = cwd
+    else:
+        working_dir = setup_jail_directory()
 
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -494,6 +625,9 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
     session_config_dir = setup_session_config(session_id, profile)
     log(f"Session config ready for: {session_id}", profile)
 
+    # tmux config goes in session directory
+    tmux_config_path = session_config_dir / "tmux.conf"
+
     # Build the claude command (with --resume if resuming)
     if resume_session_id:
         claude_command = f"{claude_bin} --resume {resume_session_id}"
@@ -527,6 +661,12 @@ bind -n C-v send-keys C-v
 # M-e opens session notes in vim popup
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
 
+# M-n to rename window and record in title history
+bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --rename \\"%%\\"'"
+
+# M-l to reload
+bind -n M-l send-keys ':reload' Enter
+
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
@@ -539,13 +679,13 @@ setw -g pane-base-index 1
 # Quick escape time
 set -sg escape-time 0
 
-# Simple status bar
+# Simple status bar (use status-format to avoid conflicts)
 set -g status on
 set -g status-style bg=colour235,fg=colour248
-set -g status-left " [one-tab] "
-set -g status-right " #{{pane_current_path}} "
+set -g status-format[0] '#[align=left] #W #[align=right] #{{pane_current_path}} '
+set -gu status-format[1]
+set -gu status-format[2]
 """)
-    tmux_config_path.chmod(0o444)
     log(f"Created one-tab tmux config at {tmux_config_path}", profile)
 
     # Kitty config
@@ -553,9 +693,8 @@ set -g status-right " #{{pane_current_path}} "
     kitty_config_path.write_text(f"""\
 # kitty-claude config (ONE-TAB MODE)
 include {Path.home()}/.config/kitty/kitty.conf
-shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir}{window_name_arg}
+shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {working_dir}{window_name_arg}
 """)
-    kitty_config_path.chmod(0o444)
     log(f"Created one-tab kitty config at {kitty_config_path}", profile)
 
     # Check dependencies
@@ -748,6 +887,10 @@ def rename_session(session_id, new_name, profile, tmux_socket):
     """Rename a session by ID."""
     log(f"Rename session handler: session_id={session_id}, new_name={new_name}", profile)
 
+    # Record title in history
+    from kitty_claude.colon_command import record_title
+    record_title(new_name, profile)
+
     # Update session metadata
     state_dir = get_state_dir()
     metadata_file = state_dir / "sessions" / f"{session_id}.json"
@@ -899,7 +1042,7 @@ set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
 
 # Refresh status bar on window changes
 set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'refresh-client -S'
+set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
 
 # Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
@@ -1098,7 +1241,7 @@ set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
 
 # Refresh status bar on window changes
 set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'refresh-client -S'
+set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
 
 # Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
@@ -1106,7 +1249,6 @@ set -g window-status-current-style bg=colour39,fg=colour235,bold
 set -g window-status-format " #I:#W "
 set -g window-status-current-format " #I:#W "
 """)
-    tmux_config_path.chmod(0o444)  # Read-only
     print(f"Created tmux config at {tmux_config_path}")
 
     # Always regenerate kitty config (it's ephemeral, not user-editable)
@@ -1117,7 +1259,6 @@ set -g window-status-current-format " #I:#W "
 include {Path.home()}/.config/kitty/kitty.conf
 shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {kitty_claude_cmd}
 """)
-    kitty_config_path.chmod(0o444)  # Read-only
     print(f"Created kitty config at {kitty_config_path}")
 
     # Check if tmux session exists
@@ -1228,16 +1369,19 @@ def main():
     try:
         parser = argparse.ArgumentParser(description="Launch Claude Code in isolated kitty+tmux environment")
         parser.add_argument("--reinstall", action="store_true", help="Remove all config except credentials and exit")
+        parser.add_argument("--session-start", action="store_true", help="Handle SessionStart hook (internal use)")
         parser.add_argument("--user-prompt-submit", action="store_true", help="Handle UserPromptSubmit hook (internal use)")
         parser.add_argument("--stop", action="store_true", help="Handle Stop hook (internal use)")
         parser.add_argument("--pre-tool-use", action="store_true", help="Handle PreToolUse hook (internal use)")
         parser.add_argument("--new-window", action="store_true", help="Create new window with session tracking (internal use)")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
+        parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
         parser.add_argument("--restart", action="store_true", help="Restart kitty-claude with state preservation")
         parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
         parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
         parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
         parser.add_argument("--rename", type=str, metavar="NAME", help="Rename current window's session (looks up session ID automatically)")
+        parser.add_argument("--socket", type=str, metavar="SOCKET", help="Tmux socket name (for --rename etc)")
         parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
         parser.add_argument("--notes", action="store_true", help="Open session notes in vim popup")
         parser.add_argument("--profile", type=str, help="Use specific profile (required for non-internal commands)")
@@ -1267,6 +1411,7 @@ def main():
         parser.add_argument("--events", action="store_true", help="Tail events log to stdout (blocks, uses inotify)")
         parser.add_argument("--events-since", type=float, metavar="TIMESTAMP", help="With --events, replay from this unix timestamp")
         parser.add_argument("--set-title", nargs=2, metavar=("SESSION_ID", "NAME"), help="Set session title (updates metadata, tmux, emits event)")
+        parser.add_argument("--send-login", nargs=2, metavar=("SOCKET", "WINDOW"), help="Test send :login to a kc1 socket/window (debug)")
 
         args = parser.parse_args()
 
@@ -1290,9 +1435,33 @@ def main():
             tmux_socket = "kitty-claude"
             kitty_claude_cmd = "kitty-claude --new-window"
 
+        # Override socket if explicitly provided
+        if args.socket:
+            tmux_socket = args.socket
+
         claude_data_dir = config_dir / "claude-data"
 
         # Dispatch to command handlers
+        if args.send_login:
+            import subprocess
+            import time
+            socket, window = args.send_login
+            print(f"Sending hello + Enter to {socket} window {window}", file=sys.stderr)
+
+            cmd1 = ["tmux", "-L", socket, "send-keys", "-t", window, "-l", "hello"]
+            print(f"CMD: {' '.join(cmd1)}", file=sys.stderr)
+            r1 = subprocess.run(cmd1)
+            print(f"  rc={r1.returncode}", file=sys.stderr)
+
+            time.sleep(1.0)
+
+            cmd2 = ["tmux", "-L", socket, "send-keys", "-t", window, "Enter"]
+            print(f"CMD: {' '.join(cmd2)}", file=sys.stderr)
+            r2 = subprocess.run(cmd2)
+            print(f"  rc={r2.returncode}", file=sys.stderr)
+
+            sys.exit(0)
+
         if args.set_claude:
             set_claude_binary(args.set_claude, profile)
             sys.exit(0)
@@ -1347,11 +1516,11 @@ def main():
         if args.one_tab:
             if args.log:
                 fork_with_log_tailing(
-                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session, args.window_name),
+                    lambda: handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session, args.window_name, args.cwd),
                     profile
                 )
             else:
-                handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session, args.window_name)
+                handle_one_tab(config_dir, profile, args.remain, args.no_kitty, args.resume_session, args.window_name, args.cwd)
             # execvp doesn't return
             sys.exit(0)
 
@@ -1443,6 +1612,10 @@ def main():
 
         if args.notes:
             open_session_notes(get_runtime_tmux_state_file)
+            sys.exit(0)
+
+        if args.session_start:
+            handle_session_start()
             sys.exit(0)
 
         if args.user_prompt_submit:

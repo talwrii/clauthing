@@ -25,6 +25,56 @@ from kitty_claude.session_utils import session_has_messages
 from kitty_claude.window_utils import open_session_notes
 from kitty_claude.tmux import get_runtime_tmux_state_file
 from kitty_claude.rules import build_claude_md
+import time
+
+
+def get_title_history_file(profile=None):
+    """Get the path to the title history file."""
+    if profile is None:
+        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    if profile:
+        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "kitty-claude"
+    return config_dir / "title-history.json"
+
+
+def record_title(title, profile=None):
+    """Record a title in the history file."""
+    if not title or not title.strip():
+        return
+    title = title.strip()
+
+    history_file = get_title_history_file(profile)
+    history = []
+
+    if history_file.exists():
+        try:
+            history = json.loads(history_file.read_text())
+        except:
+            history = []
+
+    # Find existing entry or create new one
+    found = False
+    for entry in history:
+        if entry.get("title") == title:
+            entry["last_used"] = time.time()
+            entry["count"] = entry.get("count", 0) + 1
+            found = True
+            break
+
+    if not found:
+        history.append({
+            "title": title,
+            "last_used": time.time(),
+            "count": 1
+        })
+
+    # Sort by last_used descending
+    history.sort(key=lambda x: x.get("last_used", 0), reverse=True)
+
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    history_file.write_text(json.dumps(history, indent=2))
 
 
 def get_tmux_socket():
@@ -68,6 +118,44 @@ def get_state_dir():
         state_dir = Path.home() / ".local" / "state" / "kitty-claude"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
+
+
+def queue_startup_message(session_id: str, message: str, profile: str = None):
+    """Queue a message to be shown on next session start."""
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    session_dir = base_config / "session-configs" / session_id
+    run_file = session_dir / ".run-counter"
+    messages_file = session_dir / ".startup-messages"
+
+    # Get current run number
+    current_run = 0
+    if run_file.exists():
+        try:
+            current_run = int(run_file.read_text().strip())
+        except (ValueError, OSError):
+            pass
+
+    # Load existing messages or start fresh
+    messages = []
+    if messages_file.exists():
+        try:
+            messages = json.loads(messages_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Add new message with current run number
+    messages.append({"run": current_run, "text": message})
+
+    # Write back
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        messages_file.write_text(json.dumps(messages))
+    except OSError:
+        pass
 
 
 def get_timed_permissions_file():
@@ -504,7 +592,6 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :rule [name]         Create/edit a global rule (fzf if no name)
 :todo [desc]         List todos or add one for current directory
 :done <num>          Mark a todo as done by number
-:kitty-commands      Enable kitty-claude command MCP server and reload
 :plan / :god         Enable planning MCP server (session overview) and reload
 :skills-mcp          Enable skills MCP server (lets Claude create kc-skills)
 ::skills             List all kitty-claude skills
@@ -523,12 +610,14 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :roles-current       Show active roles in this session
 :title-role [t] [r]  Map tmux window title to a role (no args: show)
 :login               Refresh credentials from freshest session
+:login-all           Send :login to all kc1-* instances
+:reload-all          Send :reload to all kc1-* instances
 :send <message>      Send a message to another kitty-claude window (fzf)
 :current-sessions    List all currently running sessions
-:sessions            List recent sessions (last 10)
+:sessions [N]        List recent sessions (default 10)
 :resume <num|id>     Resume a session in new window
 :resume-new [num|id] Resume a session in a new kitty-claude window
-:spawn <title>       Spawn a new kitty-claude window with given title
+:spawn [title]       Spawn new window (no arg: pick from history)
 :clear               Clear session and start fresh
 :reload              Reload Claude (same session, pick up config changes)
 :cd <path>           Change directory and move session
@@ -548,6 +637,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
 :disallow <num> ...  Remove allowed command(s) by number
 :allow-for <dur> <p|n> Allow tool for duration (pattern or # from :permissions)
 :allow-last          Allow the last tool that was used
+:allow-recent        Select from recent tools to allow (fzf)
 :time                Show duration of last response
 :checkpoint          Save a checkpoint in the current session
 :rollback            Rollback to the last checkpoint (clones session)
@@ -1009,6 +1099,151 @@ Examples:
             print(json.dumps(response))
             return
 
+        # Check for :allow-recent command
+        if prompt == ':allow-recent':
+            # Find recent tools from session logs, let user select with fzf
+            session_id = input_data.get('session_id')
+            cwd = input_data.get('cwd', os.getcwd())
+
+            if not session_id:
+                response = {"continue": False, "stopReason": "No session ID available"}
+                print(json.dumps(response))
+                return
+
+            # Find the session JSONL file
+            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            if profile:
+                base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                base_config = Path.home() / ".config" / "kitty-claude"
+
+            projects_dir = base_config / "claude-data" / "projects"
+            path_hash = cwd.replace('/', '-')
+            session_file = projects_dir / path_hash / f"{session_id}.jsonl"
+
+            if not session_file.exists():
+                response = {"continue": False, "stopReason": f"Session log not found: {session_file}"}
+                print(json.dumps(response))
+                return
+
+            # Read the file and collect recent tool_use entries (keep last N unique patterns)
+            tools_seen = []  # list of (pattern, display_text) - most recent last
+            try:
+                with open(session_file, 'r') as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line)
+                            content = entry.get('message', {}).get('content', [])
+                            if isinstance(content, list):
+                                for item in content:
+                                    if item.get('type') == 'tool_use':
+                                        tool_name = item.get('name', '')
+                                        tool_input = item.get('input', {})
+
+                                        # Build the permission pattern (same logic as allow-last)
+                                        if tool_name == 'Bash':
+                                            command = tool_input.get('command', '')
+                                            base_cmd = command.split()[0] if command else ''
+                                            pattern = f"Bash({base_cmd}:*)"
+                                            display = f"{pattern}  # {command[:60]}"
+                                        elif tool_name.startswith('mcp__'):
+                                            pattern = tool_name
+                                            display = pattern
+                                        else:
+                                            pattern = tool_name
+                                            display = pattern
+
+                                        # Remove if already seen, then add to end
+                                        tools_seen = [(p, d) for p, d in tools_seen if p != pattern]
+                                        tools_seen.append((pattern, display))
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                response = {"continue": False, "stopReason": f"Error reading session log: {e}"}
+                print(json.dumps(response))
+                return
+
+            if not tools_seen:
+                response = {"continue": False, "stopReason": "No tool use found in session"}
+                print(json.dumps(response))
+                return
+
+            # Take last 20, reverse so most recent is first
+            recent_tools = list(reversed(tools_seen[-20:]))
+
+            # Use fzf in tmux popup to select
+            import subprocess
+            import tempfile
+
+            # Build fzf input: index\tpattern\tdisplay
+            fzf_lines = []
+            for i, (p, d) in enumerate(recent_tools):
+                fzf_lines.append(f"{i}\t{p}\t{d}")
+
+            tmp_input = Path(tempfile.mktemp())
+            tmp_output = Path(tempfile.mktemp())
+            tmp_input.write_text("\n".join(fzf_lines))
+            tmp_output.unlink(missing_ok=True)
+
+            try:
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "80%", "-h", "50%",
+                    f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=3 --header='Select tool to allow' > {tmp_output}"
+                ])
+
+                if not tmp_output.exists() or not tmp_output.read_text().strip():
+                    response = {"continue": False, "stopReason": "Selection cancelled"}
+                    print(json.dumps(response))
+                    tmp_input.unlink(missing_ok=True)
+                    tmp_output.unlink(missing_ok=True)
+                    return
+
+                selected_line = tmp_output.read_text().strip()
+                tmp_input.unlink(missing_ok=True)
+                tmp_output.unlink(missing_ok=True)
+
+                # Parse: index\tpattern\tdisplay
+                parts = selected_line.split('\t')
+                if len(parts) >= 2:
+                    pattern = parts[1]
+                else:
+                    response = {"continue": False, "stopReason": "Could not parse selection"}
+                    print(json.dumps(response))
+                    return
+
+            except Exception as e:
+                tmp_input.unlink(missing_ok=True)
+                tmp_output.unlink(missing_ok=True)
+                response = {"continue": False, "stopReason": f"Error running fzf: {e}"}
+                print(json.dumps(response))
+                return
+
+            # Add to Claude's session permissions.allow
+            settings_file = claude_data_dir / "settings.json"
+            try:
+                if settings_file.exists():
+                    settings = json.loads(settings_file.read_text())
+                else:
+                    settings = {}
+                if 'permissions' not in settings:
+                    settings['permissions'] = {}
+                if 'allow' not in settings['permissions']:
+                    settings['permissions']['allow'] = []
+                if pattern not in settings['permissions']['allow']:
+                    settings['permissions']['allow'].append(pattern)
+                    settings_file.write_text(json.dumps(settings, indent=2))
+                    send_tmux_message(f"✓ Allowed: {pattern[:50]}", socket)
+                    response = {"continue": False, "stopReason": f"✓ Allowed: {pattern}"}
+                else:
+                    send_tmux_message(f"Already allowed: {pattern[:50]}", socket)
+                    response = {"continue": False, "stopReason": f"Already allowed: {pattern}"}
+            except Exception as e:
+                response = {"continue": False, "stopReason": f"Error updating settings: {e}"}
+
+            print(json.dumps(response))
+            return
+
         # Check for :current-sessions command
         if prompt == ':current-sessions':
             profile = os.environ.get('KITTY_CLAUDE_PROFILE')
@@ -1033,12 +1268,19 @@ Examples:
             return
 
         # Check for :sessions command
-        if prompt == ':sessions':
+        if prompt == ':sessions' or prompt.startswith(':sessions '):
             profile = os.environ.get('KITTY_CLAUDE_PROFILE')
             from kitty_claude.claude import get_recent_sessions
             from datetime import datetime
 
-            sessions = get_recent_sessions(profile, limit=10)
+            # Parse optional limit argument
+            limit = 10
+            if prompt.startswith(':sessions '):
+                arg = prompt[10:].strip()
+                if arg.isdigit():
+                    limit = int(arg)
+
+            sessions = get_recent_sessions(profile, limit=limit)
 
             if not sessions:
                 msg = "No recent sessions found"
@@ -1046,9 +1288,24 @@ Examples:
                 lines = ["Recent sessions (ordered by last activity):\n"]
                 for i, sess in enumerate(sessions, 1):
                     session_id = sess['session_id']
-                    cwd = sess.get('cwd', '?')
+                    title = sess.get('title')
+                    cwd = sess.get('cwd') or '?'
                     mtime = datetime.fromtimestamp(sess['last_modified']).strftime('%Y-%m-%d %H:%M')
-                    lines.append(f"{i}. {session_id[:8]}... - {cwd} (last: {mtime})")
+                    last_msg = sess.get('last_message') or ''
+
+                    # Build the main line
+                    if title:
+                        main_line = f"{i}. [{title}] {cwd} ({mtime})"
+                    else:
+                        main_line = f"{i}. {session_id[:8]}... - {cwd} ({mtime})"
+
+                    lines.append(main_line)
+                    if last_msg:
+                        # Truncate and clean up the message
+                        last_msg = last_msg.replace('\n', ' ').strip()
+                        if len(last_msg) > 40:
+                            last_msg = last_msg[:40] + "..."
+                        lines.append(f"   └─ {last_msg}")
                 lines.append(f"\nUse :resume <number> or :resume <session-id> to resume")
                 msg = "\n".join(lines)
 
@@ -1120,12 +1377,14 @@ Examples:
 
             # Resolve session ID from number or direct ID
             target_session_id = None
+            target_cwd = None
             if arg.isdigit():
                 from kitty_claude.claude import get_recent_sessions
                 sessions = get_recent_sessions(profile, limit=10)
                 index = int(arg) - 1
                 if 0 <= index < len(sessions):
                     target_session_id = sessions[index]['session_id']
+                    target_cwd = sessions[index].get('cwd')
                 else:
                     send_tmux_message(f"❌ Invalid session number", socket)
                     response = {"continue": False, "stopReason": f"❌ Session number {arg} not found"}
@@ -1133,6 +1392,39 @@ Examples:
                     return
             else:
                 target_session_id = arg
+                # Look up cwd from project directory (more reliable than .claude.json)
+                if profile:
+                    base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                else:
+                    base_config = Path.home() / ".config" / "kitty-claude"
+                # Search projects directories for this session's JSONL file
+                projects_dir = base_config / "claude-data" / "projects"
+                if projects_dir.exists():
+                    for proj_dir in projects_dir.iterdir():
+                        if proj_dir.is_dir():
+                            session_file = proj_dir / f"{target_session_id}.jsonl"
+                            if session_file.exists():
+                                # Reverse the path hash: -home-user-project -> /home/user/project
+                                # But paths may contain hyphens (e.g., note-frame), so we
+                                # progressively try converting hyphens to slashes from left
+                                # and check if the resulting path exists
+                                path_hash = proj_dir.name
+                                if path_hash.startswith('-'):
+                                    path_hash = path_hash[1:]  # Remove leading hyphen
+                                parts = path_hash.split('-')
+                                # Try progressively fewer slashes (more hyphens kept)
+                                for num_slashes in range(len(parts), 0, -1):
+                                    # Join first num_slashes parts with /, rest with -
+                                    candidate = '/' + '/'.join(parts[:num_slashes])
+                                    if num_slashes < len(parts):
+                                        candidate += '-' + '-'.join(parts[num_slashes:])
+                                    if Path(candidate).exists():
+                                        target_cwd = candidate
+                                        break
+                                # Fallback: simple conversion
+                                if not target_cwd:
+                                    target_cwd = '/' + '/'.join(parts)
+                                break
 
             # Detect one-tab mode from socket name
             is_one_tab = socket.startswith('kc1-')
@@ -1147,25 +1439,84 @@ Examples:
             else:
                 cmd.append("--one-tab")  # Always spawn as one-tab for resume-new
             cmd.extend(["--resume-session", target_session_id])
+            # Pass working directory for resumed session
+            if target_cwd and Path(target_cwd).exists():
+                cmd.extend(["--cwd", target_cwd])
 
             # Spawn the new window
             import subprocess as sp
-            sp.Popen(cmd)
+            try:
+                proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE)
+                # Give it a moment to fail if it's going to
+                import time
+                time.sleep(0.2)
+                if proc.poll() is not None:
+                    # Process already exited - probably an error
+                    _, stderr = proc.communicate()
+                    if stderr:
+                        send_tmux_message(f"❌ {stderr.decode()[:50]}", socket)
+                        response = {"continue": False, "stopReason": f"❌ Error: {stderr.decode()}"}
+                        print(json.dumps(response))
+                        return
+            except Exception as e:
+                send_tmux_message(f"❌ {str(e)[:50]}", socket)
+                response = {"continue": False, "stopReason": f"❌ Failed to spawn: {e}"}
+                print(json.dumps(response))
+                return
 
-            send_tmux_message(f"✓ Spawning new window", socket)
-            response = {"continue": False, "stopReason": f"✓ Resuming {target_session_id[:8]}... in new kitty-claude window"}
+            cwd_msg = f" in {target_cwd}" if target_cwd else ""
+            send_tmux_message(f"✓ Spawning new window{cwd_msg[:30]}", socket)
+            response = {"continue": False, "stopReason": f"✓ Resuming {target_session_id[:8]}...{cwd_msg} in new kitty-claude window"}
             print(json.dumps(response))
             return
 
         # Check for :spawn command
         if prompt.startswith(':spawn'):
             arg = prompt[len(':spawn'):].strip()
+
+            # If no arg, show fzf picker of title history
             if not arg:
-                response = {"continue": False, "stopReason": "Usage: :spawn <title>\nSpawns a new kitty-claude window with the given title."}
-                print(json.dumps(response))
-                return
+                history_file = get_title_history_file()
+                history = []
+                if history_file.exists():
+                    try:
+                        history = json.loads(history_file.read_text())
+                    except:
+                        pass
+
+                if not history:
+                    response = {"continue": False, "stopReason": "No title history yet. Use :spawn <title> to create one."}
+                    print(json.dumps(response))
+                    return
+
+                # Build fzf input: title (count uses)
+                fzf_lines = []
+                for entry in history:
+                    title = entry.get("title", "")
+                    count = entry.get("count", 1)
+                    fzf_lines.append(f"{title}\t({count} uses)")
+
+                fzf_input = "\n".join(fzf_lines)
+
+                # Run fzf in tmux popup
+                fzf_cmd = f"echo '{fzf_input}' | fzf --prompt='Spawn with title: ' --with-nth=1"
+                result = subprocess.run(
+                    ["tmux", "-L", socket, "display-popup", "-E", "-w", "60%", "-h", "50%", fzf_cmd],
+                    capture_output=True, text=True
+                )
+
+                if result.returncode == 0 and result.stdout.strip():
+                    # Extract just the title (before the tab)
+                    arg = result.stdout.strip().split("\t")[0]
+                else:
+                    response = {"continue": False, "stopReason": "Cancelled"}
+                    print(json.dumps(response))
+                    return
 
             window_title = arg
+
+            # Record title in history
+            record_title(window_title)
 
             # Build kitty-claude command - always use --one-tab for independent windows
             kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
@@ -2024,6 +2375,12 @@ fi
                 shared_creds.write_text(best_creds_content)
                 remaining = (best_expiry - now_ms) // 60000
                 send_tmux_message(f"✓ Credentials from {best_source} - reloading...", socket)
+                # Queue message for next session start
+                queue_startup_message(
+                    session_id,
+                    f"✓ Logged in with credentials from session {best_source} ({remaining} min remaining)",
+                    profile
+                )
             except Exception as e:
                 send_tmux_message(f"❌ Failed to copy credentials: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ {e}"}
@@ -2081,6 +2438,134 @@ exec "{claude_bin}" --resume {session_id}
             print(json.dumps(response))
             return
 
+        # Check for :login-all command - send :login to all kc1-* instances
+        if prompt == ':login-all':
+            try:
+                import time
+
+                log("=== :login-all started ===")
+
+                # Find all kc1-* tmux sockets
+                uid = os.getuid()
+                tmux_dir = Path(f"/tmp/tmux-{uid}")
+                log(f"tmux_dir: {tmux_dir}, exists: {tmux_dir.exists()}")
+                if not tmux_dir.exists():
+                    send_tmux_message("No tmux socket dir found", socket)
+                    response = {"continue": False, "stopReason": "No tmux socket dir"}
+                    print(json.dumps(response))
+                    return
+
+                kc1_sockets = [f.name for f in tmux_dir.iterdir() if f.name.startswith("kc1-")]
+                log(f"Found {len(kc1_sockets)} kc1 sockets")
+                if not kc1_sockets:
+                    send_tmux_message("No kc1-* instances found", socket)
+                    response = {"continue": False, "stopReason": "No kc1-* instances"}
+                    print(json.dumps(response))
+                    return
+
+                count = 0
+                log(f"Current socket: {socket}")
+                for kc_socket in kc1_sockets:
+                    # Skip current session
+                    if kc_socket == socket:
+                        log(f"{kc_socket}: SKIPPING (current session)")
+                        continue
+
+                    # Check if tmux server is alive and get all windows
+                    result = subprocess.run(
+                        ["tmux", "-L", kc_socket, "list-windows", "-F", "#{window_index}"],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode != 0:
+                        log(f"{kc_socket}: DEAD (rc={result.returncode})")
+                        continue  # Dead socket
+
+                    windows = result.stdout.strip().split('\n')
+                    log(f"{kc_socket}: ALIVE, {len(windows)} window(s)")
+
+                    # Send :login, Enter to all windows
+                    for win_idx in windows:
+                        target = win_idx
+
+                        # Send :login
+                        cmd1 = ["tmux", "-L", kc_socket, "send-keys", "-t", target, "-l", ":login"]
+                        print(f"DEBUG: {' '.join(cmd1)}", file=sys.stderr)
+                        subprocess.run(cmd1)
+                        log(f"  {kc_socket} win{win_idx}: :login")
+                        time.sleep(3.0)
+
+                        # Send Enter
+                        cmd2 = ["tmux", "-L", kc_socket, "send-keys", "-t", target, "Enter"]
+                        print(f"DEBUG: {' '.join(cmd2)}", file=sys.stderr)
+                        subprocess.run(cmd2)
+                        log(f"  {kc_socket} win{win_idx}: Enter")
+
+                        count += 1
+                        time.sleep(0.2)
+
+                log(f"=== Done, sent to {count} instances ===")
+                send_tmux_message(f"✓ Sent :login to {count} instances", socket)
+                response = {"continue": False, "stopReason": f"✓ Sent :login to {count} instances"}
+            except Exception as e:
+                log(f"EXCEPTION: {e}")
+                send_tmux_message(f"❌ Error: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # Check for :reload-all command - send :reload to all kc1-* instances
+        if prompt == ':reload-all':
+            try:
+                import time
+
+                log("=== :reload-all started ===")
+
+                uid = os.getuid()
+                tmux_dir = Path(f"/tmp/tmux-{uid}")
+                if not tmux_dir.exists():
+                    send_tmux_message("No tmux socket dir found", socket)
+                    response = {"continue": False, "stopReason": "No tmux socket dir"}
+                    print(json.dumps(response))
+                    return
+
+                kc1_sockets = [f.name for f in tmux_dir.iterdir() if f.name.startswith("kc1-")]
+                if not kc1_sockets:
+                    send_tmux_message("No kc1-* instances found", socket)
+                    response = {"continue": False, "stopReason": "No kc1-* instances"}
+                    print(json.dumps(response))
+                    return
+
+                count = 0
+                for kc_socket in kc1_sockets:
+                    if kc_socket == socket:
+                        continue
+
+                    result = subprocess.run(
+                        ["tmux", "-L", kc_socket, "list-windows", "-F", "#{window_index}"],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode != 0:
+                        continue
+
+                    windows = result.stdout.strip().split('\n')
+
+                    for win_idx in windows:
+                        subprocess.run(["tmux", "-L", kc_socket, "send-keys", "-t", win_idx, "-l", ":reload"])
+                        time.sleep(0.5)
+                        subprocess.run(["tmux", "-L", kc_socket, "send-keys", "-t", win_idx, "Enter"])
+                        count += 1
+                        time.sleep(0.2)
+
+                send_tmux_message(f"✓ Sent :reload to {count} instances", socket)
+                response = {"continue": False, "stopReason": f"✓ Sent :reload to {count} instances"}
+            except Exception as e:
+                send_tmux_message(f"❌ Error: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
         # Check for :time command
         if prompt == ':time':
             session_id = input_data.get('session_id')
@@ -2131,12 +2616,42 @@ exec "{claude_bin}" --resume {session_id}
             profile = os.environ.get('KITTY_CLAUDE_PROFILE')
             build_claude_md(profile)
 
+            # Regenerate tmux config (picks up hook changes etc)
+            from kitty_claude.main import regenerate_tmux_config
+            if profile:
+                base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            else:
+                base_config = Path.home() / ".config" / "kitty-claude"
+            session_config_dir = base_config / "session-configs" / session_id
+            Path("/tmp/kc-reload-debug.txt").write_text(f"session_config_dir={session_config_dir}\nprofile={profile}\nsocket={socket}\n")
+            try:
+                regenerate_tmux_config(session_config_dir, profile, socket)
+                with open("/tmp/kc-reload-debug.txt", "a") as f:
+                    f.write(f"tmux.conf exists: {(session_config_dir / 'tmux.conf').exists()}\n")
+            except Exception as e:
+                with open("/tmp/kc-reload-debug.txt", "a") as f:
+                    f.write(f"ERROR: {e}\n")
+
             # Save auth from current session before regenerating config
             from kitty_claude.claude import save_auth_from_session, setup_session_config
+            from kitty_claude.events import update_window
             save_auth_from_session(session_id, profile)
 
             # Merge session config (global + session.json overrides)
             session_config_dir = setup_session_config(session_id, profile)
+
+            # Get window name and register in windows.json
+            try:
+                result = run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+                    capture_output=True, text=True, check=True
+                )
+                window_name = result.stdout.strip()
+                update_window(session_id, window_name, socket, current_dir, profile)
+                # Record window title in history
+                record_title(window_name, profile)
+            except Exception as e:
+                log(f"Error updating window: {e}", profile)
 
             # Check if we're in one-tab mode
             if socket.startswith("kc1-"):
@@ -2622,128 +3137,6 @@ This will be injected as context when you run ::{skill_name}
             except ValueError:
                 response = {"continue": False, "stopReason": "❌ Usage: :done <number>"}
 
-            print(json.dumps(response))
-            return
-
-        # Check for :kitty-commands command - enable command MCP server and reload
-        if prompt == ':kitty-commands':
-            current_dir = input_data.get('cwd', os.getcwd())
-            session_id = input_data.get('session_id')
-
-            if not session_id:
-                send_tmux_message("❌ No session ID available", socket)
-                response = {"continue": False, "stopReason": "❌ No session ID available"}
-                print(json.dumps(response))
-                return
-
-            # Store kitty-commands MCP with --with-commands in session metadata
-            state_dir = get_state_dir()
-            metadata_file = state_dir / "sessions" / f"{session_id}.json"
-            metadata = {}
-            if metadata_file.exists():
-                try:
-                    metadata = json.loads(metadata_file.read_text())
-                except:
-                    pass
-            if "mcpServers" not in metadata:
-                metadata["mcpServers"] = {}
-            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-            metadata["mcpServers"]["kitty-claude-commands"] = {
-                "command": kitty_claude_path,
-                "args": ["--command-mcp", "--with-commands"],
-            }
-            metadata_file.parent.mkdir(parents=True, exist_ok=True)
-            metadata_file.write_text(json.dumps(metadata, indent=2))
-
-            send_tmux_message("✓ Enabling kitty-claude commands MCP. Reloading...", socket)
-
-            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
-            build_claude_md(profile)
-
-            from kitty_claude.claude import save_auth_from_session, setup_session_config
-            save_auth_from_session(session_id, profile)
-            session_config_dir = setup_session_config(session_id, profile)
-
-            # Reload (same logic as :reload)
-            if socket.startswith("kc1-"):
-                claude_config = str(session_config_dir)
-                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
-                if profile:
-                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
-                else:
-                    config_dir = Path.home() / ".config" / "kitty-claude"
-                config_file = config_dir / "config.json"
-                claude_bin = None
-                if config_file.exists():
-                    try:
-                        config = json.loads(config_file.read_text())
-                        if config.get("claude_binary"):
-                            claude_bin = config["claude_binary"]
-                    except:
-                        pass
-                if not claude_bin:
-                    claude_bin = shutil.which("claude") or "claude"
-
-                uid = os.getuid()
-                launcher = Path(f"/tmp/kc-cmds-{uid}.sh")
-                launcher.write_text(f'''#!/bin/sh
-export CLAUDE_CONFIG_DIR="{claude_config}"
-cd "{current_dir}"
-exec "{claude_bin}" --resume {session_id}
-''')
-                launcher.chmod(0o755)
-
-                subprocess.Popen([
-                    "sh", "-c",
-                    f"sleep 1 && tmux -L {socket} respawn-pane -k {launcher}"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                response = {"continue": False, "stopReason": "✓ kitty-claude commands enabled. Reloading..."}
-                print(json.dumps(response))
-                return
-
-            # Multi-tab mode (same logic as :reload)
-            kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-            try:
-                result = run(
-                    ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
-                    capture_output=True, text=True, check=True
-                )
-                current_window_id = result.stdout.strip()
-            except:
-                current_window_id = None
-
-            # Get current window name
-            try:
-                result = run(
-                    ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
-                    capture_output=True, text=True, check=True
-                )
-                window_name = result.stdout.strip()
-            except:
-                window_name = None
-
-            cmd_parts = [kitty_claude_path]
-            if profile:
-                cmd_parts.extend(["--profile", profile])
-            cmd_parts.extend(["--new-window", "--resume-session", session_id])
-            cmd_str = " ".join(cmd_parts)
-
-            new_window_cmd = ["tmux", "-L", socket, "new-window"]
-            if window_name:
-                new_window_cmd.extend(["-n", window_name])
-            new_window_cmd.extend(["-c", current_dir, cmd_str])
-
-            run(new_window_cmd)
-
-            # Close old window after delay
-            if current_window_id:
-                subprocess.Popen([
-                    "sh", "-c",
-                    f"sleep 2 && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            response = {"continue": False, "stopReason": "✓ kitty-claude commands enabled. Reloading..."}
             print(json.dumps(response))
             return
 
@@ -3951,27 +4344,51 @@ Add your rule content here. This will be included in CLAUDE.md.
                         target_title = parts[1] if len(parts) > 1 else target_session_id[:8]
                         target_socket = parts[2] if len(parts) > 2 else socket
 
-                        # Find the tmux window with this session ID in target socket
-                        result = run(
-                            ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
-                            capture_output=True, text=True, check=True
-                        )
-                        target_window = None
-                        for line in result.stdout.strip().split("\n"):
-                            line_parts = line.split()
-                            if len(line_parts) >= 2 and line_parts[1] == target_session_id:
-                                target_window = line_parts[0]
-                                break
+                        # Find the target pane - in one-tab mode (kc1-*) there's only one pane
+                        if target_socket.startswith("kc1-"):
+                            # One-tab mode: send directly to the only pane
+                            target_pane = "%0"
+                        else:
+                            # Multi-tab mode: find the window with matching session_id
+                            result = run(
+                                ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+                                capture_output=True, text=True, check=True
+                            )
+                            target_pane = None
+                            for line in result.stdout.strip().split("\n"):
+                                line_parts = line.split()
+                                if len(line_parts) >= 2 and line_parts[1] == target_session_id:
+                                    target_pane = line_parts[0]
+                                    break
 
-                        if target_window:
+                        if target_pane:
                             run([
                                 "tmux", "-L", target_socket,
-                                "send-keys", "-t", target_window, "-l", message
+                                "send-keys", "-t", target_pane, "-l", message
                             ])
                             run([
                                 "tmux", "-L", target_socket,
-                                "send-keys", "-t", target_window, "Enter"
+                                "send-keys", "-t", target_pane, "Enter"
                             ])
+                            # Store message in target's inbox
+                            import time
+                            from kitty_claude.events import get_runtime_dir, get_all_windows
+                            msgs_dir = get_runtime_dir() / "messages"
+                            msgs_dir.mkdir(exist_ok=True)
+                            inbox_file = msgs_dir / f"{target_session_id}.jsonl"
+                            # Get sender info
+                            my_windows = get_all_windows()
+                            my_info = my_windows.get(my_session_id, {})
+                            my_title = my_info.get("title", "unknown")
+                            msg_entry = {
+                                "from": my_title,
+                                "from_session": my_session_id,
+                                "message": message,
+                                "ts": time.time(),
+                                "read": False
+                            }
+                            with open(inbox_file, "a") as f:
+                                f.write(json.dumps(msg_entry) + "\n")
                             send_tmux_message(f"✓ Sent to {target_title}", socket)
                             response = {"continue": False, "stopReason": f"✓ Message sent to {target_title}"}
                         else:
@@ -3984,6 +4401,78 @@ Add your rule content here. This will be included in CLAUDE.md.
 
                 tmp_input.unlink(missing_ok=True)
                 tmp_output.unlink(missing_ok=True)
+            except Exception as e:
+                send_tmux_message(f"❌ Error: {e}", socket)
+                response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
+
+            print(json.dumps(response))
+            return
+
+        # :msgs - show inbox messages
+        if prompt == ':msgs':
+            my_session_id = input_data.get('session_id')
+            if not my_session_id:
+                response = {"continue": False, "stopReason": "No session ID"}
+                print(json.dumps(response))
+                return
+
+            try:
+                from kitty_claude.events import get_runtime_dir
+                msgs_dir = get_runtime_dir() / "messages"
+                inbox_file = msgs_dir / f"{my_session_id}.jsonl"
+
+                if not inbox_file.exists():
+                    send_tmux_message("📭 No messages", socket)
+                    response = {"continue": False, "stopReason": "📭 No messages in inbox"}
+                    print(json.dumps(response))
+                    return
+
+                # Read all messages
+                messages = []
+                for line in inbox_file.read_text().strip().split("\n"):
+                    if line:
+                        try:
+                            messages.append(json.loads(line))
+                        except:
+                            pass
+
+                if not messages:
+                    send_tmux_message("📭 No messages", socket)
+                    response = {"continue": False, "stopReason": "📭 No messages in inbox"}
+                    print(json.dumps(response))
+                    return
+
+                # Format messages for display
+                lines = []
+                for msg in messages:
+                    ts = msg.get("ts", 0)
+                    time_str = time.strftime("%H:%M", time.localtime(ts))
+                    from_title = msg.get("from", "unknown")
+                    text = msg.get("message", "")
+                    read_mark = "" if msg.get("read") else "●"
+                    lines.append(f"{read_mark} [{time_str}] {from_title}: {text}")
+
+                # Mark all as read
+                updated_messages = []
+                for msg in messages:
+                    msg["read"] = True
+                    updated_messages.append(msg)
+                with open(inbox_file, "w") as f:
+                    for msg in updated_messages:
+                        f.write(json.dumps(msg) + "\n")
+
+                # Show in popup
+                uid = os.getuid()
+                tmp_msgs = Path(f"/tmp/kc-msgs-{uid}.txt")
+                tmp_msgs.write_text("\n".join(lines))
+                subprocess.run([
+                    "tmux", "-L", socket,
+                    "display-popup", "-E", "-w", "80%", "-h", "60%",
+                    f"cat {tmp_msgs}; read -n1"
+                ])
+                tmp_msgs.unlink(missing_ok=True)
+
+                response = {"continue": False, "stopReason": f"📬 {len(messages)} message(s)"}
             except Exception as e:
                 send_tmux_message(f"❌ Error: {e}", socket)
                 response = {"continue": False, "stopReason": f"❌ Error: {str(e)}"}
@@ -4110,6 +4599,88 @@ def handle_run_command(command):
 
     # If no JSON found, return the raw output
     print(output)
+
+
+def handle_session_start():
+    """Handle SessionStart hook - increment run counter, show messages from previous run."""
+    try:
+        input_data = json.loads(sys.stdin.read())
+        session_id = input_data.get('session_id')
+        reason = input_data.get('reason', 'startup')
+
+        if not session_id:
+            print(json.dumps({"continue": True}))
+            return
+
+        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        if profile:
+            base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        else:
+            base_config = Path.home() / ".config" / "kitty-claude"
+
+        session_dir = base_config / "session-configs" / session_id
+        run_file = session_dir / ".run-counter"
+        messages_file = session_dir / ".startup-messages"
+
+        # Read and increment run counter
+        current_run = 0
+        if run_file.exists():
+            try:
+                current_run = int(run_file.read_text().strip())
+            except (ValueError, OSError):
+                pass
+        current_run += 1
+        try:
+            session_dir.mkdir(parents=True, exist_ok=True)
+            run_file.write_text(str(current_run))
+        except OSError:
+            pass
+
+        # Check for messages from previous run
+        messages_to_show = []
+        if messages_file.exists():
+            try:
+                all_messages = json.loads(messages_file.read_text())
+                previous_run = current_run - 1
+                for msg in all_messages:
+                    if msg.get("run") == previous_run:
+                        messages_to_show.append(msg.get("text", ""))
+                # Clean up - delete the file
+                messages_file.unlink()
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Show messages via tmux popup and as additionalContext
+        if messages_to_show:
+            context = "\n".join(messages_to_show)
+            socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+            if socket:
+                # Write script to temp file that shows message and waits
+                uid = os.getuid()
+                msg_file = Path(f"/tmp/kc-popup-{uid}.txt")
+                script_file = Path(f"/tmp/kc-popup-{uid}.sh")
+                display_text = "\n".join(messages_to_show)
+                msg_file.write_text(display_text)
+                script_file.write_text(f'''#!/bin/bash
+cat {msg_file}
+echo ""
+echo "[press Enter to close, or wait 30s]"
+read -t 30
+''')
+                script_file.chmod(0o755)
+                subprocess.Popen([
+                    "tmux", "-L", socket, "display-popup",
+                    "-w", "70", "-h", str(len(messages_to_show) + 5),
+                    "-E", str(script_file)
+                ], stderr=subprocess.DEVNULL)
+            print(json.dumps({"continue": True, "additionalContext": context}))
+        else:
+            print(json.dumps({"continue": True}))
+
+    except Exception as e:
+        with open("/tmp/kitty-claude-session-start-error.log", "a") as f:
+            f.write(f"SessionStart hook error: {str(e)}\n")
+        print(json.dumps({"continue": True}))
 
 
 def handle_stop():
