@@ -255,12 +255,12 @@ def setup_session_config(session_id, profile=None):
                 except:
                     pass
 
-    # Include built-in command MCP server (only if not already set by :kitty-commands)
+    # Include built-in command MCP server
     kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
     if "kitty-claude-commands" not in mcp_servers:
         mcp_servers["kitty-claude-commands"] = {
             "command": kitty_claude_path,
-            "args": ["--command-mcp"],
+            "args": ["--command-mcp", "--with-commands"],
         }
 
     # Include Claude Code skills MCP server (for managing /skills)
@@ -403,6 +403,120 @@ def get_running_sessions(profile=None):
     return alive_sessions
 
 
+def get_last_user_message(session_id, cwd, profile=None):
+    """Get the last user message from a session transcript.
+
+    Args:
+        session_id: The session UUID
+        cwd: The project/cwd path for the session (unused, we search all projects)
+        profile: Profile name (optional)
+
+    Returns:
+        The last user message text (truncated), or None if not found
+    """
+    if profile:
+        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "kitty-claude"
+
+    projects_base = base_config / "claude-data" / "projects"
+    if not projects_base.exists():
+        return None
+
+    # Search all project directories for this session's transcript
+    # Find the most recently modified one if multiple exist
+    transcript_file = None
+    latest_mtime = 0
+
+    for project_dir in projects_base.iterdir():
+        if project_dir.is_dir():
+            candidate = project_dir / f"{session_id}.jsonl"
+            if candidate.exists():
+                mtime = candidate.stat().st_mtime
+                if mtime > latest_mtime:
+                    latest_mtime = mtime
+                    transcript_file = candidate
+
+    if not transcript_file:
+        return None
+
+    def is_valid_user_text(text):
+        """Check if text is a valid user message (not system/hook/reminder)."""
+        if not text:
+            return False
+        skip_prefixes = (
+            "<system-reminder>",
+            "Operation stopped by hook:",
+            "<system>",
+        )
+        return not text.startswith(skip_prefixes)
+
+    try:
+        # Read all lines and process in reverse
+        # Lines can be very long (tool results) so byte-based seeking doesn't work well
+        with open(transcript_file, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                if entry.get("type") == "user":
+                    msg_content = entry.get("message", {}).get("content")
+                    if isinstance(msg_content, str):
+                        if is_valid_user_text(msg_content):
+                            return msg_content[:60]
+                    elif isinstance(msg_content, list):
+                        # Find text content, skip tool_results
+                        for item in msg_content:
+                            if isinstance(item, dict):
+                                if item.get("type") == "text":
+                                    text = item.get("text", "")
+                                    if is_valid_user_text(text):
+                                        return text[:60]
+            except json.JSONDecodeError:
+                continue
+
+        return None
+    except Exception:
+        return None
+
+
+def get_session_cwd_from_projects(session_id, base_config):
+    """Look up a session's original cwd from the project directory structure.
+
+    This is more reliable than .claude.json because the project directory hash
+    reflects where the session was originally created.
+    """
+    projects_dir = base_config / "claude-data" / "projects"
+    if not projects_dir.exists():
+        return None
+
+    for proj_dir in projects_dir.iterdir():
+        if proj_dir.is_dir():
+            session_file = proj_dir / f"{session_id}.jsonl"
+            if session_file.exists():
+                # Reverse the path hash: -home-user-project -> /home/user/project
+                # But paths may contain hyphens (e.g., note-frame), so we
+                # progressively try converting hyphens to slashes and check if path exists
+                path_hash = proj_dir.name
+                if path_hash.startswith('-'):
+                    path_hash = path_hash[1:]  # Remove leading hyphen
+                parts = path_hash.split('-')
+                # Try progressively fewer slashes (more hyphens kept)
+                for num_slashes in range(len(parts), 0, -1):
+                    # Join first num_slashes parts with /, rest with -
+                    candidate = '/' + '/'.join(parts[:num_slashes])
+                    if num_slashes < len(parts):
+                        candidate += '-' + '-'.join(parts[num_slashes:])
+                    if Path(candidate).exists():
+                        return candidate
+                # Fallback: simple conversion
+                return '/' + '/'.join(parts)
+    return None
+
+
 def get_recent_sessions(profile=None, limit=10):
     """Get list of recent sessions ordered by last activity."""
     if profile:
@@ -419,6 +533,9 @@ def get_recent_sessions(profile=None, limit=10):
     for session_dir in session_configs.iterdir():
         if session_dir.is_dir():
             session_id = session_dir.name
+            # Skip lock directories and other non-session directories
+            if session_id.endswith('.lock'):
+                continue
             # Get last modified time (from .claude.json if exists, otherwise directory)
             claude_json = session_dir / ".claude.json"
             if claude_json.exists():
@@ -426,9 +543,10 @@ def get_recent_sessions(profile=None, limit=10):
             else:
                 mtime = session_dir.stat().st_mtime
 
-            # Try to get CWD from session
-            cwd = None
-            if claude_json.exists():
+            # Try to get CWD from project directory structure (more reliable)
+            cwd = get_session_cwd_from_projects(session_id, base_config)
+            # Fallback to .claude.json if project lookup fails
+            if not cwd and claude_json.exists():
                 try:
                     config = json.loads(claude_json.read_text())
                     projects = config.get("projects", {})
@@ -437,16 +555,40 @@ def get_recent_sessions(profile=None, limit=10):
                 except:
                     pass
 
+            # Get last message early so we can filter
+            last_message = get_last_user_message(session_id, cwd, profile)
+
+            # Skip sessions from default temp directory if they have no messages
+            if cwd and cwd.startswith("/tmp/kitty-claude") and not last_message:
+                continue
+
+            # Get session name/title from state metadata
+            title = None
+            state_dir = get_state_dir()
+            metadata_file = state_dir / "sessions" / f"{session_id}.json"
+            if metadata_file.exists():
+                try:
+                    metadata = json.loads(metadata_file.read_text())
+                    name = metadata.get("name")
+                    # Only use as title if it's meaningful (not session ID or default)
+                    if name and name != session_id and not name.startswith("kitty-claude-"):
+                        # Also skip if it looks like another session ID (UUID format)
+                        if not (len(name) == 36 and name.count('-') == 4):
+                            title = name
+                except:
+                    pass
+
             sessions.append({
                 "session_id": session_id,
+                "title": title,
                 "last_modified": mtime,
-                "cwd": cwd
+                "cwd": cwd,
+                "last_message": last_message
             })
 
     # Sort by last modified (most recent first)
     sessions.sort(key=lambda s: s["last_modified"], reverse=True)
 
-    # Limit results
     return sessions[:limit]
 
 
