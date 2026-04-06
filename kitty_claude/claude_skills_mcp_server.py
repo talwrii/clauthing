@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-MCP server for managing Claude Code skills.
+MCP server for managing Claude Code skills (Anthropic's official CLI).
 
-Exposes tools to create, update, read, and list Claude Code skills in
+Claude Code skills are slash commands (like /commit, /review-pr) that inject
+prompts when invoked. They're stored in:
 ~/.config/kitty-claude/claude-data/skills/<name>/SKILL.md
 
-WARNING: This is dangerous - skills can execute arbitrary code.
-This MCP server should NOT be auto-approved.
+Content format: Markdown with optional YAML frontmatter (description:, etc.)
+
+NOTE: This is separate from kc-skills (kitty-claude skills invoked with ::name).
+WARNING: Skills can execute arbitrary code - this MCP should NOT be auto-approved.
 """
 
 import asyncio
@@ -44,9 +47,11 @@ async def run_claude_skills_mcp_server():
     create_skill_tool = Tool(
         name="create_claude_skill",
         description=(
-            "Create a new Claude Code skill. The skill will be available as /name. "
-            "Content should be markdown with optional YAML frontmatter. "
-            "Will NOT overwrite existing skills - use update_claude_skill for that."
+            "Create a Claude Code skill (Anthropic's official CLI). "
+            "Skills are slash commands (e.g., /commit, /review-pr) that inject prompts. "
+            "Stored in ~/.config/kitty-claude/claude-data/skills/<name>/SKILL.md. "
+            "Content is markdown with optional YAML frontmatter (description:). "
+            "Will NOT overwrite - use update_claude_skill for existing skills."
         ),
         inputSchema={
             "type": "object",
@@ -67,9 +72,9 @@ async def run_claude_skills_mcp_server():
     update_skill_tool = Tool(
         name="update_claude_skill",
         description=(
-            "Update an existing Claude Code skill. Overwrites the skill content. "
-            "PREFER patch_claude_skill instead - it's more readable. "
-            "Only use this for complete rewrites."
+            "Update an existing Claude Code skill (slash command). "
+            "Overwrites the entire SKILL.md file. "
+            "PREFER patch_claude_skill for partial edits - it's more readable."
         ),
         inputSchema={
             "type": "object",
@@ -89,7 +94,7 @@ async def run_claude_skills_mcp_server():
 
     read_skill_tool = Tool(
         name="read_claude_skill",
-        description="Read the content of an existing Claude Code skill.",
+        description="Read the SKILL.md content of a Claude Code skill (slash command).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -104,7 +109,7 @@ async def run_claude_skills_mcp_server():
 
     list_skills_tool = Tool(
         name="list_claude_skills",
-        description="List all Claude Code skills with their descriptions.",
+        description="List all Claude Code skills (slash commands) with their descriptions.",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -114,9 +119,9 @@ async def run_claude_skills_mcp_server():
     patch_skill_tool = Tool(
         name="patch_claude_skill",
         description=(
-            "Apply a unified diff patch to an existing Claude Code skill. "
-            "Preferred over update_claude_skill for readability. "
-            "The patch should be in unified diff format (like 'diff -u' output)."
+            "Apply a unified diff patch to a Claude Code skill (slash command). "
+            "Preferred over update_claude_skill for partial edits. "
+            "Patch format: unified diff (like 'diff -u' output)."
         ),
         inputSchema={
             "type": "object",
@@ -136,7 +141,7 @@ async def run_claude_skills_mcp_server():
 
     delete_skill_tool = Tool(
         name="delete_claude_skill",
-        description="Delete an existing Claude Code skill.",
+        description="Delete a Claude Code skill (removes the entire skill directory).",
         inputSchema={
             "type": "object",
             "properties": {

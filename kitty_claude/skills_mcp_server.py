@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-MCP server that lets Claude manage kc-skills.
+MCP server for managing kc-skills (kitty-claude skills).
 
-Exposes tools to create, update, read, and list skill files in
-~/.config/kitty-claude/kc-skills/<name>.md.
+kc-skills are invoked with ::name in kitty-claude prompts. They're simple
+markdown files that get injected into the conversation. Stored in:
+~/.config/kitty-claude/kc-skills/<name>.md
+
+NOTE: This is separate from Claude Code skills (slash commands like /commit).
 """
 
 import asyncio
@@ -41,9 +44,10 @@ async def run_skills_mcp_server():
     create_skill_tool = Tool(
         name="create_skill",
         description=(
-            "Create a new kc-skill. The skill will be available as ::name in kitty-claude. "
-            "Content is plain markdown that gets injected into the prompt when invoked. "
-            "Will NOT overwrite existing skills - use update_skill for that."
+            "Create a kc-skill (kitty-claude skill, invoked with ::name). "
+            "Content is plain markdown injected into the prompt. "
+            "Stored in ~/.config/kitty-claude/kc-skills/<name>.md. "
+            "Will NOT overwrite - use update_skill for existing skills."
         ),
         inputSchema={
             "type": "object",
@@ -64,9 +68,9 @@ async def run_skills_mcp_server():
     update_skill_tool = Tool(
         name="update_skill",
         description=(
-            "Update an existing kc-skill. Overwrites the skill content. "
-            "PREFER patch_skill instead - it's more readable. "
-            "Only use this for complete rewrites."
+            "Update an existing kc-skill (kitty-claude skill). "
+            "Overwrites the entire file. "
+            "PREFER patch_skill for partial edits - it's more readable."
         ),
         inputSchema={
             "type": "object",
@@ -86,7 +90,7 @@ async def run_skills_mcp_server():
 
     read_skill_tool = Tool(
         name="read_skill",
-        description="Read the content of an existing kc-skill.",
+        description="Read the content of a kc-skill (kitty-claude skill, ::name).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -101,7 +105,7 @@ async def run_skills_mcp_server():
 
     list_skills_tool = Tool(
         name="list_skills",
-        description="List all kc-skills with their first line as description.",
+        description="List all kc-skills (kitty-claude skills, ::name) with descriptions.",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -111,9 +115,9 @@ async def run_skills_mcp_server():
     patch_skill_tool = Tool(
         name="patch_skill",
         description=(
-            "Apply a unified diff patch to an existing kc-skill. "
-            "Preferred over update_skill for readability. "
-            "The patch should be in unified diff format (like 'diff -u' output)."
+            "Apply a unified diff patch to a kc-skill (kitty-claude skill). "
+            "Preferred over update_skill for partial edits. "
+            "Patch format: unified diff (like 'diff -u' output)."
         ),
         inputSchema={
             "type": "object",
@@ -133,7 +137,7 @@ async def run_skills_mcp_server():
 
     delete_skill_tool = Tool(
         name="delete_skill",
-        description="Delete an existing kc-skill.",
+        description="Delete a kc-skill (kitty-claude skill file).",
         inputSchema={
             "type": "object",
             "properties": {
