@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def get_state_dir():
-    return Path.home() / ".local" / "state" / "kitty-claude"
+    return Path.home() / ".local" / "state" / "clauthing"
 
 
 def load_permissions(session_config_dir, cwd):
@@ -67,7 +67,7 @@ def save_roles(roles_dir, roles):
 def get_tmux_window_name():
     """Get the current tmux window name."""
     import subprocess
-    tmux_socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+    tmux_socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
     try:
         result = subprocess.run(
             ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_name}"],

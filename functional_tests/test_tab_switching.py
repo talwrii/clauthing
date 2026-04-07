@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests specifically for tab switching bugs in kitty-claude.
+"""Tests specifically for tab switching bugs in clauthing.
 
 These tests focus on the Ctrl+J, Ctrl+K, and Alt+O keybindings.
 """

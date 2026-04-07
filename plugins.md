@@ -1,17 +1,17 @@
 # Plugins
 
-Plugins are executables on PATH named `kitty-claude-*`.
+Plugins are executables on PATH named `clauthing-*`.
 
 ## Colon commands
 
-`:foo` runs `kitty-claude-foo` with stdin/stdout connected.
+`:foo` runs `clauthing-foo` with stdin/stdout connected.
 
 ## Events
 
-On startup, kitty-claude spawns pipelines for each plugin:
+On startup, clauthing spawns pipelines for each plugin:
 
 ```bash
-kitty-claude --events | kitty-claude-foo --events
+clauthing --events | clauthing-foo --events
 ```
 
 PIDs are tracked and restarted if they die.
@@ -24,6 +24,6 @@ Event types:
 
 ## Example
 
-`kitty-claude-titles`:
+`clauthing-titles`:
 - `:titles` - show recent titles picker
 - `--events` - track title changes in background

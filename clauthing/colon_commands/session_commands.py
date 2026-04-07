@@ -11,15 +11,15 @@ import subprocess
 import time
 from pathlib import Path
 
-from kitty_claude.colon_command import command, send_tmux_message, get_state_dir
-from kitty_claude.colon_command import get_title_history_file, record_title
-from kitty_claude.logging import log, run
-from kitty_claude.session import get_session_name
+from clauthing.colon_command import command, send_tmux_message, get_state_dir
+from clauthing.colon_command import get_title_history_file, record_title
+from clauthing.logging import log, run
+from clauthing.session import get_session_name
 
 
 @command(':current-sessions')
 def cmd_current_sessions(ctx):
-    from kitty_claude.claude import get_running_sessions
+    from clauthing.claude import get_running_sessions
     sessions = get_running_sessions(ctx.profile)
     if not sessions:
         return ctx.stop("No currently running sessions")
@@ -37,7 +37,7 @@ def cmd_current_sessions(ctx):
 
 @command(':sessions')
 def cmd_sessions(ctx):
-    from kitty_claude.claude import get_recent_sessions
+    from clauthing.claude import get_recent_sessions
     from datetime import datetime
 
     limit = 10
@@ -81,7 +81,7 @@ def cmd_resume(ctx):
         return ctx.stop("Usage: :resume <number|session-id>")
 
     if arg.isdigit():
-        from kitty_claude.claude import get_recent_sessions
+        from clauthing.claude import get_recent_sessions
         sessions = get_recent_sessions(ctx.profile, limit=10)
         index = int(arg) - 1
         if 0 <= index < len(sessions):
@@ -91,7 +91,7 @@ def cmd_resume(ctx):
     else:
         target_session_id = arg
 
-    from kitty_claude.claude import new_window
+    from clauthing.claude import new_window
     new_window(profile=ctx.profile, resume_session_id=target_session_id, socket=ctx.socket)
     ctx.message("✓ Resuming session")
     return ctx.stop(f"✓ Opening session {target_session_id[:8]}... in new window")
@@ -104,7 +104,7 @@ def cmd_resume_new(ctx):
     profile = ctx.profile
 
     if not arg:
-        from kitty_claude.claude import get_recent_sessions
+        from clauthing.claude import get_recent_sessions
         from datetime import datetime
         sessions = get_recent_sessions(profile, limit=10)
         if not sessions:
@@ -123,7 +123,7 @@ def cmd_resume_new(ctx):
     target_session_id = None
     target_cwd = None
     if arg.isdigit():
-        from kitty_claude.claude import get_recent_sessions
+        from clauthing.claude import get_recent_sessions
         sessions = get_recent_sessions(profile, limit=10)
         index = int(arg) - 1
         if 0 <= index < len(sessions):
@@ -135,9 +135,9 @@ def cmd_resume_new(ctx):
         target_session_id = arg
         # Look up cwd from projects
         if profile:
-            base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
         else:
-            base_config = Path.home() / ".config" / "kitty-claude"
+            base_config = Path.home() / ".config" / "clauthing"
         projects_dir = base_config / "claude-data" / "projects"
         if projects_dir.exists():
             for proj_dir in projects_dir.iterdir():
@@ -160,21 +160,21 @@ def cmd_resume_new(ctx):
     # Look up title
     session_title = None
     try:
-        from kitty_claude.session import get_state_dir as sess_get_state_dir
+        from clauthing.session import get_state_dir as sess_get_state_dir
         state_dir = sess_get_state_dir()
         metadata_file = state_dir / "sessions" / f"{target_session_id}.json"
         if metadata_file.exists():
             metadata = json.loads(metadata_file.read_text())
             name = metadata.get("name")
-            if name and name != target_session_id and not name.startswith("kitty-claude-"):
+            if name and name != target_session_id and not name.startswith("clauthing-"):
                 if not (len(name) == 36 and name.count('-') == 4):
                     session_title = name
     except:
         pass
 
     # Build command
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    cmd = [kitty_claude_path]
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    cmd = [clauthing_path]
     if profile:
         cmd.extend(["--profile", profile])
     cmd.append("--one-tab")
@@ -196,7 +196,7 @@ def cmd_resume_new(ctx):
 
     cwd_msg = f" in {target_cwd}" if target_cwd else ""
     ctx.message(f"✓ Spawning new window{cwd_msg[:30]}")
-    return ctx.stop(f"✓ Resuming {target_session_id[:8]}...{cwd_msg} in new kitty-claude window")
+    return ctx.stop(f"✓ Resuming {target_session_id[:8]}...{cwd_msg} in new clauthing window")
 
 
 @command(':spawn')
@@ -232,8 +232,8 @@ def cmd_spawn(ctx):
 
     record_title(arg)
 
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    cmd = [kitty_claude_path]
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    cmd = [clauthing_path]
     if profile:
         cmd.extend(["--profile", profile])
     cmd.append("--one-tab")
@@ -241,7 +241,7 @@ def cmd_spawn(ctx):
     subprocess.Popen(cmd)
 
     ctx.message(f"✓ Spawning: {arg}")
-    return ctx.stop(f"✓ Spawning new kitty-claude window: {arg}")
+    return ctx.stop(f"✓ Spawning new clauthing window: {arg}")
 
 
 @command(':login-all')
@@ -253,25 +253,25 @@ def cmd_login_all(ctx):
         if not tmux_dir.exists():
             return ctx.stop("No tmux socket dir")
 
-        kc1_sockets = [f.name for f in tmux_dir.iterdir() if f.name.startswith("kc1-")]
-        if not kc1_sockets:
-            return ctx.stop("No kc1-* instances")
+        cl1_sockets = [f.name for f in tmux_dir.iterdir() if f.name.startswith("cl1-")]
+        if not cl1_sockets:
+            return ctx.stop("No cl1-* instances")
 
         count = 0
-        for kc_socket in kc1_sockets:
-            if kc_socket == socket:
+        for cl_socket in cl1_sockets:
+            if cl_socket == socket:
                 continue
             result = subprocess.run(
-                ["tmux", "-L", kc_socket, "list-windows", "-F", "#{window_index}"],
+                ["tmux", "-L", cl_socket, "list-windows", "-F", "#{window_index}"],
                 capture_output=True, text=True
             )
             if result.returncode != 0:
                 continue
             windows = result.stdout.strip().split('\n')
             for win_idx in windows:
-                subprocess.run(["tmux", "-L", kc_socket, "send-keys", "-t", win_idx, "-l", ":login"])
+                subprocess.run(["tmux", "-L", cl_socket, "send-keys", "-t", win_idx, "-l", ":login"])
                 time.sleep(3.0)
-                subprocess.run(["tmux", "-L", kc_socket, "send-keys", "-t", win_idx, "Enter"])
+                subprocess.run(["tmux", "-L", cl_socket, "send-keys", "-t", win_idx, "Enter"])
                 count += 1
                 time.sleep(0.2)
 
@@ -290,25 +290,25 @@ def cmd_reload_all(ctx):
         if not tmux_dir.exists():
             return ctx.stop("No tmux socket dir")
 
-        kc1_sockets = [f.name for f in tmux_dir.iterdir() if f.name.startswith("kc1-")]
-        if not kc1_sockets:
-            return ctx.stop("No kc1-* instances")
+        cl1_sockets = [f.name for f in tmux_dir.iterdir() if f.name.startswith("cl1-")]
+        if not cl1_sockets:
+            return ctx.stop("No cl1-* instances")
 
         count = 0
-        for kc_socket in kc1_sockets:
-            if kc_socket == socket:
+        for cl_socket in cl1_sockets:
+            if cl_socket == socket:
                 continue
             result = subprocess.run(
-                ["tmux", "-L", kc_socket, "list-windows", "-F", "#{window_index}"],
+                ["tmux", "-L", cl_socket, "list-windows", "-F", "#{window_index}"],
                 capture_output=True, text=True
             )
             if result.returncode != 0:
                 continue
             windows = result.stdout.strip().split('\n')
             for win_idx in windows:
-                subprocess.run(["tmux", "-L", kc_socket, "send-keys", "-t", win_idx, "-l", ":reload"])
+                subprocess.run(["tmux", "-L", cl_socket, "send-keys", "-t", win_idx, "-l", ":reload"])
                 time.sleep(0.5)
-                subprocess.run(["tmux", "-L", kc_socket, "send-keys", "-t", win_idx, "Enter"])
+                subprocess.run(["tmux", "-L", cl_socket, "send-keys", "-t", win_idx, "Enter"])
                 count += 1
                 time.sleep(0.2)
 
@@ -326,7 +326,7 @@ def cmd_send(ctx):
 
     socket = ctx.socket
     try:
-        from kitty_claude.events import get_all_windows, get_runtime_dir
+        from clauthing.events import get_all_windows, get_runtime_dir
         windows = get_all_windows()
         my_session_id = ctx.session_id
 
@@ -343,8 +343,8 @@ def cmd_send(ctx):
             return ctx.stop("No other windows to send to")
 
         uid = os.getuid()
-        tmp_input = Path(f"/tmp/kc-send-{uid}.txt")
-        tmp_output = Path(f"/tmp/kc-send-{uid}-out.txt")
+        tmp_input = Path(f"/tmp/cl-send-{uid}.txt")
+        tmp_output = Path(f"/tmp/cl-send-{uid}-out.txt")
         tmp_input.write_text("\n".join(fzf_lines))
         tmp_output.unlink(missing_ok=True)
 
@@ -366,7 +366,7 @@ def cmd_send(ctx):
         target_title = parts[1] if len(parts) > 1 else target_session_id[:8]
         target_socket = parts[2] if len(parts) > 2 else socket
 
-        if target_socket.startswith("kc1-"):
+        if target_socket.startswith("cl1-"):
             target_pane = "%0"
         else:
             result = run(
@@ -414,7 +414,7 @@ def cmd_msgs(ctx):
         return ctx.stop("No session ID")
 
     try:
-        from kitty_claude.events import get_runtime_dir
+        from clauthing.events import get_runtime_dir
         msgs_dir = get_runtime_dir() / "messages"
         inbox_file = msgs_dir / f"{ctx.session_id}.jsonl"
 
@@ -449,7 +449,7 @@ def cmd_msgs(ctx):
 
         # Show in popup
         uid = os.getuid()
-        tmp_msgs = Path(f"/tmp/kc-msgs-{uid}.txt")
+        tmp_msgs = Path(f"/tmp/cl-msgs-{uid}.txt")
         tmp_msgs.write_text("\n".join(lines))
         subprocess.run([
             "tmux", "-L", ctx.socket,

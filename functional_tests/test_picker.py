@@ -47,13 +47,13 @@ class PickerTestHarness(TmuxTestHarness):
 
 
 class FzfPickerHarness(TmuxTestHarness):
-    """Harness with fzf-based window picker like real kitty-claude."""
+    """Harness with fzf-based window picker like real clauthing."""
     
     def start(self, initial_command: str = "bash"):
         super().start(initial_command)
         
         # Rebind C-p to use fzf menu that selects a window
-        # This mimics what kitty-claude does
+        # This mimics what clauthing does
         subprocess.run([
             "tmux", "-L", self.socket_name,
             "bind", "-n", "C-p",

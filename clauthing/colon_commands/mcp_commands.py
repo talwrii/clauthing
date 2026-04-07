@@ -9,8 +9,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from kitty_claude.colon_command import command, send_tmux_message, get_state_dir
-from kitty_claude.logging import log, run
+from clauthing.colon_command import command, send_tmux_message, get_state_dir
+from clauthing.logging import log, run
 
 
 @command(':mcps')
@@ -76,9 +76,9 @@ def cmd_mcp_approve(ctx):
     if extra_args:
         original_def["args"] = extra_args
 
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
     proxy_def = {
-        "command": kitty_claude_path,
+        "command": clauthing_path,
         "args": ["--proxy-mcp", json.dumps(original_def)],
     }
 
@@ -116,10 +116,10 @@ def cmd_mcp_shell(ctx):
             description = description[:97] + "..."
 
         server_name = f"shell-{command_name}"
-        kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+        clauthing_path = shutil.which("clauthing") or "clauthing"
         server_entry = {
             "type": "stdio",
-            "command": kitty_claude_path,
+            "command": clauthing_path,
             "args": ["--mcp-exec", command_name, description, "--pos-arg", "input Input data"]
         }
 
@@ -177,13 +177,13 @@ def cmd_skills_mcp(ctx):
     if not ctx.session_id:
         return ctx.stop("❌ No session ID available")
 
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
 
     state_dir = get_state_dir()
     metadata_file = state_dir / "sessions" / f"{ctx.session_id}.json"
     metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
-    metadata.setdefault("mcpServers", {})["kitty-claude-skills"] = {
-        "command": kitty_claude_path,
+    metadata.setdefault("mcpServers", {})["clauthing-skills"] = {
+        "command": clauthing_path,
         "args": ["--skills-mcp"],
     }
     metadata_file.parent.mkdir(parents=True, exist_ok=True)

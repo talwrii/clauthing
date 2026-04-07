@@ -13,20 +13,20 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from kitty_claude.colon_command import command, send_tmux_message
-from kitty_claude.claude_utils import encode_project_path
-from kitty_claude.logging import log, run
-from kitty_claude.session import get_session_name, save_session_metadata
-from kitty_claude.session_utils import session_has_messages
-from kitty_claude.rules import build_claude_md
+from clauthing.colon_command import command, send_tmux_message
+from clauthing.claude_utils import encode_project_path
+from clauthing.logging import log, run
+from clauthing.session import get_session_name, save_session_metadata
+from clauthing.session_utils import session_has_messages
+from clauthing.rules import build_claude_md
 
 
 def get_state_dir():
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        state_dir = Path(xdg_state) / "kitty-claude"
+        state_dir = Path(xdg_state) / "clauthing"
     else:
-        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+        state_dir = Path.home() / ".local" / "state" / "clauthing"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
 
@@ -77,9 +77,9 @@ def get_current_window_id(socket):
 
 def get_claude_binary(profile=None):
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     config_file = config_dir / "config.json"
     if config_file.exists():
         try:
@@ -94,7 +94,7 @@ def get_claude_binary(profile=None):
 def make_one_tab_launcher(target_dir, session_id, claude_config, claude_bin):
     """Create a launcher script for one-tab mode. Returns the path."""
     uid = os.getuid()
-    launcher = Path(f"/tmp/kc-launch-{uid}-{session_id[:8]}.sh")
+    launcher = Path(f"/tmp/cl-launch-{uid}-{session_id[:8]}.sh")
     launcher.write_text(f'''#!/bin/sh
 export CLAUDE_CONFIG_DIR="{claude_config}"
 cd "{target_dir}"
@@ -183,8 +183,8 @@ def carry_over_session_state(old_session_id, new_session_id):
 
 def open_new_multi_tab_window(socket, profile, target_dir, session_id, current_window_id=None, window_name=None):
     """Open new window in multi-tab mode, optionally close old one."""
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    cmd_parts = [kitty_claude_path]
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    cmd_parts = [clauthing_path]
     if profile:
         cmd_parts.extend(["--profile", profile])
     cmd_parts.extend(["--new-window", "--resume-session", session_id])
@@ -242,7 +242,7 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
     save_session_metadata(new_session_id, get_session_name(old_session_id), target_dir)
     carry_over_session_state(old_session_id, new_session_id)
 
-    if socket.startswith("kc1-"):
+    if socket.startswith("cl1-"):
         claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
         claude_bin = get_claude_binary(ctx.profile)
 
@@ -323,20 +323,20 @@ def cmd_reload(ctx):
 
     build_claude_md(profile)
 
-    from kitty_claude.main import regenerate_tmux_config
+    from clauthing.main import regenerate_tmux_config
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
     session_config_dir = base_config / "session-configs" / session_id
     try:
         regenerate_tmux_config(session_config_dir, profile, socket)
     except Exception as e:
         log(f"Error regenerating tmux config: {e}", profile)
 
-    from kitty_claude.claude import save_auth_from_session, setup_session_config
-    from kitty_claude.events import update_window
-    from kitty_claude.colon_command import record_title
+    from clauthing.claude import save_auth_from_session, setup_session_config
+    from clauthing.events import update_window
+    from clauthing.colon_command import record_title
 
     save_auth_from_session(session_id, profile)
     session_config_dir = setup_session_config(session_id, profile)
@@ -353,7 +353,7 @@ def cmd_reload(ctx):
         window_name = None
         log(f"Error updating window: {e}", profile)
 
-    if socket.startswith("kc1-"):
+    if socket.startswith("cl1-"):
         claude_bin = get_claude_binary(profile)
         launcher = make_one_tab_launcher(current_dir, session_id, str(session_config_dir), claude_bin)
         one_tab_relaunch(socket, launcher)
@@ -371,10 +371,10 @@ def cmd_clear(ctx):
     socket = ctx.socket
     current_dir = ctx.cwd
 
-    if socket.startswith("kc1-"):
+    if socket.startswith("cl1-"):
         claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(ctx.claude_data_dir))
         uid = os.getuid()
-        launcher = Path(f"/tmp/kc-clear-{uid}.sh")
+        launcher = Path(f"/tmp/cl-clear-{uid}.sh")
         launcher.write_text(f'''#!/bin/sh
 export CLAUDE_CONFIG_DIR="{claude_config}"
 cd "{current_dir}"
@@ -385,7 +385,7 @@ exec claude
         ctx.message("✓ Clearing session...")
         return ctx.stop("✓ Clearing session...")
 
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
     current_window_id = get_current_window_id(socket)
     profile = ctx.profile
 
@@ -398,7 +398,7 @@ exec claude
     except:
         window_name = None
 
-    cmd_parts = [kitty_claude_path]
+    cmd_parts = [clauthing_path]
     if profile:
         cmd_parts.extend(["--profile", profile])
     cmd_parts.append("--new-window")
@@ -435,7 +435,7 @@ def cmd_fork(ctx):
     shutil.copy2(session_files[0], projects_dir / f"{fork_session_id}.jsonl")
 
     ctx.message("🔀 Forking to new window...")
-    from kitty_claude.claude import new_window
+    from clauthing.claude import new_window
     new_window(profile=ctx.profile, resume_session_id=fork_session_id, socket=ctx.socket)
     return ctx.stop("✓ Forked conversation to new window")
 
@@ -460,7 +460,7 @@ def cmd_call(ctx):
          f"claude --resume {call_session_id}"])
 
     try:
-        from kitty_claude.session_utils import get_last_assistant_message
+        from clauthing.session_utils import get_last_assistant_message
         last_message = get_last_assistant_message(call_file)
         if last_message:
             ctx.message("✓ Call completed, injecting response")
@@ -491,7 +491,7 @@ def cmd_ask(ctx):
          f"claude --resume {ask_session_id}"])
 
     try:
-        from kitty_claude.session_utils import get_last_assistant_message
+        from clauthing.session_utils import get_last_assistant_message
         last_message = get_last_assistant_message(ask_file)
         if last_message:
             ctx.message("✓ Ask completed, injecting response")
@@ -546,7 +546,7 @@ def cmd_rollback(ctx):
 
     current_window_id = get_current_window_id(socket)
 
-    if socket.startswith("kc1-"):
+    if socket.startswith("cl1-"):
         claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(ctx.claude_data_dir))
         claude_bin = get_claude_binary(ctx.profile)
         launcher = make_one_tab_launcher(current_dir, new_session_id, claude_config, claude_bin)
@@ -569,9 +569,9 @@ def cmd_login(ctx):
     profile = ctx.profile
 
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     session_configs_dir = base_config / "session-configs"
 
@@ -617,25 +617,25 @@ def cmd_login(ctx):
     remaining = (best_expiry - now_ms) // 60000
     ctx.message(f"✓ Credentials from {best_source} - reloading...")
 
-    from kitty_claude.colon_command import queue_startup_message
+    from clauthing.colon_command import queue_startup_message
     queue_startup_message(session_id,
         f"✓ Logged in with credentials from session {best_source} ({remaining} min remaining)",
         profile)
 
     current_dir = ctx.cwd
     build_claude_md(profile)
-    from kitty_claude.claude import save_auth_from_session, setup_session_config
+    from clauthing.claude import save_auth_from_session, setup_session_config
     save_auth_from_session(session_id, profile)
     session_config_dir = setup_session_config(session_id, profile)
 
-    if socket.startswith("kc1-"):
+    if socket.startswith("cl1-"):
         claude_bin = get_claude_binary(profile)
         launcher = make_one_tab_launcher(current_dir, session_id, str(session_config_dir), claude_bin)
         one_tab_relaunch(socket, launcher)
         return ctx.stop("")
 
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    subprocess.Popen([kitty_claude_path, "--resume-session", session_id])
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    subprocess.Popen([clauthing_path, "--resume-session", session_id])
     subprocess.Popen([
         "sh", "-c",
         f"sleep 1.5 && tmux -L {socket} kill-pane"
@@ -663,7 +663,7 @@ def _enable_plan_mcp(ctx):
     socket = ctx.socket
     current_dir = ctx.cwd
     profile = ctx.profile
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
 
     mcp_config_file = Path(current_dir) / ".mcp.json"
     if mcp_config_file.exists():
@@ -675,8 +675,8 @@ def _enable_plan_mcp(ctx):
         mcp_config = {"mcpServers": {}}
 
     mcp_config.setdefault("mcpServers", {})
-    mcp_config["mcpServers"]["kitty-claude-planning"] = {
-        "command": kitty_claude_path,
+    mcp_config["mcpServers"]["clauthing-planning"] = {
+        "command": clauthing_path,
         "args": ["--plan-mcp"]
     }
 
@@ -686,11 +686,11 @@ def _enable_plan_mcp(ctx):
         return ctx.stop(f"❌ Error writing .mcp.json: {str(e)}")
 
     build_claude_md(profile)
-    from kitty_claude.claude import save_auth_from_session, setup_session_config
+    from clauthing.claude import save_auth_from_session, setup_session_config
     save_auth_from_session(session_id, profile)
     session_config_dir = setup_session_config(session_id, profile)
 
-    if socket.startswith("kc1-"):
+    if socket.startswith("cl1-"):
         claude_bin = get_claude_binary(profile)
         launcher = make_one_tab_launcher(current_dir, session_id, str(session_config_dir), claude_bin)
         one_tab_relaunch(socket, launcher)

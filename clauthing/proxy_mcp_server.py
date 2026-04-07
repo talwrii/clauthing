@@ -6,7 +6,7 @@ Wraps any MCP server, forwarding list_tools directly but intercepting
 call_tool to show a tmux popup for user approval before forwarding.
 
 Usage:
-    kitty-claude --proxy-mcp '{"command": "/path/to/server", "args": ["--flag"]}'
+    clauthing --proxy-mcp '{"command": "/path/to/server", "args": ["--flag"]}'
 """
 
 import asyncio
@@ -24,7 +24,7 @@ from mcp.types import TextContent
 
 def confirm_popup(tool_name, arguments):
     """Show a tmux popup to approve a tool call. Returns True if approved."""
-    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+    socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
 
     # Format for display
     args_summary = json.dumps(arguments, indent=2)

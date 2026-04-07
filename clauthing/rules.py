@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rule management for kitty-claude."""
+"""Rule management for clauthing."""
 
 from pathlib import Path
 
@@ -14,9 +14,9 @@ def save_rule(name, content, profile=None):
     """
     # Get config directory
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
 
     rules_dir = config_dir / "rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
@@ -43,9 +43,9 @@ def list_rules(profile=None):
     """
     # Get config directory
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
 
     rules_dir = config_dir / "rules"
 
@@ -68,9 +68,9 @@ def show_rule(name, profile=None):
     """
     # Get config directory
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
 
     rules_dir = config_dir / "rules"
 
@@ -92,9 +92,9 @@ def build_claude_md(profile=None):
     """
     # Get config directory
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
 
     rules_dir = config_dir / "rules"
     claude_data_dir = config_dir / "claude-data"

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Events log for kitty-claude.
+"""Events log for clauthing.
 
-Daemon-free event system. Each kitty-claude instance appends events to a
+Daemon-free event system. Each clauthing instance appends events to a
 shared append-only JSONL log file. Consumers watch the file with inotify
 and use bisect to seek by timestamp.
 
 Event log location:
-    /var/run/<uid>/kitty-claude/events.jsonl  (or /tmp fallback)
+    /var/run/<uid>/clauthing/events.jsonl  (or /tmp fallback)
 
 Each line is a JSON object with at least:
     {"ts": <unix_timestamp_float>, "type": "...", ...}
@@ -29,13 +29,13 @@ _plugin_pipelines = {}
 
 
 def get_runtime_dir(profile=None):
-    """Get the runtime directory for kitty-claude."""
+    """Get the runtime directory for clauthing."""
     uid = os.getuid()
     try:
-        runtime_dir = Path(f"/var/run/{uid}/kitty-claude")
+        runtime_dir = Path(f"/var/run/{uid}/clauthing")
         runtime_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError:
-        runtime_dir = Path(f"/tmp/kitty-claude-{uid}")
+        runtime_dir = Path(f"/tmp/clauthing-{uid}")
         runtime_dir.mkdir(parents=True, exist_ok=True)
     return runtime_dir
 
@@ -102,7 +102,7 @@ def emit_event(event, profile=None):
     Adds a timestamp if not present. Safe to call from any context.
     Uses atomic append (O_APPEND) so concurrent writers don't corrupt.
 
-    Plugins subscribe via: kitty-claude --events | plugin --events
+    Plugins subscribe via: clauthing --events | plugin --events
     """
     if "ts" not in event:
         event["ts"] = time.time()
@@ -122,7 +122,7 @@ def read_events(profile=None, since=None):
     """Read events from the log file.
 
     Args:
-        profile: kitty-claude profile name
+        profile: clauthing profile name
         since: If set, only return events with ts >= since (uses bisect)
 
     Returns:
@@ -155,7 +155,7 @@ def tail_events(profile=None, since=None):
     """Yield events from the log file, blocking for new ones via inotify.
 
     Args:
-        profile: kitty-claude profile name
+        profile: clauthing profile name
         since: If set, replay events with ts >= since before tailing
 
     Yields:
@@ -241,7 +241,7 @@ def subscribe_events(profile=None, since=None):
     the event log for incremental updates.
 
     Args:
-        profile: kitty-claude profile name
+        profile: clauthing profile name
         since: If set, replay events from this timestamp first
 
     Returns:
@@ -264,8 +264,8 @@ def subscribe_events(profile=None, since=None):
 
 def get_current_sessions(profile=None):
     """Get all current sessions with metadata and PIDs (for sync on connect)."""
-    from kitty_claude.session import get_state_dir, get_open_sessions
-    from kitty_claude.claude import get_running_sessions
+    from clauthing.session import get_state_dir, get_open_sessions
+    from clauthing.claude import get_running_sessions
 
     state_dir = get_state_dir()
     sessions_dir = state_dir / "sessions"
@@ -299,8 +299,8 @@ def get_current_sessions(profile=None):
 def set_title(session_id, name, profile=None):
     """Set a session title: update metadata, state file, tmux, and emit event."""
     import subprocess
-    from kitty_claude.session import get_state_dir
-    from kitty_claude.tmux import get_runtime_tmux_state_file
+    from clauthing.session import get_state_dir
+    from clauthing.tmux import get_runtime_tmux_state_file
 
     # Update session metadata
     state_dir = get_state_dir()
@@ -315,7 +315,7 @@ def set_title(session_id, name, profile=None):
 
     # Update runtime state file and rename tmux window
     state_file = get_runtime_tmux_state_file(profile)
-    tmux_socket = f"kitty-claude-{profile}" if profile else "kitty-claude"
+    tmux_socket = f"clauthing-{profile}" if profile else "clauthing"
     if state_file.exists():
         try:
             state = json.loads(state_file.read_text())
@@ -354,7 +354,7 @@ def set_title(session_id, name, profile=None):
 
 
 def discover_plugins():
-    """Find all kitty-claude-* executables on PATH."""
+    """Find all clauthing-* executables on PATH."""
     plugins = []
     seen = set()
 
@@ -364,7 +364,7 @@ def discover_plugins():
             continue
         try:
             for entry in dir_path.iterdir():
-                if entry.name.startswith("kitty-claude-") and entry.name not in seen:
+                if entry.name.startswith("clauthing-") and entry.name not in seen:
                     if entry.is_file() and os.access(entry, os.X_OK):
                         plugins.append(entry.name)
                         seen.add(entry.name)
@@ -375,11 +375,11 @@ def discover_plugins():
 
 
 def start_plugin_pipeline(plugin_name, profile=None):
-    """Start a plugin pipeline: kitty-claude --events | plugin --events.
+    """Start a plugin pipeline: clauthing --events | plugin --events.
 
     Returns the shell process Popen object.
     """
-    kc_path = shutil.which("kitty-claude") or "kitty-claude"
+    kc_path = shutil.which("clauthing") or "clauthing"
     plugin_path = shutil.which(plugin_name)
     if not plugin_path:
         return None

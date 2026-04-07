@@ -3,7 +3,7 @@
 import subprocess
 import sys
 
-def get_window_display(line_num, socket="kitty-claude"):
+def get_window_display(line_num, socket="clauthing"):
     """Get formatted window list for the specified line.
     
     Args:
@@ -82,8 +82,8 @@ def get_window_display(line_num, socket="kitty-claude"):
 def handle_tmux_status(line_num, profile=None):
     """Handle --tmux-status command."""
     if profile:
-        socket = f"kitty-claude-{profile}"
+        socket = f"clauthing-{profile}"
     else:
-        socket = "kitty-claude"
+        socket = "clauthing"
     
     get_window_display(line_num, socket)

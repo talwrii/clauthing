@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Log viewing commands for kitty-claude."""
+"""Log viewing commands for clauthing."""
 import os
 import sys
 from pathlib import Path
 
-from kitty_claude.logging import get_log_dir, get_run_log_file
+from clauthing.logging import get_log_dir, get_run_log_file
 
 
 def handle_last_logs(profile):
@@ -39,7 +39,7 @@ def handle_follow_logs(profile):
     run_log = get_run_log_file(profile)
     if not run_log.exists():
         print(f"Log file does not exist: {run_log}")
-        print("Run some kitty-claude commands first to generate logs")
+        print("Run some clauthing commands first to generate logs")
         sys.exit(1)
 
     # Print last 80 lines

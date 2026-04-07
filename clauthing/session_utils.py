@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Session file utilities for kitty-claude.
+"""Session file utilities for clauthing.
 
 This module handles reading and analyzing Claude Code session files (.jsonl).
 """

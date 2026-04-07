@@ -21,7 +21,7 @@ Titles can be set via:
 
 ## Storage
 
-File: `~/.config/kitty-claude/title-history.json`
+File: `~/.config/clauthing/title-history.json`
 
 ```json
 [
@@ -41,5 +41,5 @@ File: `~/.config/kitty-claude/title-history.json`
 
 ## Files to Change
 
-- `kitty_claude/main.py`: Call `record_title` in `rename_session`
-- `kitty_claude/colon_command.py`: Add `record_title` helper, call it in `:spawn`, add `:titles` command
+- `clauthing/main.py`: Call `record_title` in `rename_session`
+- `clauthing/colon_command.py`: Add `record_title` helper, call it in `:spawn`, add `:titles` command

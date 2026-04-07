@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-MCP server for kitty-claude planning mode.
+MCP server for clauthing planning mode.
 
-Provides tools to get a high-level view of all kitty-claude sessions:
+Provides tools to get a high-level view of all clauthing sessions:
 - list_sessions: List all sessions with metadata
 - get_session_notes: Read notes for a specific session
 - get_window_status: Get status of all open windows
@@ -20,10 +20,10 @@ from mcp.types import Tool, TextContent
 
 
 def get_config_dir(profile: Optional[str] = None) -> Path:
-    """Get the kitty-claude config directory."""
+    """Get the clauthing config directory."""
     if profile:
-        return Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
-    return Path.home() / ".config" / "kitty-claude"
+        return Path.home() / ".config" / "clauthing" / "other-profiles" / profile
+    return Path.home() / ".config" / "clauthing"
 
 
 def get_claude_data_dir(profile: Optional[str] = None) -> Path:
@@ -33,11 +33,11 @@ def get_claude_data_dir(profile: Optional[str] = None) -> Path:
 
 
 def get_state_dir() -> Path:
-    """Get the XDG state directory for kitty-claude."""
+    """Get the XDG state directory for clauthing."""
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        return Path(xdg_state) / "kitty-claude"
-    return Path.home() / ".local" / "state" / "kitty-claude"
+        return Path(xdg_state) / "clauthing"
+    return Path.home() / ".local" / "state" / "clauthing"
 
 
 def list_all_sessions(profile: Optional[str] = None) -> list[dict]:
@@ -146,12 +146,12 @@ def get_window_status_info(profile: Optional[str] = None) -> dict:
 
 async def run_plan_mcp_server(profile: Optional[str] = None):
     """Run the planning MCP server."""
-    server = Server("kitty-claude-planning")
+    server = Server("clauthing-planning")
 
     # Define tools
     list_sessions_tool = Tool(
         name="list_sessions",
-        description="List all kitty-claude sessions with metadata (name, path, notes status, last modified)",
+        description="List all clauthing sessions with metadata (name, path, notes status, last modified)",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -176,7 +176,7 @@ async def run_plan_mcp_server(profile: Optional[str] = None):
 
     get_window_status_tool = Tool(
         name="get_window_status",
-        description="Get status of all open kitty-claude windows (session IDs, working directories, session names)",
+        description="Get status of all open clauthing windows (session IDs, working directories, session names)",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -224,7 +224,7 @@ async def run_plan_mcp_server(profile: Optional[str] = None):
 
 def main():
     """Entry point for --plan-mcp flag."""
-    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    profile = os.environ.get('CLAUTHING_PROFILE')
     asyncio.run(run_plan_mcp_server(profile))
 
 

@@ -63,9 +63,9 @@ I have a mode of development where I cycle through a lot of separate x11 windows
 There are some commands implemented with hooks. Type `:help` to see the commands.
 
 ## Doublecolon skills
-Claude has skills but they are stuck in the mindset of "allow claude to do the orchestration". Colon skills are a kitty-claude specific feature. If you type `::blah` the blah skill is immediately sent to claude.
+Claude has skills but they are stuck in the mindset of "allow claude to do the orchestration". Colon skills are a clauthing specific feature. If you type `::blah` the blah skill is immediately sent to claude.
 
 To create the skill `blah` you can use `::skill blah`.
 
 ## Session Storage
-Session metadata is stored in `~/.local/state/kitty-claude/sessions/` and open sessions are tracked in `~/.config/kitty-claude/open-sessions.json` (for debugging purposes only - liable to change).
+Session metadata is stored in `~/.local/state/clauthing/sessions/` and open sessions are tracked in `~/.config/clauthing/open-sessions.json` (for debugging purposes only - liable to change).

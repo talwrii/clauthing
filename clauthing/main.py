@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# kitty-claude
+# clauthing
 
 import os
 import sys
@@ -13,26 +13,26 @@ import signal
 import time
 from pathlib import Path
 
-from kitty_claude.logging import log, get_log_dir, get_run_log_file, cleanup_old_run_logs, run
-from kitty_claude.logs import handle_last_logs, handle_follow_logs
-from kitty_claude.window_utils import (
+from clauthing.logging import log, get_log_dir, get_run_log_file, cleanup_old_run_logs, run
+from clauthing.logs import handle_last_logs, handle_follow_logs
+from clauthing.window_utils import (
     find_and_focus_window,
     open_session_notes
 )
-from kitty_claude.tmux import (
+from clauthing.tmux import (
     send_tmux_message,
     get_runtime_tmux_state_file
 )
-from kitty_claude.claude import new_window
-from kitty_claude.colon_command import cleanup_expired_timed_permissions
-from kitty_claude.hooks import (
+from clauthing.claude import new_window
+from clauthing.colon_command import cleanup_expired_timed_permissions
+from clauthing.hooks import (
     handle_session_start,
     handle_user_prompt_submit,
     handle_run_command,
     handle_stop,
     handle_pre_tool_use,
 )
-from kitty_claude.session import (
+from clauthing.session import (
     save_session_metadata,
     get_session_name,
     get_open_sessions_file,
@@ -40,8 +40,8 @@ from kitty_claude.session import (
     remove_open_session,
     get_open_sessions
 )
-from kitty_claude.tmux_status import handle_tmux_status
-from kitty_claude.rules import save_rule, build_claude_md, list_rules, show_rule
+from clauthing.tmux_status import handle_tmux_status
+from clauthing.rules import save_rule, build_claude_md, list_rules, show_rule
 
 def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
     """Regenerate the tmux.conf file and source it if tmux is running.
@@ -49,59 +49,59 @@ def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
     This ensures hooks and bindings are updated when code changes.
     """
     if tmux_socket is None:
-        tmux_socket = f"kitty-claude-{profile}" if profile else "kitty-claude"
+        tmux_socket = f"clauthing-{profile}" if profile else "clauthing"
 
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
     profile_arg = f"--profile {profile} " if profile else ""
     jail_dir = f"/tmp/{tmux_socket}"
-    kitty_claude_cmd = f"'{kitty_claude_path}' {profile_arg}--session"
+    clauthing_cmd = f"'{clauthing_path}' {profile_arg}--session"
 
     tmux_config_path = Path(config_dir) / "tmux.conf"
-    instance_uuid = os.environ.get("KITTY_CLAUDE_INSTANCE_UUID", "")
+    instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID", "")
 
     config_content = f"""\
-# kitty-claude tmux config (auto-regenerated)
+# clauthing tmux config (auto-regenerated)
 # Kill session when kitty window closes
 set -g destroy-unattached on
 
 # Set tmux socket name so hooks can find it
-set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
-set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
+set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
-set -g default-command "{kitty_claude_cmd}"
+set -g default-command "{clauthing_cmd}"
 
 # Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind -n C-n new-window -c "{jail_dir}" {clauthing_cmd}
 
 # Also override default C-b c
-bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind c new-window -c "{jail_dir}" {clauthing_cmd}
 
 # C-w closes current window, but not the last one
-bind -n C-w run-shell "kitty-claude --close-window"
+bind -n C-w run-shell "clauthing --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
 
-# Alt-r to restart kitty-claude
+# Alt-r to restart clauthing
 bind -n M-r send-keys ":reload" Enter
-bind -n M-R run-shell "kitty-claude {profile_arg}--restart"
+bind -n M-R run-shell "clauthing {profile_arg}--restart"
 
 # Alt-l to reload (send :reload to pane)
 bind -n M-h previous-window
 bind -n M-l next-window
 
 # Alt-e to open session notes
-bind -n M-e run-shell "kitty-claude {profile_arg}--notes"
+bind -n M-e run-shell "clauthing {profile_arg}--notes"
 
 # C-p for session picker (fuzzy find with popup)
-bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {profile_arg}--picker"
+bind -n C-p display-popup -E -w 80% -h 60% "clauthing {profile_arg}--picker"
 
 # C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
+bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -128,8 +128,8 @@ set -g status-format[0] '#[align=left] #W #[align=right] #{{pane_current_path}} 
 set -gu status-format[1]
 set -gu status-format[2]
 
-# Mirror tmux window renames into kitty-claude state.
-set-hook -g window-renamed 'run-shell "kitty-claude {profile_arg}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log"'
+# Mirror tmux window renames into clauthing state.
+set-hook -g window-renamed 'run-shell "clauthing {profile_arg}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log"'
 """
 
     tmux_config_path.write_text(config_content)
@@ -140,12 +140,12 @@ set-hook -g window-renamed 'run-shell "kitty-claude {profile_arg}--socket {tmux_
             ["tmux", "-L", tmux_socket, "source-file", str(tmux_config_path)],
             capture_output=True, text=True
         )
-        with open("/tmp/kc-reload-debug.txt", "a") as f:
+        with open("/tmp/cl-reload-debug.txt", "a") as f:
             f.write(f"source-file returncode: {result.returncode}\n")
             if result.stderr:
                 f.write(f"source-file stderr: {result.stderr}\n")
     except Exception as e:
-        with open("/tmp/kc-reload-debug.txt", "a") as f:
+        with open("/tmp/cl-reload-debug.txt", "a") as f:
             f.write(f"source-file exception: {e}\n")
 
     return tmux_config_path
@@ -175,8 +175,8 @@ def fork_with_log_tailing(exec_func, profile=None):
         sys.exit(0)
     else:
         # Parent process - tail the log file
-        print(f"[kitty-claude] Streaming logs from {log_file}", file=sys.stderr)
-        print(f"[kitty-claude] Child PID: {pid}", file=sys.stderr)
+        print(f"[clauthing] Streaming logs from {log_file}", file=sys.stderr)
+        print(f"[clauthing] Child PID: {pid}", file=sys.stderr)
         print("-" * 60, file=sys.stderr)
         
         try:
@@ -190,7 +190,7 @@ def fork_with_log_tailing(exec_func, profile=None):
                     if result[0] != 0:
                         # Child exited
                         print("-" * 60, file=sys.stderr)
-                        print(f"[kitty-claude] Child exited with status {result[1]}", file=sys.stderr)
+                        print(f"[clauthing] Child exited with status {result[1]}", file=sys.stderr)
                         break
                     
                     # Read any new lines
@@ -202,7 +202,7 @@ def fork_with_log_tailing(exec_func, profile=None):
                         # No new data, wait a bit
                         time.sleep(0.1)
         except KeyboardInterrupt:
-            print("\n[kitty-claude] Interrupted, killing child...", file=sys.stderr)
+            print("\n[clauthing] Interrupted, killing child...", file=sys.stderr)
             os.kill(pid, signal.SIGTERM)
             os.waitpid(pid, 0)
         
@@ -213,21 +213,21 @@ def fork_with_log_tailing(exec_func, profile=None):
 # ============================================================================
 
 def get_state_dir():
-    """Get the XDG state directory for kitty-claude."""
+    """Get the XDG state directory for clauthing."""
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        state_dir = Path(xdg_state) / "kitty-claude"
+        state_dir = Path(xdg_state) / "clauthing"
     else:
-        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+        state_dir = Path.home() / ".local" / "state" / "clauthing"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
 
 def get_claude_binary(profile=None):
     """Get the path to the claude binary from config."""
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     config_file = config_dir / "config.json"
     if config_file.exists():
         try:
@@ -242,9 +242,9 @@ def get_claude_binary(profile=None):
 def set_claude_binary(path, profile=None):
     """Set the path to the claude binary in config."""
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_file = config_dir / "config.json"
     config = {}
@@ -283,7 +283,7 @@ def setup_claude_config(config_dir):
 
     # Create settings.json with hooks (or add missing hooks to existing file)
     settings_file = claude_data_dir / "settings.json"
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
 
     if not settings_file.exists():
         settings_file.write_text(json.dumps({
@@ -293,7 +293,7 @@ def setup_claude_config(config_dir):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{kitty_claude_path} --session-start"
+                                "command": f"{clauthing_path} --session-start"
                             }
                         ]
                     }
@@ -303,7 +303,7 @@ def setup_claude_config(config_dir):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{kitty_claude_path} --user-prompt-submit"
+                                "command": f"{clauthing_path} --user-prompt-submit"
                             }
                         ]
                     }
@@ -313,7 +313,7 @@ def setup_claude_config(config_dir):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{kitty_claude_path} --stop"
+                                "command": f"{clauthing_path} --stop"
                             }
                         ]
                     }
@@ -323,7 +323,7 @@ def setup_claude_config(config_dir):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{kitty_claude_path} --pre-tool-use"
+                                "command": f"{clauthing_path} --pre-tool-use"
                             }
                         ]
                     }
@@ -344,7 +344,7 @@ def setup_claude_config(config_dir):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{kitty_claude_path} --session-start"
+                                "command": f"{clauthing_path} --session-start"
                             }
                         ]
                     }
@@ -356,7 +356,7 @@ def setup_claude_config(config_dir):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{kitty_claude_path} --pre-tool-use"
+                                "command": f"{clauthing_path} --pre-tool-use"
                             }
                         ]
                     }
@@ -375,21 +375,21 @@ def setup_claude_config(config_dir):
 def setup_jail_directory():
     """Create and return the jail directory path."""
     uid = os.getuid()
-    jail_dir = Path(f"/var/run/{uid}/kitty-claude")
+    jail_dir = Path(f"/var/run/{uid}/clauthing")
     # Create the jail directory if it doesn't exist
     try:
         jail_dir.mkdir(parents=True, exist_ok=True)
         print(f"Jail directory: {jail_dir}")
     except PermissionError:
         # Fallback to /tmp if /var/run/$UID doesn't work
-        jail_dir = Path(f"/tmp/kitty-claude-{uid}")
+        jail_dir = Path(f"/tmp/clauthing-{uid}")
         jail_dir.mkdir(parents=True, exist_ok=True)
         print(f"Using fallback jail directory: {jail_dir}")
     return jail_dir
 
 def save_state():
     """State is maintained automatically by new_window()."""
-    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    profile = os.environ.get('CLAUTHING_PROFILE')
     state_file = get_runtime_tmux_state_file(profile)
     if state_file.exists():
         try:
@@ -403,7 +403,7 @@ def save_state():
 
 def restore_state(jail_dir):
     """Restore tmux windows from saved state."""
-    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    profile = os.environ.get('CLAUTHING_PROFILE')
     state_file = get_runtime_tmux_state_file(profile)
     if not state_file.exists():
         return
@@ -425,7 +425,7 @@ def restore_state(jail_dir):
             session_id = window_data.get("session_id")
             if session_id:
                 run(
-                    ["tmux", "-L", "kitty-claude", "new-window", "-t", "kitty-claude", "-c", str(path), "claude", "--resume", session_id],
+                    ["tmux", "-L", "clauthing", "new-window", "-t", "clauthing", "-c", str(path), "claude", "--resume", session_id],
                     stderr=subprocess.DEVNULL
                 )
 
@@ -434,8 +434,8 @@ def restore_state(jail_dir):
         print(f"Warning: Could not restore state: {e}")
 
 def restart():
-    """Save state and restart kitty-claude."""
-    config_dir = Path.home() / ".config" / "kitty-claude"
+    """Save state and restart clauthing."""
+    config_dir = Path.home() / ".config" / "clauthing"
 
     # Save state
     print("Saving state...")
@@ -445,7 +445,7 @@ def restart():
     print("Stopping tmux session...")
     try:
         run(
-            ["tmux", "-L", "kitty-claude", "kill-session", "-t", "kitty-claude"],
+            ["tmux", "-L", "clauthing", "kill-session", "-t", "clauthing"],
             stderr=subprocess.DEVNULL
         )
     except:
@@ -453,10 +453,10 @@ def restart():
 
     # Relaunch (will restore state on startup)
     print("Relaunching...")
-    os.execvp("kitty-claude", ["kitty-claude"])
+    os.execvp("clauthing", ["clauthing"])
 
 def reinstall(config_dir):
-    """Remove all kitty-claude config except credentials."""
+    """Remove all clauthing config except credentials."""
     claude_data_dir = config_dir / "claude-data"
     credentials_file = claude_data_dir / ".credentials.json"
 
@@ -470,7 +470,7 @@ def reinstall(config_dir):
     if config_dir.exists():
         print(f"Removing {config_dir}...")
         shutil.rmtree(config_dir)
-        print("✓ Removed kitty-claude configuration")
+        print("✓ Removed clauthing configuration")
 
     # Restore credentials if we backed them up
     if credentials_backup:
@@ -478,7 +478,7 @@ def reinstall(config_dir):
         credentials_file.write_bytes(credentials_backup)
         print(f"✓ Restored credentials")
 
-def handle_session_picker(profile, socket="kitty-claude"):
+def handle_session_picker(profile, socket="clauthing"):
     """Fuzzy find and switch to an open session."""
     open_sessions = get_open_sessions(profile)
 
@@ -551,12 +551,12 @@ def handle_session_picker(profile, socket="kitty-claude"):
 
             print(f"No window found with session {session_id}, opening new window...")
             # Not found? Open new window
-            kitty_claude_cmd = ["kitty-claude"]
+            clauthing_cmd = ["clauthing"]
             if profile:
-                kitty_claude_cmd.extend(["--profile", profile])
-            kitty_claude_cmd.extend(["--new-window", "--resume-session", session_id])
-            print(f"Running: {' '.join(kitty_claude_cmd)}")
-            subprocess.Popen(kitty_claude_cmd)
+                clauthing_cmd.extend(["--profile", profile])
+            clauthing_cmd.extend(["--new-window", "--resume-session", session_id])
+            print(f"Running: {' '.join(clauthing_cmd)}")
+            subprocess.Popen(clauthing_cmd)
         else:
             print("Cancelled or no selection")
 
@@ -564,7 +564,7 @@ def handle_session_picker(profile, socket="kitty-claude"):
         print("Error: fzf not found. Install: sudo apt install fzf")
 
 def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, resume_session_id=None, window_name=None, cwd=None):
-    """Launch kitty-claude in single-tab mode.
+    """Launch clauthing in single-tab mode.
 
     Uses tmux but disables new tab creation and skips session restoration.
     Each invocation creates a completely independent instance.
@@ -578,16 +578,16 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
     instance_id = f"{int(time.time())}-{os.getpid()}"
 
     # Put ephemeral kitty config in temp directory (tmux config goes in session dir)
-    tmp_config_dir = Path(f"/tmp/kitty-claude-one-tab-{os.getuid()}")
+    tmp_config_dir = Path(f"/tmp/clauthing-one-tab-{os.getuid()}")
     tmp_config_dir.mkdir(parents=True, exist_ok=True)
 
     kitty_config_path = tmp_config_dir / f"kitty-{instance_id}.conf"
 
     # Unique socket and session name for each instance
     if profile:
-        tmux_socket = f"kc1-{profile}-{instance_id}"
+        tmux_socket = f"cl1-{profile}-{instance_id}"
     else:
-        tmux_socket = f"kc1-{instance_id}"
+        tmux_socket = f"cl1-{instance_id}"
 
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
@@ -623,7 +623,7 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
 
     # Set up session config - reuse existing if resuming, create new otherwise
     import uuid
-    from kitty_claude.claude import setup_session_config
+    from clauthing.claude import setup_session_config
     if resume_session_id:
         session_id = resume_session_id
         log(f"Resuming session: {session_id}", profile)
@@ -642,13 +642,13 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
         claude_command = claude_bin
 
     # Register this instance (one-tab launch)
-    from kitty_claude.instances import register_instance, ENV_VAR as _IUUID
+    from clauthing.instances import register_instance, ENV_VAR as _IUUID
     instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
     os.environ[_IUUID] = instance_uuid
 
     # Simplified tmux config - NO C-n, NO session restoration hooks
     tmux_config_path.write_text(f"""\
-# kitty-claude tmux config (ONE-TAB MODE)
+# clauthing tmux config (ONE-TAB MODE)
 # No new tabs, no session management
 set -g destroy-unattached on
 {remain_config}
@@ -656,8 +656,8 @@ set -g destroy-unattached on
 set-environment -g CLAUDE_CONFIG_DIR "{session_config_dir}"
 
 # Set tmux socket name so hooks can find it
-set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
-set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
+set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude
 set -g default-command "{claude_command}"
@@ -666,13 +666,13 @@ set -g default-command "{claude_command}"
 bind -n C-n display-message "New tabs disabled in --one-tab mode"
 
 # C-w closes window (will exit since it's the only one)
-bind -n C-w run-shell "kitty-claude --close-window"
+bind -n C-w run-shell "clauthing --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
 
 # M-e opens session notes in vim popup
-bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
+bind -n M-e run-shell "clauthing {f'--profile {profile} ' if profile else ''}--notes"
 
 # M-n to rename window and record in title history
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
@@ -682,10 +682,10 @@ bind -n M-h previous-window
 bind -n M-l next-window
 
 # C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
+bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -708,7 +708,7 @@ set -gu status-format[2]
     # Kitty config
     window_name_arg = f" -n '{window_name}'" if window_name else ""
     kitty_config_path.write_text(f"""\
-# kitty-claude config (ONE-TAB MODE)
+# clauthing config (ONE-TAB MODE)
 include {Path.home()}/.config/kitty/kitty.conf
 shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {working_dir}{window_name_arg}
 """)
@@ -723,7 +723,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
         sys.exit(1)
     if not shutil.which(claude_bin):
         print(f"Error: claude not found at '{claude_bin}'.")
-        print("Please install Claude Code or set path with: kitty-claude --set-claude /path/to/claude")
+        print("Please install Claude Code or set path with: clauthing --set-claude /path/to/claude")
         sys.exit(1)
 
     if no_kitty:
@@ -743,7 +743,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
         log(f"Launching kitty in one-tab mode", profile)
         os.execvp("kitty", [
             "kitty",
-            "--class=kitty-claude",
+            "--class=clauthing",
             f"--config={kitty_config_path}"
         ])
 
@@ -763,9 +763,9 @@ def handle_list_sessions(profile):
 
     # Get Claude data directory to check for conversation files
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     claude_data_dir = config_dir / "claude-data"
     projects_dir = claude_data_dir / "projects"
 
@@ -818,12 +818,12 @@ def handle_copy_profile(source_profile, dest_profile):
     """Copy a profile to a new profile."""
     # Source: if "default", use base config dir, otherwise other-profiles
     if source_profile == "default":
-        source_dir = Path.home() / ".config" / "kitty-claude"
+        source_dir = Path.home() / ".config" / "clauthing"
     else:
-        source_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / source_profile
+        source_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / source_profile
 
     # Dest: always in other-profiles
-    dest_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / dest_profile
+    dest_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / dest_profile
 
     if not source_dir.exists():
         print(f"Error: Source profile '{source_profile}' does not exist at {source_dir}")
@@ -914,7 +914,7 @@ def rename_session(session_id, new_name, profile, tmux_socket):
     log(f"Rename session handler: session_id={session_id}, new_name={new_name}", profile)
 
     # Record title in history
-    from kitty_claude.colon_command import record_title
+    from clauthing.colon_command import record_title
     record_title(new_name, profile)
 
     # Update session metadata
@@ -953,7 +953,7 @@ def rename_session(session_id, new_name, profile, tmux_socket):
 
     # Emit title_changed event
     try:
-        from kitty_claude.events import emit_event
+        from clauthing.events import emit_event
         emit_event({
             "type": "title_changed",
             "session_id": session_id,
@@ -964,7 +964,7 @@ def rename_session(session_id, new_name, profile, tmux_socket):
 
     sys.exit(0)
 
-def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd, tmux_socket, remain_on_exit=False):
+def handle_update_config(config_dir, claude_data_dir, profile, clauthing_cmd, tmux_socket, remain_on_exit=False):
     """Regenerate configuration files."""
     print("Regenerating config files...")
 
@@ -986,58 +986,58 @@ def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd,
         kitty_config_path.unlink()
         print(f"Removed old {kitty_config_path}")
 
-    # Get kitty-claude executable for status bar
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    # Get clauthing executable for status bar
+    clauthing_path = shutil.which("clauthing") or "clauthing"
     profile_arg = f"--profile {profile} " if profile else ""
 
     # Regenerate tmux config (preserve existing instance uuid from env)
-    instance_uuid = os.environ.get("KITTY_CLAUDE_INSTANCE_UUID", "")
+    instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID", "")
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
-# kitty-claude tmux config (isolated server)
+# clauthing tmux config (isolated server)
 # Kill session when kitty window closes
 set -g destroy-unattached on
 {remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
-set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
-set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
+set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
-set -g default-command "{kitty_claude_cmd}"
+set -g default-command "{clauthing_cmd}"
 
 # Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind -n C-n new-window -c "{jail_dir}" {clauthing_cmd}
 
 # Also override default C-b c
-bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind c new-window -c "{jail_dir}" {clauthing_cmd}
 
 # C-w closes current window, but not the last one
-bind -n C-w run-shell "kitty-claude --close-window"
+bind -n C-w run-shell "clauthing --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
 
-# Alt-r to restart kitty-claude
+# Alt-r to restart clauthing
 bind -n M-r send-keys ":reload" Enter
-bind -n M-R run-shell "kitty-claude {profile_arg}--restart"
+bind -n M-R run-shell "clauthing {profile_arg}--restart"
 
 # Alt-l to reload (send :reload to pane)
 bind -n M-h previous-window
 bind -n M-l next-window
 
 # Alt-e to open session notes
-bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
+bind -n M-e run-shell "clauthing {f'--profile {profile} ' if profile else ''}--notes"
 
 # C-p for session picker (fuzzy find with popup)
-bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} ' if profile else ''}--picker"
+bind -n C-p display-popup -E -w 80% -h 60% "clauthing {f'--profile {profile} ' if profile else ''}--picker"
 
 # C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
+bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -1063,15 +1063,15 @@ set -g status 3
 set -g status-style bg=colour235,fg=colour248
 
 # Line 0: label (left) and path (right)
-set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [kitty-claude] #[align=right]#{{pane_current_path}} '
+set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [clauthing] #[align=right]#{{pane_current_path}} '
 
 # Lines 1 & 2: windows (split across two lines)
-set -g status-format[1] '#({kitty_claude_path} {profile_arg}--tmux-status 1)'
-set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
+set -g status-format[1] '#({clauthing_path} {profile_arg}--tmux-status 1)'
+set -g status-format[2] '#({clauthing_path} {profile_arg}--tmux-status 2)'
 
 # Refresh status bar on window changes
 set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
+set-hook -g window-renamed 'run-shell "clauthing {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log" ; refresh-client -S'
 
 # Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
@@ -1084,14 +1084,14 @@ set -g window-status-current-format " #I:#W "
     # Regenerate kitty config
     kitty_config_path.write_text(
         f"include {Path.home()}/.config/kitty/kitty.conf\n"
-        f"shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {kitty_claude_cmd}\n"
+        f"shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {clauthing_cmd}\n"
     )
     print(f"✓ Created {kitty_config_path}")
 
     print("\nConfig files regenerated!")
     sys.exit(0)
 
-def handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_on_exit=False):
+def handle_no_kitty(config_dir, profile, clauthing_cmd, tmux_socket, remain_on_exit=False):
     """Run tmux directly without kitty (for testing)."""
     # Set up isolated Claude config
     claude_data_dir = setup_claude_config(config_dir)
@@ -1100,7 +1100,7 @@ def handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_o
     jail_dir = setup_jail_directory()
 
     # Register this instance (no-kitty launch)
-    from kitty_claude.instances import register_instance, ENV_VAR as _IUUID
+    from clauthing.instances import register_instance, ENV_VAR as _IUUID
     instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
     os.environ[_IUUID] = instance_uuid
 
@@ -1110,24 +1110,24 @@ def handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_o
         config_dir.mkdir(parents=True, exist_ok=True)
         remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
         tmux_config_path.write_text(f"""\
-# kitty-claude tmux config (isolated server)
+# clauthing tmux config (isolated server)
 # Kill session when kitty window closes
 set -g destroy-unattached on
 {remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
-set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
-set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
+set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
-set -g default-command "{kitty_claude_cmd}"
+set -g default-command "{clauthing_cmd}"
 
 # Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind -n C-n new-window -c "{jail_dir}" {clauthing_cmd}
 
 # Also override default C-b c
-bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind c new-window -c "{jail_dir}" {clauthing_cmd}
 
 # Easier window switching
 bind -n C-j previous-window
@@ -1141,10 +1141,10 @@ set -g base-index 1
 setw -g pane-base-index 1
 
 # C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
+bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
 
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
@@ -1176,7 +1176,7 @@ KEYBINDINGS_HELP = """\
 def handle_show_help():
     """Print the keybindings help and wait for a keypress.
 
-    Designed to be wrapped in `tmux display-popup -E "kitty-claude --show-help"`
+    Designed to be wrapped in `tmux display-popup -E "clauthing --show-help"`
     so the binding list lives in code (testable standalone) rather than
     being baked into the tmux config string.
     """
@@ -1201,7 +1201,7 @@ def handle_show_help():
 def handle_close_window(profile, tmux_socket):
     """Close the current tmux window, removing its session from open_sessions
     so it isn't restored on next launch. (User pressed C-w.)"""
-    from kitty_claude.session import remove_open_session
+    from clauthing.session import remove_open_session
     # Refuse to close the last window.
     try:
         result = run(
@@ -1247,14 +1247,14 @@ def handle_close_window(profile, tmux_socket):
 
 
 def handle_instances(json_output=False):
-    """Print running kitty-claude instances."""
-    from kitty_claude.instances import list_instances
+    """Print running clauthing instances."""
+    from clauthing.instances import list_instances
     instances = list_instances()
     if json_output:
         print(json.dumps(instances, indent=2))
         return
     if not instances:
-        print("No running kitty-claude instances.")
+        print("No running clauthing instances.")
         return
     # Table output. Columns chosen to be useful from a terminal.
     headers = ("PID", "SOCKET", "PROFILE", "STARTED", "CWD", "LOG_DIR", "UUID")
@@ -1278,8 +1278,8 @@ def handle_instances(json_output=False):
         print(fmt.format(*r))
 
 
-def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_on_exit=False):
-    """Main launch logic for kitty-claude."""
+def launch_clauthing(config_dir, profile, clauthing_cmd, tmux_socket, remain_on_exit=False):
+    """Main launch logic for clauthing."""
     kitty_config_path = config_dir / "kitty.conf"
     tmux_config_path = config_dir / "tmux.conf"
 
@@ -1294,7 +1294,7 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
 
     # Register this instance so logs/state are routed to a per-uuid dir.
     # This must happen before any log() calls so they land in the right place.
-    from kitty_claude.instances import register_instance, ENV_VAR as _IUUID
+    from clauthing.instances import register_instance, ENV_VAR as _IUUID
     instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
     os.environ[_IUUID] = instance_uuid
 
@@ -1315,7 +1315,7 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
     log(f"=== NEW RUN {run_num} ===", profile)
 
     # Start plugin event pipelines
-    from kitty_claude.events import start_all_plugins
+    from clauthing.events import start_all_plugins
     start_all_plugins(profile)
     log("Started plugin event pipelines", profile)
 
@@ -1325,8 +1325,8 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
     if kitty_config_path.exists():
         kitty_config_path.unlink()
 
-    # Get kitty-claude executable for status bar
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    # Get clauthing executable for status bar
+    clauthing_path = shutil.which("clauthing") or "clauthing"
     profile_arg = f"--profile {profile} " if profile else ""
 
     # Always regenerate tmux config (it's ephemeral, not user-editable)
@@ -1334,54 +1334,54 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
     tmux_config_path.write_text(f"""\
 # ============================================================================
 # DO NOT MODIFY THIS FILE - IT IS AUTO-GENERATED ON EVERY LAUNCH
-# This file is regenerated each time kitty-claude starts
+# This file is regenerated each time clauthing starts
 # To customize: Use hooks or environment variables (future feature)
 # ============================================================================
 #
-# kitty-claude tmux config (isolated server)
+# clauthing tmux config (isolated server)
 # Kill session when kitty window closes
 set -g destroy-unattached on
 {remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
 set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
-set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
-set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
+set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
-set -g default-command "{kitty_claude_cmd}"
+set -g default-command "{clauthing_cmd}"
 
 # Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind -n C-n new-window -c "{jail_dir}" {clauthing_cmd}
 
 # Also override default C-b c
-bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
+bind c new-window -c "{jail_dir}" {clauthing_cmd}
 
 # C-w closes current window, but not the last one
-bind -n C-w run-shell "kitty-claude --close-window"
+bind -n C-w run-shell "clauthing --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
 
-# Alt-r to restart kitty-claude
+# Alt-r to restart clauthing
 bind -n M-r send-keys ":reload" Enter
-bind -n M-R run-shell "kitty-claude {profile_arg}--restart"
+bind -n M-R run-shell "clauthing {profile_arg}--restart"
 
 # Alt-l to reload (send :reload to pane)
 bind -n M-h previous-window
 bind -n M-l next-window
 
 # Alt-e to open session notes
-bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
+bind -n M-e run-shell "clauthing {f'--profile {profile} ' if profile else ''}--notes"
 
 # C-p for session picker (fuzzy find) - use popup for interactive fzf
-bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} ' if profile else ''}--picker"
+bind -n C-p display-popup -E -w 80% -h 60% "clauthing {f'--profile {profile} ' if profile else ''}--picker"
 
 # C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
+bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
+bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -1407,15 +1407,15 @@ set -g status 3
 set -g status-style bg=colour235,fg=colour248
 
 # Line 0: label (left) and path (right)
-set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [kitty-claude] #[align=right]#{{pane_current_path}} '
+set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [clauthing] #[align=right]#{{pane_current_path}} '
 
 # Lines 1 & 2: windows (split across two lines)
-set -g status-format[1] '#({kitty_claude_path} {profile_arg}--tmux-status 1)'
-set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
+set -g status-format[1] '#({clauthing_path} {profile_arg}--tmux-status 1)'
+set -g status-format[2] '#({clauthing_path} {profile_arg}--tmux-status 2)'
 
 # Refresh status bar on window changes
 set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
+set-hook -g window-renamed 'run-shell "clauthing {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log" ; refresh-client -S'
 
 # Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
@@ -1431,7 +1431,7 @@ set -g window-status-current-format " #I:#W "
 # DO NOT MODIFY THIS FILE - IT IS AUTO-GENERATED ON EVERY LAUNCH
 # ============================================================================
 include {Path.home()}/.config/kitty/kitty.conf
-shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {kitty_claude_cmd}
+shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} -c {jail_dir} {clauthing_cmd}
 """)
     print(f"Created kitty config at {kitty_config_path}")
 
@@ -1460,10 +1460,10 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
             first_session_id = open_sessions[0]
             log(f"Restore: Creating initial session with {first_session_id}", profile)
 
-            # Create first window via kitty-claude --new-window so the
+            # Create first window via clauthing --new-window so the
             # has_messages / blank-session decision goes through new_window
             # rather than running `claude --resume` directly here.
-            kc_cmd_parts = [kitty_claude_path]
+            kc_cmd_parts = [clauthing_path]
             if profile:
                 kc_cmd_parts.extend(["--profile", profile])
             kc_cmd_parts.extend(["--new-window", "--resume-session", first_session_id])
@@ -1517,7 +1517,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                         log(f"Restore: Creating window for session {sess_id} at {path}", profile)
 
                         # Build wrapper command (FIXED - use indirection)
-                        cmd_parts = [kitty_claude_path]
+                        cmd_parts = [clauthing_path]
                         if profile:
                             cmd_parts.extend(["--profile", profile])
                         cmd_parts.extend(["--new-window", "--resume-session", sess_id])
@@ -1536,7 +1536,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
     # Launch kitty
     os.execvp("kitty", [
         "kitty",
-        "--class=kitty-claude",
+        "--class=clauthing",
         f"--config={kitty_config_path}"
     ])
 
@@ -1556,15 +1556,15 @@ def main():
         parser.add_argument("--new-window", action="store_true", help="Create new window with session tracking (internal use)")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
         parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
-        parser.add_argument("--restart", action="store_true", help="Restart kitty-claude with state preservation")
+        parser.add_argument("--restart", action="store_true", help="Restart clauthing with state preservation")
         parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
-        parser.add_argument("--instances", action="store_true", help="List running kitty-claude instances")
+        parser.add_argument("--instances", action="store_true", help="List running clauthing instances")
         parser.add_argument("--close-window", action="store_true", help="Close the current tmux window and remove its session from the restore list")
         parser.add_argument("--show-help", action="store_true", help="Print the keybindings help (used by the M-k popup)")
         parser.add_argument("--json", action="store_true", help="Output JSON instead of a table (used with --instances)")
         parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
         parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
-        parser.add_argument("--rename", type=str, metavar="NAME", help="Mirror a tmux window rename into kitty-claude state (called from window-renamed hook)")
+        parser.add_argument("--rename", type=str, metavar="NAME", help="Mirror a tmux window rename into clauthing state (called from window-renamed hook)")
         parser.add_argument("--window-id", type=str, metavar="ID", help="tmux window id (e.g. @5), passed by the window-renamed hook so --rename targets the correct window rather than whichever is focused")
         parser.add_argument("--socket", type=str, metavar="SOCKET", help="Tmux socket name (for --rename etc)")
         parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
@@ -1587,7 +1587,7 @@ def main():
         parser.add_argument("--mcp-exec", nargs=argparse.REMAINDER, help="Run mcp-exec with given arguments (internal use)")
         parser.add_argument("--plan-mcp", action="store_true", help="Run planning MCP server (provides session/notes overview)")
         parser.add_argument("--command-mcp", action="store_true", help="Run command MCP server (exposes colon commands to Claude)")
-        parser.add_argument("--skills-mcp", action="store_true", help="Run skills MCP server (lets Claude create kc-skills)")
+        parser.add_argument("--skills-mcp", action="store_true", help="Run skills MCP server (lets Claude create cl-skills)")
         parser.add_argument("--claude-skills-mcp", action="store_true", help="Run Claude Code skills MCP server (lets Claude manage /skills)")
         parser.add_argument("--with-commands", action="store_true", help="Enable kitty_command tool in command MCP server")
         parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
@@ -1596,13 +1596,13 @@ def main():
         parser.add_argument("--events", action="store_true", help="Tail events log to stdout (blocks, uses inotify)")
         parser.add_argument("--events-since", type=float, metavar="TIMESTAMP", help="With --events, replay from this unix timestamp")
         parser.add_argument("--set-title", nargs=2, metavar=("SESSION_ID", "NAME"), help="Set session title (updates metadata, tmux, emits event)")
-        parser.add_argument("--send-login", nargs=2, metavar=("SOCKET", "WINDOW"), help="Test send :login to a kc1 socket/window (debug)")
+        parser.add_argument("--send-login", nargs=2, metavar=("SOCKET", "WINDOW"), help="Test send :login to a cl1 socket/window (debug)")
 
         args = parser.parse_args()
 
         # Enable stderr logging if --log flag is set
         if args.log:
-            os.environ['KITTY_CLAUDE_LOG_STDERR'] = '1'
+            os.environ['CLAUTHING_LOG_STDERR'] = '1'
 
         if args.instances:
             handle_instances(json_output=args.json)
@@ -1613,20 +1613,20 @@ def main():
             sys.exit(0)
 
         # Determine profile name
-        profile = args.profile or os.environ.get('KITTY_CLAUDE_PROFILE')
+        profile = args.profile or os.environ.get('CLAUTHING_PROFILE')
 
         # Log this invocation
         log(f"=== COMMAND: {' '.join(sys.argv)} ===", profile)
 
         # Set up directories based on profile
         if profile:
-            config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
-            tmux_socket = f"kitty-claude-{profile}"
-            kitty_claude_cmd = f"kitty-claude --profile {profile} --new-window"
+            config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
+            tmux_socket = f"clauthing-{profile}"
+            clauthing_cmd = f"clauthing --profile {profile} --new-window"
         else:
-            config_dir = Path.home() / ".config" / "kitty-claude"
-            tmux_socket = "kitty-claude"
-            kitty_claude_cmd = "kitty-claude --new-window"
+            config_dir = Path.home() / ".config" / "clauthing"
+            tmux_socket = "clauthing"
+            clauthing_cmd = "clauthing --new-window"
 
         # Override socket if explicitly provided
         if args.socket:
@@ -1737,38 +1737,38 @@ def main():
 
         if args.mcp_exec:
             # Run mcp-exec with the provided arguments
-            from kitty_claude.mcp_exec.__main__ import main as mcp_exec_main
+            from clauthing.mcp_exec.__main__ import main as mcp_exec_main
             sys.argv = ['mcp-exec'] + args.mcp_exec
             mcp_exec_main()
             sys.exit(0)
 
         if args.plan_mcp:
             # Run planning MCP server
-            from kitty_claude.plan_mcp_server import main as plan_mcp_main
+            from clauthing.plan_mcp_server import main as plan_mcp_main
             plan_mcp_main()
             sys.exit(0)
 
         if args.command_mcp:
             # Run command MCP server
-            from kitty_claude.command_mcp_server import main as command_mcp_main
+            from clauthing.command_mcp_server import main as command_mcp_main
             command_mcp_main(enable_commands=args.with_commands)
             sys.exit(0)
 
         if args.skills_mcp:
             # Run skills MCP server
-            from kitty_claude.skills_mcp_server import main as skills_mcp_main
+            from clauthing.skills_mcp_server import main as skills_mcp_main
             skills_mcp_main()
             sys.exit(0)
 
         if args.claude_skills_mcp:
             # Run Claude Code skills MCP server
-            from kitty_claude.claude_skills_mcp_server import main as claude_skills_mcp_main
+            from clauthing.claude_skills_mcp_server import main as claude_skills_mcp_main
             claude_skills_mcp_main()
             sys.exit(0)
 
         if args.proxy_mcp:
             # Run MCP proxy with approval popups
-            from kitty_claude.proxy_mcp_server import main as proxy_mcp_main
+            from clauthing.proxy_mcp_server import main as proxy_mcp_main
             proxy_mcp_main()
             sys.exit(0)
 
@@ -1784,17 +1784,17 @@ def main():
                 except:
                     pass
             roles_dir = config_dir / "mcp-roles"
-            from kitty_claude.permissions_gui import run_gui
+            from clauthing.permissions_gui import run_gui
             run_gui(str(session_config_dir), cwd, roles_dir, config_dir=str(config_dir), session_id=session_id)
             sys.exit(0)
 
         if args.events:
-            from kitty_claude.events import subscribe_events
+            from clauthing.events import subscribe_events
             sys.exit(subscribe_events(profile, since=args.events_since))
 
         if args.set_title:
             session_id, name = args.set_title
-            from kitty_claude.events import set_title
+            from clauthing.events import set_title
             set_title(session_id, name, profile)
             print(f"Title set: {session_id} -> {name}")
             sys.exit(0)
@@ -1843,7 +1843,7 @@ def main():
             rename_session(session_id, new_name, profile, tmux_socket)
 
         if args.update_config:
-            handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
+            handle_update_config(config_dir, claude_data_dir, profile, clauthing_cmd, tmux_socket, args.remain)
 
         if args.reinstall:
             reinstall(config_dir)
@@ -1861,30 +1861,30 @@ def main():
         claude_bin = get_claude_binary(profile)
         if not shutil.which(claude_bin):
             print(f"Error: claude not found at '{claude_bin}'.")
-            print("Please install Claude Code or set path with: kitty-claude --set-claude /path/to/claude")
+            print("Please install Claude Code or set path with: clauthing --set-claude /path/to/claude")
             sys.exit(1)
 
         if args.no_kitty:
             if args.log:
                 fork_with_log_tailing(
-                    lambda: handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain),
+                    lambda: handle_no_kitty(config_dir, profile, clauthing_cmd, tmux_socket, args.remain),
                     profile
                 )
             else:
-                handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
+                handle_no_kitty(config_dir, profile, clauthing_cmd, tmux_socket, args.remain)
 
-        # Default: launch kitty-claude
+        # Default: launch clauthing
         if args.log:
             fork_with_log_tailing(
-                lambda: launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain),
+                lambda: launch_clauthing(config_dir, profile, clauthing_cmd, tmux_socket, args.remain),
                 profile
             )
         else:
-            launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, args.remain)
+            launch_clauthing(config_dir, profile, clauthing_cmd, tmux_socket, args.remain)
 
     except Exception as e:
         # Log any uncaught exceptions
-        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        profile = os.environ.get('CLAUTHING_PROFILE')
         log(f"FATAL ERROR: {e}", profile)
         import traceback
         log(f"TRACEBACK:\n{traceback.format_exc()}", profile)

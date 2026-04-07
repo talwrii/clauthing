@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-MCP server that gives Claude control over kitty-claude.
+MCP server that gives Claude control over clauthing.
 
 Exposes a single tool that runs a colon command (e.g. ':cd /path', ':tmuxpath')
-after user confirmation via tmux popup. Calls kitty-claude --run-command
+after user confirmation via tmux popup. Calls clauthing --run-command
 which shares the colon command handler logic.
 """
 
@@ -20,8 +20,8 @@ from mcp.types import Tool, TextContent
 
 
 def get_tmux_socket():
-    """Get the kitty-claude tmux socket name."""
-    return os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+    """Get the clauthing tmux socket name."""
+    return os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
 
 
 def get_session_id():
@@ -33,11 +33,11 @@ def get_session_id():
 
 
 def get_state_dir():
-    """Get the XDG state directory for kitty-claude."""
+    """Get the XDG state directory for clauthing."""
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        return Path(xdg_state) / "kitty-claude"
-    return Path.home() / ".local" / "state" / "kitty-claude"
+        return Path(xdg_state) / "clauthing"
+    return Path.home() / ".local" / "state" / "clauthing"
 
 
 def confirm_popup(message):
@@ -110,11 +110,11 @@ def run_command(command):
         return f"Cancelled: {command}"
 
     # User confirmed — call the colon command handler
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+    clauthing_path = shutil.which("clauthing") or "clauthing"
 
     try:
         result = subprocess.run(
-            [kitty_claude_path, "--run-command", command],
+            [clauthing_path, "--run-command", command],
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
@@ -129,7 +129,7 @@ def run_command(command):
 
 async def run_command_mcp_server(enable_commands=False):
     """Run the command MCP server."""
-    server = Server("kitty-claude-commands")
+    server = Server("clauthing-commands")
 
     read_tmux_tool = Tool(
         name="read_tmux",
@@ -143,7 +143,7 @@ async def run_command_mcp_server(enable_commands=False):
     kitty_command_tool = Tool(
         name="kitty_command",
         description=(
-            "Run a kitty-claude colon command. The user will be asked to confirm via popup. "
+            "Run a clauthing colon command. The user will be asked to confirm via popup. "
             "Examples: ':cd /path', ':tmuxpath', ':tmux', ':reload', ':role myRole'."
         ),
         inputSchema={

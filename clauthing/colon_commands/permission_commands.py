@@ -13,21 +13,21 @@ import tempfile
 import time
 from pathlib import Path
 
-from kitty_claude.colon_command import command, send_tmux_message, get_state_dir
-from kitty_claude.claude_utils import encode_project_path
-from kitty_claude.colon_command import (
+from clauthing.colon_command import command, send_tmux_message, get_state_dir
+from clauthing.claude_utils import encode_project_path
+from clauthing.colon_command import (
     load_timed_permissions, save_timed_permissions,
     parse_duration, format_remaining_time
 )
-from kitty_claude.logging import log, run
+from clauthing.logging import log, run
 
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
 
 def get_config_dir(profile):
     if profile:
-        return Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
-    return Path.home() / ".config" / "kitty-claude"
+        return Path.home() / ".config" / "clauthing" / "other-profiles" / profile
+    return Path.home() / ".config" / "clauthing"
 
 
 def get_roles_dir(profile):
@@ -268,9 +268,9 @@ def cmd_allow_last(ctx):
 
     profile = ctx.profile
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     path_hash = encode_project_path(ctx.cwd)
     session_file = base_config / "claude-data" / "projects" / path_hash / f"{ctx.session_id}.jsonl"
@@ -305,9 +305,9 @@ def cmd_allow_recent(ctx):
 
     profile = ctx.profile
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     path_hash = encode_project_path(ctx.cwd)
     session_file = base_config / "claude-data" / "projects" / path_hash / f"{ctx.session_id}.jsonl"
@@ -390,8 +390,8 @@ def cmd_allow_recent(ctx):
 def cmd_permissions_gui(ctx):
     if not ctx.session_id:
         return ctx.stop("No session ID.")
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    subprocess.Popen([kitty_claude_path, "--permissions-gui", ctx.session_id])
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    subprocess.Popen([clauthing_path, "--permissions-gui", ctx.session_id])
     ctx.message("Opening permissions editor...")
     return ctx.stop("")
 
@@ -537,7 +537,7 @@ def cmd_roles_current(ctx):
     if title_roles_file.exists():
         try:
             title_mappings = json.loads(title_roles_file.read_text())
-            tmux_socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+            tmux_socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
             result = subprocess.run(
                 ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_name}"],
                 capture_output=True, text=True, timeout=5

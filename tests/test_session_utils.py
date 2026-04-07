@@ -6,10 +6,10 @@ import json
 import sys
 from pathlib import Path
 
-# Add parent dir to path so we can import kitty_claude
+# Add parent dir to path so we can import clauthing
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from kitty_claude.session_utils import session_has_messages, get_session_messages, get_last_assistant_message
+from clauthing.session_utils import session_has_messages, get_session_messages, get_last_assistant_message
 
 
 def test_warmup_only_returns_false():

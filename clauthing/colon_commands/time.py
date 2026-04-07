@@ -5,13 +5,13 @@ from pathlib import Path
 
 
 def get_state_dir():
-    """Get the XDG state directory for kitty-claude."""
+    """Get the XDG state directory for clauthing."""
     import os
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        state_dir = Path(xdg_state) / "kitty-claude"
+        state_dir = Path(xdg_state) / "clauthing"
     else:
-        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+        state_dir = Path.home() / ".local" / "state" / "clauthing"
 
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir

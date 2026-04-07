@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Logging utilities for kitty-claude."""
+"""Logging utilities for clauthing."""
 import os
 import sys
 import subprocess
@@ -9,30 +9,30 @@ from pathlib import Path
 def get_log_dir(profile=None):
     """Get the log directory for the current instance.
 
-    If KITTY_CLAUDE_INSTANCE_UUID is set in the environment, logs are
+    If CLAUTHING_INSTANCE_UUID is set in the environment, logs are
     routed to that instance's per-uuid directory. Otherwise falls back
     to the legacy per-profile directory.
     """
-    instance_uuid = os.environ.get("KITTY_CLAUDE_INSTANCE_UUID")
+    instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID")
     if instance_uuid:
-        from kitty_claude.instances import get_log_dir_for_uuid
+        from clauthing.instances import get_log_dir_for_uuid
         return get_log_dir_for_uuid(instance_uuid)
 
     uid = os.getuid()
     # Try /var/run first
     try:
         if profile:
-            log_dir = Path(f"/var/run/{uid}/kitty-claude/logs-{profile}")
+            log_dir = Path(f"/var/run/{uid}/clauthing/logs-{profile}")
         else:
-            log_dir = Path(f"/var/run/{uid}/kitty-claude/logs")
+            log_dir = Path(f"/var/run/{uid}/clauthing/logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         return log_dir
     except PermissionError:
         # Fallback to /tmp
         if profile:
-            return Path(f"/tmp/kitty-claude-{profile}-logs")
+            return Path(f"/tmp/clauthing-{profile}-logs")
         else:
-            return Path("/tmp/kitty-claude-logs")
+            return Path("/tmp/clauthing-logs")
 
 def get_run_log_file(profile=None):
     """Get the current run's log file path."""
@@ -75,13 +75,13 @@ def cleanup_old_run_logs(profile=None, keep=5):
 def log(message, profile=None):
     """Log a message to both run-specific and combined log files.
     
-    If KITTY_CLAUDE_LOG_STDERR is set, also prints to stderr.
+    If CLAUTHING_LOG_STDERR is set, also prints to stderr.
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"[{timestamp}] {message}\n"
 
     # Also log to stderr if --log flag was used
-    if os.environ.get('KITTY_CLAUDE_LOG_STDERR'):
+    if os.environ.get('CLAUTHING_LOG_STDERR'):
         short_timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         print(f"[kc {short_timestamp}] {message}", file=sys.stderr, flush=True)
 
@@ -126,9 +126,9 @@ def run(cmd, *args, profile=None, **kwargs):
     # Only set if not already set
     if 'CLAUDE_CONFIG_DIR' not in env:
         if profile:
-            config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
         else:
-            config_dir = Path.home() / ".config" / "kitty-claude"
+            config_dir = Path.home() / ".config" / "clauthing"
         claude_config_dir = str(config_dir / "claude-data")
         env['CLAUDE_CONFIG_DIR'] = claude_config_dir
         log(f"Setting CLAUDE_CONFIG_DIR={claude_config_dir}", profile)

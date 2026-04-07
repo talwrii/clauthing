@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Session management for kitty-claude.
+"""Session management for clauthing.
 
 Sessions are tracked in:
-- ~/.local/state/kitty-claude/sessions/ - Session metadata
-- ~/.config/kitty-claude/open-sessions.json - List of currently open sessions
+- ~/.local/state/clauthing/sessions/ - Session metadata
+- ~/.config/clauthing/open-sessions.json - List of currently open sessions
 
 Note: This is for debugging and liable to change.
 """
@@ -11,17 +11,17 @@ import json
 import subprocess
 from pathlib import Path
 
-from kitty_claude.logging import log, run
+from clauthing.logging import log, run
 
 
 def get_state_dir():
-    """Get the XDG state directory for kitty-claude."""
+    """Get the XDG state directory for clauthing."""
     import os
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        state_dir = Path(xdg_state) / "kitty-claude"
+        state_dir = Path(xdg_state) / "clauthing"
     else:
-        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+        state_dir = Path.home() / ".local" / "state" / "clauthing"
 
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
@@ -61,9 +61,9 @@ def get_session_name(session_id):
 def get_open_sessions_file(profile=None):
     """Get the persistent open sessions file path."""
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     return config_dir / "open-sessions.json"
 
 

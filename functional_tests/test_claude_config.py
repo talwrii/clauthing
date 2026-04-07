@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests using the actual kitty-claude configuration.
+"""Tests using the actual clauthing configuration.
 
 These tests verify that the generated tmux.conf works correctly.
 """
@@ -13,10 +13,10 @@ from pathlib import Path
 from harness import TmuxTestHarness, TestRunner, assert_eq, assert_true
 
 
-def generate_kitty_claude_config(config_dir: Path, profile: str = None) -> Path:
-    """Generate a kitty-claude tmux config for testing.
+def generate_clauthing_config(config_dir: Path, profile: str = None) -> Path:
+    """Generate a clauthing tmux config for testing.
     
-    This mimics what kitty-claude main.py does when generating the config.
+    This mimics what clauthing main.py does when generating the config.
     
     Args:
         config_dir: Directory to create config in
@@ -33,17 +33,17 @@ def generate_kitty_claude_config(config_dir: Path, profile: str = None) -> Path:
     claude_data_dir = config_dir / "claude-data"
     claude_data_dir.mkdir(exist_ok=True)
     
-    # Generate config similar to kitty-claude
+    # Generate config similar to clauthing
     if profile:
-        kitty_claude_cmd = f"echo 'kitty-claude --profile {profile} --new-window'"
+        clauthing_cmd = f"echo 'clauthing --profile {profile} --new-window'"
         profile_arg = f"--profile {profile} "
     else:
-        kitty_claude_cmd = "echo 'kitty-claude --new-window'"
+        clauthing_cmd = "echo 'clauthing --new-window'"
         profile_arg = ""
     
     tmux_config = config_dir / "tmux.conf"
     tmux_config.write_text(f"""\
-# kitty-claude tmux config (test version)
+# clauthing tmux config (test version)
 set -g destroy-unattached off
 
 # Set CLAUDE_CONFIG_DIR for isolated Claude data
@@ -90,7 +90,7 @@ set -sg escape-time 0
 
 
 class KittyClaudeTestHarness(TmuxTestHarness):
-    """Test harness specifically for kitty-claude configs."""
+    """Test harness specifically for clauthing configs."""
     
     def __init__(self, profile: str = None):
         self.profile = profile
@@ -99,10 +99,10 @@ class KittyClaudeTestHarness(TmuxTestHarness):
         
     def start(self, initial_command: str = "bash"):
         # Create temp directory
-        self._config_dir = Path(tempfile.mkdtemp(prefix="kitty-claude-real-test-"))
+        self._config_dir = Path(tempfile.mkdtemp(prefix="clauthing-real-test-"))
         
-        # Generate real kitty-claude config
-        self.config_file = generate_kitty_claude_config(self._config_dir, self.profile)
+        # Generate real clauthing config
+        self.config_file = generate_clauthing_config(self._config_dir, self.profile)
         
         # Call parent start
         super().start(initial_command)
@@ -115,11 +115,11 @@ class KittyClaudeTestHarness(TmuxTestHarness):
             shutil.rmtree(self._config_dir, ignore_errors=True)
 
 
-def run_kitty_claude_config_tests():
-    """Test the actual kitty-claude configuration."""
+def run_clauthing_config_tests():
+    """Test the actual clauthing configuration."""
     runner = TestRunner()
     
-    print("Testing with Generated kitty-claude Configuration")
+    print("Testing with Generated clauthing Configuration")
     print("=" * 55)
     print()
     
@@ -210,4 +210,4 @@ def run_kitty_claude_config_tests():
 
 
 if __name__ == "__main__":
-    sys.exit(run_kitty_claude_config_tests())
+    sys.exit(run_clauthing_config_tests())

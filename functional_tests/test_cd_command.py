@@ -27,8 +27,8 @@ class CdTestHarness(TmuxTestHarness):
         super().__init__()
         self.one_tab_mode = one_tab_mode
         if one_tab_mode:
-            # Socket must start with kc1- for one-tab mode detection
-            self.socket_name = f"kc1-test-{os.getpid()}-{int(time.time())}"
+            # Socket must start with cl1- for one-tab mode detection
+            self.socket_name = f"cl1-test-{os.getpid()}-{int(time.time())}"
         self.claude_data_dir = None
         
     def start(self, initial_command: str = "bash"):
@@ -47,7 +47,7 @@ class CdTestHarness(TmuxTestHarness):
         
         Returns the session file path.
         """
-        # Encode path like kitty-claude does (replace / with -)
+        # Encode path like clauthing does (replace / with -)
         encoded_cwd = cwd.lstrip('/').replace('/', '-')
         if not encoded_cwd:
             encoded_cwd = "-"  # Root directory
@@ -66,7 +66,7 @@ class CdTestHarness(TmuxTestHarness):
     def get_launcher_scripts(self):
         """Find any launcher scripts created by :cd in one-tab mode."""
         uid = os.getuid()
-        return list(Path("/tmp").glob(f"kc-cd-{uid}-*.sh"))
+        return list(Path("/tmp").glob(f"cl-cd-{uid}-*.sh"))
         
     def cleanup_launchers(self):
         """Remove any leftover launcher scripts."""
@@ -241,16 +241,16 @@ def run_cd_tests():
     print("One-Tab Mode:")
     
     def test_one_tab_socket_detection():
-        """Test that socket name starting with kc1- triggers one-tab mode."""
+        """Test that socket name starting with cl1- triggers one-tab mode."""
         # One-tab mode
         harness = CdTestHarness(one_tab_mode=True)
-        assert_true(harness.socket_name.startswith("kc1-"),
-                   f"One-tab socket should start with kc1-: {harness.socket_name}")
+        assert_true(harness.socket_name.startswith("cl1-"),
+                   f"One-tab socket should start with cl1-: {harness.socket_name}")
         
         # Multi-tab mode
         harness2 = CdTestHarness(one_tab_mode=False)
-        assert_true(not harness2.socket_name.startswith("kc1-"),
-                   f"Multi-tab socket should not start with kc1-: {harness2.socket_name}")
+        assert_true(not harness2.socket_name.startswith("cl1-"),
+                   f"Multi-tab socket should not start with cl1-: {harness2.socket_name}")
     runner.run_test("one_tab_socket_detection", test_one_tab_socket_detection)
     
     def test_one_tab_cd_nonexistent_no_launcher():
@@ -295,7 +295,7 @@ def run_cd_tests():
                 # Create the launcher script
                 uid = os.getuid()
                 session_id = "test-session-123"
-                launcher_path = Path(f"/tmp/kc-cd-{uid}-{session_id[:8]}.sh")
+                launcher_path = Path(f"/tmp/cl-cd-{uid}-{session_id[:8]}.sh")
                 
                 launcher_content = f'''#!/bin/bash
 cd "{target}"
@@ -336,7 +336,7 @@ exec claude --resume new-session-xyz
             
             # Create launcher like :cd does
             uid = os.getuid()
-            launcher_path = Path(f"/tmp/kc-cd-{uid}-{session_id[:8]}.sh")
+            launcher_path = Path(f"/tmp/cl-cd-{uid}-{session_id[:8]}.sh")
             
             # This is approximately what the real :cd generates
             launcher_content = f'''#!/bin/bash
@@ -375,7 +375,7 @@ exec claude --resume {session_id}
             # Create a launcher script
             uid = os.getuid()
             session_id = "test1234"
-            launcher_path = Path(f"/tmp/kc-cd-{uid}-{session_id[:8]}.sh")
+            launcher_path = Path(f"/tmp/cl-cd-{uid}-{session_id[:8]}.sh")
             launcher_path.write_text("#!/bin/bash\necho test\n")
             launcher_path.chmod(0o755)
             
@@ -408,15 +408,15 @@ exec claude --resume {session_id}
         """Test that :cd in multi-tab mode logic would create a new window."""
         with CdTestHarness(one_tab_mode=False) as h:
             # Verify we're in multi-tab mode
-            assert_true(not h.socket_name.startswith("kc1-"), 
+            assert_true(not h.socket_name.startswith("cl1-"), 
                        "Should be multi-tab mode")
             
             # In multi-tab, :cd would run something like:
-            # kitty-claude --new-window --resume-session <id>
-            # We can't easily test that without the full kitty-claude,
+            # clauthing --new-window --resume-session <id>
+            # We can't easily test that without the full clauthing,
             # but we can verify the socket naming is correct
             
-            # Multi-tab uses socket name directly (not kc1- prefix)
+            # Multi-tab uses socket name directly (not cl1- prefix)
             assert_true("-" in h.socket_name, "Socket should have separator")
     runner.run_test("multi_tab_socket_format", test_multi_tab_creates_new_window)
     
@@ -446,10 +446,10 @@ exec claude --resume {session_id}
                 
                 env = os.environ.copy()
                 env['CLAUDE_CONFIG_DIR'] = str(harness.claude_data_dir)
-                env['KITTY_CLAUDE_TMUX_SOCKET'] = harness.socket_name
+                env['CLAUTHING_TMUX_SOCKET'] = harness.socket_name
                 
                 result = subprocess.run(
-                    ["python3", "-m", "kitty_claude.colon_command"],
+                    ["python3", "-m", "clauthing.colon_command"],
                     input=input_data,
                     capture_output=True,
                     text=True,
@@ -497,10 +497,10 @@ exec claude --resume {session_id}
             
             env = os.environ.copy()
             env['CLAUDE_CONFIG_DIR'] = str(harness.claude_data_dir)
-            env['KITTY_CLAUDE_TMUX_SOCKET'] = harness.socket_name
+            env['CLAUTHING_TMUX_SOCKET'] = harness.socket_name
             
             result = subprocess.run(
-                ["python3", "-m", "kitty_claude.colon_command"],
+                ["python3", "-m", "clauthing.colon_command"],
                 input=input_data,
                 capture_output=True,
                 text=True,

@@ -6,10 +6,10 @@ import tempfile
 from pathlib import Path
 
 # Point HOME at a temp dir so we don't touch real config
-tmpdir = tempfile.mkdtemp(prefix="kc-skills-test-")
+tmpdir = tempfile.mkdtemp(prefix="cl-skills-test-")
 os.environ["HOME"] = tmpdir
 
-from kitty_claude.skills_mcp_server import get_kc_skills_dir
+from clauthing.skills_mcp_server import get_kc_skills_dir
 
 
 def test_create_skill(name, content):
@@ -30,7 +30,7 @@ def test_create_skill(name, content):
 
 def test_skills_dir():
     skills_dir = get_kc_skills_dir()
-    assert str(skills_dir).endswith("kc-skills"), f"Unexpected skills dir: {skills_dir}"
+    assert str(skills_dir).endswith("cl-skills"), f"Unexpected skills dir: {skills_dir}"
     print(f"  skills_dir: {skills_dir}")
 
 

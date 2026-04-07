@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Window management utilities for kitty-claude."""
+"""Window management utilities for clauthing."""
 import os
 import json
 import subprocess
-from kitty_claude.logging import run
+from clauthing.logging import run
 from pathlib import Path
 
 
 def find_and_focus_window():
-    """Try to find and focus existing kitty-claude window using xdotool."""
+    """Try to find and focus existing clauthing window using xdotool."""
     try:
         result = run(
-            ["xdotool", "search", "--class", "kitty-claude"],
+            ["xdotool", "search", "--class", "clauthing"],
             capture_output=True,
             text=True
         )
@@ -20,7 +20,7 @@ def find_and_focus_window():
         if window_ids and window_ids[0]:
             window_id = window_ids[0]
             run(["xdotool", "windowactivate", window_id])
-            print(f"Focused existing kitty-claude window")
+            print(f"Focused existing clauthing window")
             return True
 
         return False
@@ -41,13 +41,13 @@ def open_session_notes(get_runtime_tmux_state_file, session_id=None):
         session_id: Optional session ID. If not provided, will try to find from state file
     """
     # Get the actual tmux socket from environment
-    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+    socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
 
-    profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+    profile = os.environ.get('CLAUTHING_PROFILE')
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
 
     # If session_id is provided, use it directly
     if session_id:

@@ -2,7 +2,7 @@
 """
 E2E test for the MCP proxy with tmux popup approval.
 
-Launches kitty-claude --one-tab --no-kitty, adds a proxied test MCP server
+Launches clauthing --one-tab --no-kitty, adds a proxied test MCP server
 via :mcp-approve, reloads, asks Claude to call the tool, approves the popup,
 and verifies the response.
 """
@@ -25,7 +25,7 @@ except ImportError:
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def find_socket(start_time):
-    """Scan for a kc1-* tmux socket created after start_time."""
+    """Scan for a cl1-* tmux socket created after start_time."""
     uid = os.getuid()
     tmpdir = os.environ.get('TMUX_TMPDIR', '/tmp')
     socket_dir = Path(tmpdir) / f"tmux-{uid}"
@@ -34,7 +34,7 @@ def find_socket(start_time):
         return None
 
     for sock in socket_dir.iterdir():
-        if sock.name.startswith("kc1-") and "-test-" not in sock.name:
+        if sock.name.startswith("cl1-") and "-test-" not in sock.name:
             try:
                 ctime = sock.stat().st_ctime
                 if ctime >= start_time - 1:
@@ -182,9 +182,9 @@ def main():
     process = None
 
     try:
-        # Launch kitty-claude
+        # Launch clauthing
         start_time = time.time()
-        cmd = "kitty-claude --one-tab --no-kitty"
+        cmd = "clauthing --one-tab --no-kitty"
         print(f"[setup] Starting: {cmd}")
         process = pexpect.spawn(cmd, encoding='utf-8', timeout=30)
 

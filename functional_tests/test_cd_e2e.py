@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-end tests for :cd command using real kitty-claude + claude.
+"""End-to-end tests for :cd command using real clauthing + claude.
 
-These tests spin up actual kitty-claude instances (without kitty) and
+These tests spin up actual clauthing instances (without kitty) and
 test the full :cd flow including hooks and respawn.
 """
 
@@ -25,7 +25,7 @@ from harness import TestRunner, assert_eq, assert_true
 
 
 class KittyClaudeInstance:
-    """Manages a kitty-claude --one-tab --no-kitty instance for testing."""
+    """Manages a clauthing --one-tab --no-kitty instance for testing."""
     
     def __init__(self, profile=None):
         self.profile = profile
@@ -35,10 +35,10 @@ class KittyClaudeInstance:
         self.start_time = None  # Track when this instance started
         
     def start(self, timeout=15):
-        """Start kitty-claude in one-tab mode without kitty."""
+        """Start clauthing in one-tab mode without kitty."""
         self.start_time = time.time()  # Record start time
         
-        cmd = "kitty-claude --one-tab --no-kitty"
+        cmd = "clauthing --one-tab --no-kitty"
         if self.profile:
             cmd += f" --profile {self.profile}"
         
@@ -61,10 +61,10 @@ class KittyClaudeInstance:
             time.sleep(0.5)
         
         # Timeout - gather debug info
-        raise TimeoutError(f"kitty-claude did not start in time. Socket: {self.socket_name}")
+        raise TimeoutError(f"clauthing did not start in time. Socket: {self.socket_name}")
     
     def _find_sockets(self):
-        """Find kc1-* tmux sockets created after this instance started."""
+        """Find cl1-* tmux sockets created after this instance started."""
         uid = os.getuid()
         tmpdir = os.environ.get('TMUX_TMPDIR', '/tmp')
         socket_dir = Path(tmpdir) / f"tmux-{uid}"
@@ -74,8 +74,8 @@ class KittyClaudeInstance:
         if socket_dir.exists():
             for sock in socket_dir.iterdir():
                 # Skip test harness sockets (they have "test" in name)
-                # Real kitty-claude sockets are like: kc1-{timestamp}-{pid}
-                if sock.name.startswith("kc1-") and "-test-" not in sock.name:
+                # Real clauthing sockets are like: cl1-{timestamp}-{pid}
+                if sock.name.startswith("cl1-") and "-test-" not in sock.name:
                     # Only include if created AFTER this instance started
                     try:
                         ctime = sock.stat().st_ctime
@@ -163,7 +163,7 @@ class KittyClaudeInstance:
     def get_launcher_scripts(self):
         """Find launcher scripts created by :cd in one-tab mode."""
         uid = os.getuid()
-        return list(Path("/tmp").glob(f"kc-cd-{uid}-*.sh"))
+        return list(Path("/tmp").glob(f"cl-cd-{uid}-*.sh"))
     
     def cleanup_launchers(self):
         """Remove launcher scripts."""
@@ -174,7 +174,7 @@ class KittyClaudeInstance:
                 pass
     
     def stop(self):
-        """Stop the kitty-claude instance."""
+        """Stop the clauthing instance."""
         if self.socket_name:
             # Kill the tmux server
             subprocess.run(
@@ -215,9 +215,9 @@ def run_e2e_cd_tests():
     print("      They may take longer due to claude startup time.")
     print()
     
-    # Check if kitty-claude is available
-    if not subprocess.run(["which", "kitty-claude"], capture_output=True).returncode == 0:
-        print("SKIP: kitty-claude not found in PATH")
+    # Check if clauthing is available
+    if not subprocess.run(["which", "clauthing"], capture_output=True).returncode == 0:
+        print("SKIP: clauthing not found in PATH")
         return 0
     
     # =========================================
@@ -225,17 +225,17 @@ def run_e2e_cd_tests():
     # =========================================
     print("Startup Tests:")
     
-    def test_kitty_claude_starts():
-        """Test that kitty-claude --one-tab --no-kitty starts successfully."""
+    def test_clauthing_starts():
+        """Test that clauthing --one-tab --no-kitty starts successfully."""
         instance = KittyClaudeInstance()
         try:
             instance.start(timeout=15)
             assert_true(instance.socket_name is not None, "Should have socket")
-            assert_true(instance.socket_name.startswith("kc1-"), 
-                       f"Socket should start with kc1-: {instance.socket_name}")
+            assert_true(instance.socket_name.startswith("cl1-"), 
+                       f"Socket should start with cl1-: {instance.socket_name}")
         finally:
             instance.stop()
-    runner.run_test("kitty_claude_starts", test_kitty_claude_starts)
+    runner.run_test("clauthing_starts", test_clauthing_starts)
     
     def test_claude_becomes_ready():
         """Test that claude starts and becomes ready."""

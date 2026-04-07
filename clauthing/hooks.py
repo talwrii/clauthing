@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Claude Code hook handlers for kitty-claude.
+"""Claude Code hook handlers for clauthing.
 
-These are invoked by `kitty-claude --session-start`, `--user-prompt-submit`,
+These are invoked by `clauthing --session-start`, `--user-prompt-submit`,
 `--stop`, `--pre-tool-use` and `--run-command`. They were previously in
 colon_command.py but moved here so colon_command.py is just about commands.
 """
@@ -15,19 +15,19 @@ import time
 import traceback
 from pathlib import Path
 
-from kitty_claude.colon_command import (
+from clauthing.colon_command import (
     CommandContext,
     dispatch,
     get_tmux_socket,
     send_tmux_message,
     load_timed_permissions,
 )
-from kitty_claude.colon_commands.time import (
+from clauthing.colon_commands.time import (
     save_request_start_time,
     save_response_duration,
 )
-from kitty_claude.logging import log
-from kitty_claude.session import (
+from clauthing.logging import log
+from clauthing.session import (
     mark_session_has_messages,
     remove_open_session,
 )
@@ -39,7 +39,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
     try:
         if claude_data_dir is None:
             config_env = os.environ.get('CLAUDE_CONFIG_DIR')
-            claude_data_dir = Path(config_env) if config_env else Path.home() / ".config" / "kitty-claude" / "claude-data"
+            claude_data_dir = Path(config_env) if config_env else Path.home() / ".config" / "clauthing" / "claude-data"
 
         input_data = json.loads(sys.stdin.read())
         prompt = input_data.get('prompt', '').strip()
@@ -47,7 +47,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
         # Register running session
         session_id = input_data.get('session_id')
         if session_id:
-            profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+            profile = os.environ.get('CLAUTHING_PROFILE')
             cwd = input_data.get('cwd', os.getcwd())
             try:
                 claude_pid = None
@@ -55,7 +55,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
                 if result.returncode == 0:
                     claude_pid = int(result.stdout.strip().split('\n')[0])
                 if not claude_pid:
-                    sock = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+                    sock = os.environ.get('CLAUTHING_TMUX_SOCKET')
                     if sock:
                         result = subprocess.run(["tmux", "-L", sock, "display-message", "-p", "#{pane_pid}"], capture_output=True, text=True)
                         if result.returncode == 0:
@@ -64,7 +64,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
                             if result.returncode == 0:
                                 claude_pid = int(result.stdout.strip().split('\n')[0])
                 if claude_pid:
-                    from kitty_claude.claude import register_running_session
+                    from clauthing.claude import register_running_session
                     register_running_session(session_id, claude_pid, cwd, profile)
             except Exception:
                 pass
@@ -92,12 +92,12 @@ def handle_user_prompt_submit(claude_data_dir=None):
             skill_name = parts[0] if parts else ""
             rest_of_prompt = parts[1] if len(parts) > 1 else ""
             if skill_name:
-                profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+                profile = os.environ.get('CLAUTHING_PROFILE')
                 if profile:
-                    config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+                    config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
                 else:
-                    config_dir = Path.home() / ".config" / "kitty-claude"
-                skill_file = config_dir / "kc-skills" / f"{skill_name}.md"
+                    config_dir = Path.home() / ".config" / "clauthing"
+                skill_file = config_dir / "cl-skills" / f"{skill_name}.md"
                 if skill_file.exists():
                     skill_content = skill_file.read_text().strip()
                     send_tmux_message(f"📖 Loading KC skill '{skill_name}'...", socket)
@@ -111,19 +111,19 @@ def handle_user_prompt_submit(claude_data_dir=None):
                     print(json.dumps({"continue": False, "stopReason": f"❌ KC skill '{skill_name}' not found. Create it with ::skill {skill_name}"}))
                     return
 
-        # Plugin dispatch: :foo -> kitty-claude-foo on PATH
+        # Plugin dispatch: :foo -> clauthing-foo on PATH
         if prompt.startswith(':'):
             parts = prompt[1:].split(None, 1)
             cmd_name = parts[0] if parts else ""
             cmd_args = parts[1] if len(parts) > 1 else ""
-            plugin_bin = shutil.which(f"kitty-claude-{cmd_name}")
+            plugin_bin = shutil.which(f"clauthing-{cmd_name}")
             if plugin_bin:
                 import tempfile
                 env_exports = []
                 if session_id:
-                    env_exports.append(f"KITTY_CLAUDE_SESSION_ID={session_id}")
-                env_exports.append(f"KITTY_CLAUDE_SOCKET={socket}")
-                env_exports.append(f"KITTY_CLAUDE_CWD={input_data.get('cwd', os.getcwd())}")
+                    env_exports.append(f"CLAUTHING_SESSION_ID={session_id}")
+                env_exports.append(f"CLAUTHING_SOCKET={socket}")
+                env_exports.append(f"CLAUTHING_CWD={input_data.get('cwd', os.getcwd())}")
                 env_str = " ".join(env_exports)
                 tmp_output = Path(tempfile.mktemp())
                 plugin_cmd = f"{plugin_bin}"
@@ -150,7 +150,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
         error_msg = f"Hook error: {str(e)}"
         tb = traceback.format_exc()
         send_tmux_message(f"❌ {error_msg}", socket)
-        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        profile = os.environ.get('CLAUTHING_PROFILE')
         log(f"COLON COMMAND ERROR: {error_msg}\n{tb}", profile)
         try:
             input_data = json.loads(sys.stdin.read()) if 'input_data' not in locals() else input_data
@@ -168,11 +168,11 @@ def handle_session_start():
             print(json.dumps({"continue": True}))
             return
 
-        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        profile = os.environ.get('CLAUTHING_PROFILE')
         if profile:
-            base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+            base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
         else:
-            base_config = Path.home() / ".config" / "kitty-claude"
+            base_config = Path.home() / ".config" / "clauthing"
 
         session_dir = base_config / "session-configs" / session_id
         run_file = session_dir / ".run-counter"
@@ -204,11 +204,11 @@ def handle_session_start():
 
         if messages_to_show:
             context = "\n".join(messages_to_show)
-            sock = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+            sock = os.environ.get('CLAUTHING_TMUX_SOCKET')
             if sock:
                 uid = os.getuid()
-                msg_file = Path(f"/tmp/kc-popup-{uid}.txt")
-                script_file = Path(f"/tmp/kc-popup-{uid}.sh")
+                msg_file = Path(f"/tmp/cl-popup-{uid}.txt")
+                script_file = Path(f"/tmp/cl-popup-{uid}.sh")
                 msg_file.write_text("\n".join(messages_to_show))
                 script_file.write_text(f'#!/bin/bash\ncat {msg_file}\necho ""\necho "[press Enter to close, or wait 30s]"\nread -t 30\n')
                 script_file.chmod(0o755)
@@ -219,7 +219,7 @@ def handle_session_start():
         else:
             print(json.dumps({"continue": True}))
     except Exception as e:
-        with open("/tmp/kitty-claude-session-start-error.log", "a") as f:
+        with open("/tmp/clauthing-session-start-error.log", "a") as f:
             f.write(f"SessionStart hook error: {str(e)}\n")
         print(json.dumps({"continue": True}))
 
@@ -234,12 +234,12 @@ def handle_stop():
             # NB: do NOT remove from open_sessions here. open_sessions
             # means "window is worth restoring", not "currently mid-response".
             # Removal happens when the user explicitly closes the window
-            # (kitty-claude --close-window, bound to C-w).
+            # (clauthing --close-window, bound to C-w).
 
-        sock = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+        sock = os.environ.get('CLAUTHING_TMUX_SOCKET')
         if sock:
             uid = os.getuid()
-            queue_file = Path(f"/run/user/{uid}/kc-queue-{sock}.txt")
+            queue_file = Path(f"/run/user/{uid}/cl-queue-{sock}.txt")
             if queue_file.exists():
                 try:
                     lines = queue_file.read_text().splitlines()
@@ -257,7 +257,7 @@ def handle_stop():
                 except Exception:
                     pass
     except Exception as e:
-        with open("/tmp/kitty-claude-stop-hook-error.log", "a") as f:
+        with open("/tmp/clauthing-stop-hook-error.log", "a") as f:
             f.write(f"Stop hook error: {str(e)}\n")
 
 
@@ -295,7 +295,7 @@ def handle_pre_tool_use():
                           "permissionDecisionReason": f"Timed permission expired: {pattern}"}}))
                 return
     except Exception as e:
-        with open("/tmp/kitty-claude-pre-tool-use-error.log", "a") as f:
+        with open("/tmp/clauthing-pre-tool-use-error.log", "a") as f:
             f.write(f"PreToolUse hook error: {str(e)}\n")
 
 

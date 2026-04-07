@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tmux operations for kitty-claude."""
+"""Tmux operations for clauthing."""
 import os
 import subprocess
 from pathlib import Path
-from kitty_claude.logging import run
+from clauthing.logging import run
 
-def send_tmux_message(message, socket="kitty-claude"):
+def send_tmux_message(message, socket="clauthing"):
     """Send a message via tmux display-message"""
     try:
         run([
@@ -20,11 +20,11 @@ def get_runtime_tmux_state_file(profile=None):
     uid = os.getuid()
     # Try /var/run first
     try:
-        runtime_dir = Path(f"/var/run/{uid}/kitty-claude")
+        runtime_dir = Path(f"/var/run/{uid}/clauthing")
         runtime_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError:
         # Fallback to /tmp
-        runtime_dir = Path(f"/tmp/kitty-claude-{uid}")
+        runtime_dir = Path(f"/tmp/clauthing-{uid}")
         runtime_dir.mkdir(parents=True, exist_ok=True)
     
     # Use profile-specific state file if profile is set

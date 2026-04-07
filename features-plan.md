@@ -2,7 +2,7 @@
 
 ## Approach
 
-Full end-to-end: launch `kitty-claude --one-tab --no-kitty` via pexpect, wait for Claude to be ready, type colon commands into the tmux pane, check the pane output for expected responses. Same pattern as existing `test_proxy_mcp.py`.
+Full end-to-end: launch `clauthing --one-tab --no-kitty` via pexpect, wait for Claude to be ready, type colon commands into the tmux pane, check the pane output for expected responses. Same pattern as existing `test_proxy_mcp.py`.
 
 ## File
 
@@ -20,7 +20,7 @@ Full end-to-end: launch `kitty-claude --one-tab --no-kitty` via pexpect, wait fo
 1. Reuse helpers from `test_proxy_mcp.py`: `find_socket`, `session_ready`, `capture_pane`, `send_keys`, `wait_for_text`, `wait_for_prompt`, `kill_server`
 2. Extract shared helpers to `tests/helpers.py` so both test files can use them
 3. Test flow:
-   - `pexpect.spawn("kitty-claude --one-tab --no-kitty")`
+   - `pexpect.spawn("clauthing --one-tab --no-kitty")`
    - Wait for tmux socket, handle trust prompt
    - Wait for Claude `>` prompt
    - Send "hi", wait for response (confirms Claude is working)

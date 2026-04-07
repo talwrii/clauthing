@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Colon command handlers for kitty-claude (:cd, :fork, :time, etc).
+"""Colon command handlers for clauthing (:cd, :fork, :time, etc).
 
 Commands are registered with @command(':name') decorator. Modules in
 colon_commands/ register their own commands on import.
@@ -14,22 +14,22 @@ import uuid
 import shlex
 from pathlib import Path
 
-from kitty_claude.logging import log, run
-from kitty_claude.claude_utils import encode_project_path
-from kitty_claude.colon_commands.time import (
+from clauthing.logging import log, run
+from clauthing.claude_utils import encode_project_path
+from clauthing.colon_commands.time import (
     save_request_start_time,
     save_response_duration,
     get_last_response_duration
 )
-from kitty_claude.session import (
+from clauthing.session import (
     get_session_name,
     save_session_metadata,
     remove_open_session
 )
-from kitty_claude.session_utils import session_has_messages
-from kitty_claude.window_utils import open_session_notes
-from kitty_claude.tmux import get_runtime_tmux_state_file
-from kitty_claude.rules import build_claude_md
+from clauthing.session_utils import session_has_messages
+from clauthing.window_utils import open_session_notes
+from clauthing.tmux import get_runtime_tmux_state_file
+from clauthing.rules import build_claude_md
 
 import time
 
@@ -38,7 +38,7 @@ import time
 
 def get_tmux_socket():
     """Get the tmux socket name from environment or default."""
-    socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET')
+    socket = os.environ.get('CLAUTHING_TMUX_SOCKET')
     if socket:
         return socket
     tmux_var = os.environ.get('TMUX', '')
@@ -47,7 +47,7 @@ def get_tmux_socket():
         socket_name = os.path.basename(socket_path)
         if socket_name:
             return socket_name
-    return 'kitty-claude'
+    return 'clauthing'
 
 
 def send_tmux_message(message, socket=None):
@@ -61,23 +61,23 @@ def send_tmux_message(message, socket=None):
 
 
 def get_state_dir():
-    """Get the XDG state directory for kitty-claude."""
+    """Get the XDG state directory for clauthing."""
     xdg_state = os.environ.get('XDG_STATE_HOME')
     if xdg_state:
-        state_dir = Path(xdg_state) / "kitty-claude"
+        state_dir = Path(xdg_state) / "clauthing"
     else:
-        state_dir = Path.home() / ".local" / "state" / "kitty-claude"
+        state_dir = Path.home() / ".local" / "state" / "clauthing"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
 
 
 def get_title_history_file(profile=None):
     if profile is None:
-        profile = os.environ.get('KITTY_CLAUDE_PROFILE')
+        profile = os.environ.get('CLAUTHING_PROFILE')
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     return config_dir / "title-history.json"
 
 
@@ -110,9 +110,9 @@ def record_title(title, profile=None):
 def queue_startup_message(session_id, message, profile=None):
     """Queue a message to be shown on next session start."""
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
     session_dir = base_config / "session-configs" / session_id
     run_file = session_dir / ".run-counter"
     messages_file = session_dir / ".startup-messages"
@@ -137,7 +137,7 @@ def queue_startup_message(session_id, message, profile=None):
 
 
 def get_timed_permissions_file():
-    config_dir = Path.home() / ".config" / "kitty-claude"
+    config_dir = Path.home() / ".config" / "clauthing"
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir / "timed-permissions.json"
 
@@ -240,7 +240,7 @@ class CommandContext:
 
     @property
     def profile(self):
-        return os.environ.get('KITTY_CLAUDE_PROFILE')
+        return os.environ.get('CLAUTHING_PROFILE')
 
     @property
     def args(self):
@@ -262,7 +262,7 @@ class CommandContext:
 
 @command(':help')
 def cmd_help(ctx):
-    help_text = """kitty-claude colon commands:
+    help_text = """clauthing colon commands:
 :help                Show this help message
 :skills              List available slash commands (skills)
 :rules               List all rules
@@ -273,9 +273,9 @@ def cmd_help(ctx):
 :done <num>          Mark a todo as done by number
 :plan / :god         Enable planning MCP server and reload
 :skills-mcp          Enable skills MCP server, then :reload
-::skills             List all kitty-claude skills
-::skill <name>       Create/edit a kitty-claude skill
-::<skill> [prompt]   Run kitty-claude skill (injects context)
+::skills             List all clauthing skills
+::skill <name>       Create/edit a clauthing skill
+::<skill> [prompt]   Run clauthing skill (injects context)
 :mcp <cmd> [args]    Add a native MCP server to this session
 :mcp-shell <cmd>     Expose shell command as MCP server
 :mcp-approve <cmd>   Add MCP server with tmux approval proxy
@@ -289,13 +289,13 @@ def cmd_help(ctx):
 :roles-current       Show active roles in this session
 :title-role [t] [r]  Map tmux window title to a role
 :login               Refresh credentials from freshest session
-:login-all           Send :login to all kc1-* instances
-:reload-all          Send :reload to all kc1-* instances
-:send <message>      Send a message to another kitty-claude window
+:login-all           Send :login to all cl1-* instances
+:reload-all          Send :reload to all cl1-* instances
+:send <message>      Send a message to another clauthing window
 :current-sessions    List all currently running sessions
 :sessions [N]        List recent sessions (default 10)
 :resume <num|id>     Resume a session in new window
-:resume-new [num|id] Resume in a new kitty-claude window
+:resume-new [num|id] Resume in a new clauthing window
 :spawn [title]       Spawn new window (no arg: pick from history)
 :clear               Clear session and start fresh
 :reload              Reload Claude (pick up config changes)
@@ -325,14 +325,14 @@ def cmd_help(ctx):
     for path_dir in os.environ.get("PATH", "").split(os.pathsep):
         try:
             for entry in Path(path_dir).iterdir():
-                if entry.name.startswith("kitty-claude-") and os.access(entry, os.X_OK):
-                    plugins.add(entry.name[len("kitty-claude-"):])
+                if entry.name.startswith("clauthing-") and os.access(entry, os.X_OK):
+                    plugins.add(entry.name[len("clauthing-"):])
         except (OSError, PermissionError):
             pass
     if plugins:
         help_text += "\nPlugins (from PATH):\n"
         for name in sorted(plugins):
-            help_text += f"  :{name:<20s} (kitty-claude-{name})\n"
+            help_text += f"  :{name:<20s} (clauthing-{name})\n"
 
     ctx.message("📖 See console for help")
     return ctx.stop(help_text)
@@ -375,9 +375,9 @@ def cmd_skills(ctx):
 def cmd_rules(ctx):
     profile = ctx.profile
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     rules_dir = config_dir / "rules"
     if not rules_dir.exists() or not any(rules_dir.iterdir()):
         return ctx.stop("No rules found.\n\nCreate rules with :rule <name>")
@@ -391,9 +391,9 @@ def cmd_skill(ctx):
     skill_name = ctx.args.strip()
     profile = ctx.profile
     if profile:
-        base = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile / "claude-data" / "skills"
+        base = Path.home() / ".config" / "clauthing" / "other-profiles" / profile / "claude-data" / "skills"
     else:
-        base = Path.home() / ".config" / "kitty-claude" / "claude-data" / "skills"
+        base = Path.home() / ".config" / "clauthing" / "claude-data" / "skills"
 
     if not skill_name:
         skills = []
@@ -443,9 +443,9 @@ def cmd_rule(ctx):
     rule_name = ctx.args.strip()
     profile = ctx.profile
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
+        config_dir = Path.home() / ".config" / "clauthing"
     rules_dir = config_dir / "rules"
 
     if not rule_name:
@@ -642,8 +642,8 @@ def cmd_tmuxs(ctx):
         return ctx.stop("No linked windows. Use :tmuxs-link to add windows.")
 
     uid = os.getuid()
-    tmp_in = Path(f"/tmp/kc-tmuxs-{uid}.txt")
-    tmp_out = Path(f"/tmp/kc-tmuxs-{uid}-out.txt")
+    tmp_in = Path(f"/tmp/cl-tmuxs-{uid}.txt")
+    tmp_out = Path(f"/tmp/cl-tmuxs-{uid}-out.txt")
     tmp_in.write_text("\n".join(f"{w['id']}\t{w['name']}" for w in linked))
     tmp_out.unlink(missing_ok=True)
 
@@ -693,21 +693,21 @@ def cmd_tmux(ctx):
         return ctx.stop("❌ Could not access default tmux server")
 
 
-# ── kc-skills (double-colon commands) ────────────────────────────────────────
+# ── cl-skills (double-colon commands) ────────────────────────────────────────
 
 @command('::skills')
 def cmd_kc_skills_list(ctx):
     profile = ctx.profile
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
-    kc_skills_dir = config_dir / "kc-skills"
+        config_dir = Path.home() / ".config" / "clauthing"
+    kc_skills_dir = config_dir / "cl-skills"
     if not kc_skills_dir.exists() or not any(kc_skills_dir.iterdir()):
-        return ctx.stop("No kitty-claude skills found.\n\nCreate skills with ::skill <name>")
+        return ctx.stop("No clauthing skills found.\n\nCreate skills with ::skill <name>")
     skills = [f"  ::{f.stem}" for f in sorted(kc_skills_dir.iterdir()) if f.suffix == '.md']
     ctx.message(f"📋 Found {len(skills)} KC skills")
-    return ctx.stop("Available kitty-claude skills:\n\n" + "\n".join(skills))
+    return ctx.stop("Available clauthing skills:\n\n" + "\n".join(skills))
 
 
 @command('::skill')
@@ -720,14 +720,14 @@ def cmd_kc_skill_edit(ctx):
 
     profile = ctx.profile
     if profile:
-        config_dir = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        config_dir = Path.home() / ".config" / "kitty-claude"
-    kc_skills_dir = config_dir / "kc-skills"
+        config_dir = Path.home() / ".config" / "clauthing"
+    kc_skills_dir = config_dir / "cl-skills"
     kc_skills_dir.mkdir(parents=True, exist_ok=True)
     skill_file = kc_skills_dir / f"{skill_name}.md"
     if not skill_file.exists():
-        skill_file.write_text(f"# {skill_name}\n\nAdd your kitty-claude skill content here.\nThis will be injected as context when you run ::{skill_name}\n")
+        skill_file.write_text(f"# {skill_name}\n\nAdd your clauthing skill content here.\nThis will be injected as context when you run ::{skill_name}\n")
 
     subprocess.run(["tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "80%", "-h", "80%", f"vim {skill_file}"])
     ctx.message(f"✓ KC skill '{skill_name}' saved")
@@ -736,8 +736,8 @@ def cmd_kc_skill_edit(ctx):
 
 # ── Import command modules (triggers registration) ───────────────────────────
 
-import kitty_claude.colon_commands.nav_commands  # noqa: F401, E402
-import kitty_claude.colon_commands.permission_commands  # noqa: F401, E402
-import kitty_claude.colon_commands.mcp_commands  # noqa: F401, E402
-import kitty_claude.colon_commands.session_commands  # noqa: F401, E402
+import clauthing.colon_commands.nav_commands  # noqa: F401, E402
+import clauthing.colon_commands.permission_commands  # noqa: F401, E402
+import clauthing.colon_commands.mcp_commands  # noqa: F401, E402
+import clauthing.colon_commands.session_commands  # noqa: F401, E402
 

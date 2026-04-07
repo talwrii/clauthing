@@ -1,20 +1,20 @@
-"""Per-instance registry for kitty-claude.
+"""Per-instance registry for clauthing.
 
-Each `kitty-claude` launch generates a UUID, registers itself, and sets
-KITTY_CLAUDE_INSTANCE_UUID in the environment so child processes (and the
+Each `clauthing` launch generates a UUID, registers itself, and sets
+CLAUTHING_INSTANCE_UUID in the environment so child processes (and the
 logging module) can find their instance's data.
 
-Registry layout: /run/user/$UID/kitty-claude/instances.json
-(falls back to /tmp/kitty-claude-instances.json on PermissionError)
+Registry layout: /run/user/$UID/clauthing/instances.json
+(falls back to /tmp/clauthing-instances.json on PermissionError)
 
   {
     "<uuid>": {
       "pid": 12345,
-      "tmux_socket": "kitty-claude",
+      "tmux_socket": "clauthing",
       "profile": null,
       "cwd": "/home/.../foo",
       "started_at": "2026-04-07T11:42:00",
-      "log_dir": "/run/user/1000/kitty-claude/instances/<uuid>"
+      "log_dir": "/run/user/1000/clauthing/instances/<uuid>"
     },
     ...
   }
@@ -25,12 +25,12 @@ import datetime
 import uuid as _uuid
 from pathlib import Path
 
-ENV_VAR = "KITTY_CLAUDE_INSTANCE_UUID"
+ENV_VAR = "CLAUTHING_INSTANCE_UUID"
 
 
 def _registry_path():
     uid = os.getuid()
-    primary = Path(f"/run/user/{uid}/kitty-claude/instances.json")
+    primary = Path(f"/run/user/{uid}/clauthing/instances.json")
     try:
         primary.parent.mkdir(parents=True, exist_ok=True)
         # touch to verify writability
@@ -38,7 +38,7 @@ def _registry_path():
             primary.write_text("{}")
         return primary
     except (PermissionError, OSError):
-        fallback = Path("/tmp/kitty-claude-instances.json")
+        fallback = Path("/tmp/clauthing-instances.json")
         if not fallback.exists():
             fallback.write_text("{}")
         return fallback
@@ -46,12 +46,12 @@ def _registry_path():
 
 def _instances_dir():
     uid = os.getuid()
-    primary = Path(f"/run/user/{uid}/kitty-claude/instances")
+    primary = Path(f"/run/user/{uid}/clauthing/instances")
     try:
         primary.mkdir(parents=True, exist_ok=True)
         return primary
     except (PermissionError, OSError):
-        fallback = Path("/tmp/kitty-claude-instances")
+        fallback = Path("/tmp/clauthing-instances")
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 

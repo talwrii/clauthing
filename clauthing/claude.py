@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude-specific operations for kitty-claude."""
+"""Claude-specific operations for clauthing."""
 import os
 import sys
 import json
@@ -7,8 +7,8 @@ import uuid
 import shutil
 import subprocess
 from pathlib import Path
-from kitty_claude.logging import log, run
-from kitty_claude.session import (
+from clauthing.logging import log, run
+from clauthing.session import (
     get_session_name,
     add_open_session,
     get_state_dir,
@@ -16,8 +16,8 @@ from kitty_claude.session import (
     get_open_sessions,
     remove_open_session
 )
-from kitty_claude.tmux import get_runtime_tmux_state_file
-from kitty_claude.rules import build_claude_md
+from clauthing.tmux import get_runtime_tmux_state_file
+from clauthing.rules import build_claude_md
 import time
 
 
@@ -49,9 +49,9 @@ def propagate_credentials(profile=None):
     and updates the shared file.
     """
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     shared_creds = base_config / "claude-data" / ".credentials.json"
     session_configs_dir = base_config / "session-configs"
@@ -117,9 +117,9 @@ def setup_session_config(session_id, profile=None):
 
     # Get base config directory
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     # Canonical shared projects location
     canonical_projects = base_config / "claude-data" / "projects"
@@ -227,7 +227,7 @@ def setup_session_config(session_id, profile=None):
     if title_roles_file.exists():
         try:
             title_mappings = json.loads(title_roles_file.read_text())
-            tmux_socket = os.environ.get('KITTY_CLAUDE_TMUX_SOCKET', 'kitty-claude')
+            tmux_socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
             result = subprocess.run(
                 ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_name}"],
                 capture_output=True, text=True, timeout=5
@@ -256,10 +256,10 @@ def setup_session_config(session_id, profile=None):
                     pass
 
     # Include built-in command MCP server
-    kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-    if "kitty-claude-commands" not in mcp_servers:
-        mcp_servers["kitty-claude-commands"] = {
-            "command": kitty_claude_path,
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    if "clauthing-commands" not in mcp_servers:
+        mcp_servers["clauthing-commands"] = {
+            "command": clauthing_path,
             "args": ["--command-mcp", "--with-commands"],
         }
 
@@ -267,14 +267,14 @@ def setup_session_config(session_id, profile=None):
     # NOTE: This is dangerous and should NOT be auto-approved
     if "claude-skills" not in mcp_servers:
         mcp_servers["claude-skills"] = {
-            "command": kitty_claude_path,
+            "command": clauthing_path,
             "args": ["--claude-skills-mcp"],
         }
 
     # Auto-approve all MCP server tools + role permissions in settings
     # NOTE: skills MCPs write tools are NOT auto-approved (dangerous - can write arbitrary code)
     # But read/list are safe and auto-approved
-    dangerous_mcp_servers = {"claude-skills", "kitty-claude-skills"}
+    dangerous_mcp_servers = {"claude-skills", "clauthing-skills"}
     allow = merged_settings.get("permissions", {}).get("allow", [])
     for server_name in mcp_servers:
         if server_name in dangerous_mcp_servers:
@@ -282,12 +282,12 @@ def setup_session_config(session_id, profile=None):
         rule = f"mcp__{server_name}__*"
         if rule not in allow:
             allow.append(rule)
-    # Auto-approve read-only skills tools (both claude-skills and kc-skills)
+    # Auto-approve read-only skills tools (both claude-skills and cl-skills)
     safe_skill_tools = [
         "mcp__claude-skills__read_claude_skill",
         "mcp__claude-skills__list_claude_skills",
-        "mcp__kitty-claude-skills__read_skill",
-        "mcp__kitty-claude-skills__list_skills",
+        "mcp__clauthing-skills__read_skill",
+        "mcp__clauthing-skills__list_skills",
     ]
     for safe_tool in safe_skill_tools:
         if safe_tool not in allow:
@@ -320,9 +320,9 @@ def setup_session_config(session_id, profile=None):
 def get_running_sessions_file(profile=None):
     """Get path to running sessions tracking file."""
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
     return base_config / "running-sessions.json"
 
 
@@ -415,9 +415,9 @@ def get_last_user_message(session_id, cwd, profile=None):
         The last user message text (truncated), or None if not found
     """
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     projects_base = base_config / "claude-data" / "projects"
     if not projects_base.exists():
@@ -520,9 +520,9 @@ def get_session_cwd_from_projects(session_id, base_config):
 def get_recent_sessions(profile=None, limit=10):
     """Get list of recent sessions ordered by last activity."""
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     session_configs = base_config / "session-configs"
     if not session_configs.exists():
@@ -559,7 +559,7 @@ def get_recent_sessions(profile=None, limit=10):
             last_message = get_last_user_message(session_id, cwd, profile)
 
             # Skip sessions from default temp directory if they have no messages
-            if cwd and cwd.startswith("/tmp/kitty-claude") and not last_message:
+            if cwd and cwd.startswith("/tmp/clauthing") and not last_message:
                 continue
 
             # Get session name/title from state metadata
@@ -571,7 +571,7 @@ def get_recent_sessions(profile=None, limit=10):
                     metadata = json.loads(metadata_file.read_text())
                     name = metadata.get("name")
                     # Only use as title if it's meaningful (not session ID or default)
-                    if name and name != session_id and not name.startswith("kitty-claude-"):
+                    if name and name != session_id and not name.startswith("clauthing-"):
                         # Also skip if it looks like another session ID (UUID format)
                         if not (len(name) == 36 and name.count('-') == 4):
                             title = name
@@ -601,9 +601,9 @@ def save_auth_from_session(session_id, profile=None):
     """
     # Get base config directory
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     # Read session's .claude.json
     session_config_dir = base_config / "session-configs" / session_id
@@ -650,9 +650,9 @@ def cleanup_session_config(session_id, profile=None):
 
     # Get base config directory
     if profile:
-        base_config = Path.home() / ".config" / "kitty-claude" / "other-profiles" / profile
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
     else:
-        base_config = Path.home() / ".config" / "kitty-claude"
+        base_config = Path.home() / ".config" / "clauthing"
 
     session_config_dir = base_config / "session-configs" / session_id
 
@@ -664,13 +664,13 @@ def cleanup_session_config(session_id, profile=None):
         except Exception as e:
             log(f"Error cleaning up session config: {e}", profile)
 
-def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
+def new_window(profile=None, resume_session_id=None, socket="clauthing"):
     """Create a new Claude window with session tracking.
     
     Args:
         profile: Profile name (optional)
         resume_session_id: Optional session ID to resume instead of creating new
-        socket: Tmux socket name (optional, defaults to "kitty-claude")
+        socket: Tmux socket name (optional, defaults to "clauthing")
     """
     log(f"new_window called: profile={profile}, resume_session_id={resume_session_id}, socket={socket}", profile)
     
@@ -701,12 +701,12 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
             if open_sessions:
                 # Get jail directory
                 uid = os.getuid()
-                jail_dir = Path(f"/var/run/{uid}/kitty-claude")
+                jail_dir = Path(f"/var/run/{uid}/clauthing")
                 if not jail_dir.exists():
-                    jail_dir = Path(f"/tmp/kitty-claude-{uid}")
+                    jail_dir = Path(f"/tmp/clauthing-{uid}")
 
-                # Get kitty-claude command
-                kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
+                # Get clauthing command
+                clauthing_path = shutil.which("clauthing") or "clauthing"
 
                 # If the caller didn't specify a session to resume, use the
                 # first open session for window 1. (Without this, window 1
@@ -734,11 +734,11 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
                     else:
                         path = str(jail_dir)
                     
-                    # Create window using kitty-claude indirection
+                    # Create window using clauthing indirection
                     log(f"Restore: Creating window for session {sess_id} at {path}", profile)
                     
                     # Build command string
-                    cmd_parts = [kitty_claude_path]
+                    cmd_parts = [clauthing_path]
                     if profile:
                         cmd_parts.extend(["--profile", profile])
                     cmd_parts.extend(["--new-window", "--resume-session", sess_id])
@@ -851,7 +851,7 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
 
     # Emit session_opened event and update windows file
     try:
-        from kitty_claude.events import emit_event, update_window
+        from clauthing.events import emit_event, update_window
         emit_event({
             "type": "session_opened",
             "session_id": session_id,
@@ -872,7 +872,7 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     # actually has messages — blank sessions get re-spawned with the same
     # id so the window slot is preserved without claude failing on
     # "No conversation found".
-    from kitty_claude.session import session_metadata_has_messages
+    from clauthing.session import session_metadata_has_messages
     if resume_session_id and session_metadata_has_messages(resume_session_id):
         cmd = ["claude", "--resume", session_id]
     else:
@@ -900,7 +900,7 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
             cleanup_session_config(session_id, profile)
             # Emit session_closed event and remove from windows file
             try:
-                from kitty_claude.events import emit_event, remove_window
+                from clauthing.events import emit_event, remove_window
                 emit_event({
                     "type": "session_closed",
                     "session_id": session_id,

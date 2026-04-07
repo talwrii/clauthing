@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test harness for kitty-claude.
+"""Test harness for clauthing.
 
 This harness runs tmux in a PTY and allows sending keystrokes and verifying state.
 We test tmux directly (without kitty) since that's where the keybindings live.
@@ -32,7 +32,7 @@ class Window:
 
 
 class TmuxTestHarness:
-    """Test harness for tmux-based testing of kitty-claude.
+    """Test harness for tmux-based testing of clauthing.
     
     This spawns a tmux server with a unique socket name and allows
     sending keys and querying state.
@@ -69,7 +69,7 @@ class TmuxTestHarness:
             return
             
         # Create temp directory for our test config
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="kitty-claude-test-"))
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="clauthing-test-"))
         
         # Create minimal tmux config if none provided
         if self.config_file is None:
@@ -100,13 +100,13 @@ class TmuxTestHarness:
         self._wait_for_ready()
         
     def _write_test_config(self):
-        """Write a minimal test tmux config with kitty-claude keybindings."""
+        """Write a minimal test tmux config with clauthing keybindings."""
         config = """\
-# Test config for kitty-claude harness
+# Test config for clauthing harness
 set -g base-index 1
 setw -g pane-base-index 1
 
-# kitty-claude keybindings
+# clauthing keybindings
 bind -n C-n new-window
 bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
 bind -n C-j previous-window
@@ -424,7 +424,7 @@ def run_default_tests():
     """Run default test suite."""
     runner = TestRunner()
     
-    print("Running kitty-claude tmux tests...")
+    print("Running clauthing tmux tests...")
     print()
     
     # Test: Basic window creation
@@ -598,8 +598,8 @@ def run_all_tests():
     print()
     
     try:
-        from test_claude_config import run_kitty_claude_config_tests
-        total_exit = max(total_exit, run_kitty_claude_config_tests())
+        from test_claude_config import run_clauthing_config_tests
+        total_exit = max(total_exit, run_clauthing_config_tests())
     except ImportError as e:
         print(f"Skipping claude config tests: {e}")
     
