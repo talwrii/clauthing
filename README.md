@@ -52,7 +52,7 @@ I have a mode of development where I cycle through a lot of separate x11 windows
   Tab Switching
 
   - Alt+h - Switch to previous window
-  - Alt+\ - Switch to next window
+  - Alt+l - Switch to next window
   - Alt+o - Toggle to last window (switch between current and previous)
 
   Other Useful Keybindings
