@@ -1,24 +1,18 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = [ "setuptools>=61.0",]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "clauthing"
-version = "0.1.0"
+version = "1.0.0"
 description = "Wrapper to launch Claude Code in a dedicated kitty terminal with tmux"
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = [
-    "mcp",
-]
-authors = [
-    {name = "Your Name", email = "your.email@example.com"}
-]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: POSIX :: Linux",
-]
+dependencies = [ "mcp",]
+classifiers = [ "Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License", "Operating System :: POSIX :: Linux",]
+[[project.authors]]
+name = "Your Name"
+email = "your.email@example.com"
 
 [project.scripts]
 clauthing = "clauthing.main:main"
@@ -27,4 +21,4 @@ clauthing = "clauthing.main:main"
 Homepage = "https://github.com/yourusername/clauthing"
 
 [tool.setuptools.packages.find]
-exclude = ["worktrees*"]
+exclude = [ "worktrees*",]

@@ -3,7 +3,7 @@ A soft-warm wrapper around claude code, using kitty and tmux.  Keep all you clau
 
 THIS IS BUGGERY ALPHA SOFTWARE, IT IS AI-GENERATED AND NOT WELL REVIEWED. It does however contain some magic and I wanted to throw it onto the internets.
 
-Onlyu tested on linux.g
+Only tested on linux.
 
 ## Features
 
@@ -69,3 +69,9 @@ To create the skill `blah` you can use `::skill blah`.
 
 ## Session Storage
 Session metadata is stored in `~/.local/state/clauthing/sessions/` and open sessions are tracked in `~/.config/clauthing/open-sessions.json` (for debugging purposes only - liable to change).
+
+## Contributing
+I'm vibe coding. You're vibe coding. I suggest you create a fork named clauthing-whatever and try to get people to use it. Send me your fork in a PR, describing what it does in as much detail as you can muster and I will have an LLM tell me what is going on and reimplement your idea.
+
+# About
+I am @readwith. As part of my work i make a stream of tools related to AI-coding and useing a computer in general. If this is interesting I suggest following me on github. If I am interesting, follow me on X.
