@@ -115,7 +115,7 @@ set -g automatic-rename off
 set -g allow-rename off
 
 # Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {profile_arg}--socket {tmux_socket} --rename \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 
 # Simple status bar (use status-format to avoid conflicts)
 set -g status on
@@ -124,7 +124,7 @@ set -g status-format[0] '#[align=left] #W #[align=right] #{{pane_current_path}} 
 set -gu status-format[1]
 set -gu status-format[2]
 
-# Refresh status bar on window changes
+# Mirror tmux window renames into kitty-claude state.
 set-hook -g window-renamed 'run-shell "kitty-claude {profile_arg}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log"'
 """
 
@@ -665,7 +665,7 @@ bind -n C-v send-keys C-v
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
 
 # M-n to rename window and record in title history
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --rename \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 
 # M-l to reload
 bind -n M-l send-keys ':reload' Enter
@@ -927,13 +927,9 @@ def rename_session(session_id, new_name, profile, tmux_socket):
         except Exception as e:
             log(f"Error updating state: {e}", profile)
 
-    # Rename current tmux window
-    try:
-        cmd = ["tmux", "-L", tmux_socket, "rename-window", new_name]
-        result = run(cmd, capture_output=True, text=True, check=True, profile=profile)
-        log(f"Rename successful", profile)
-    except Exception as e:
-        log(f"Error renaming window: {e}", profile)
+    # NB: do NOT call `tmux rename-window` here. rename_session is invoked
+    # from the window-renamed hook, so tmux already has the new name.
+    # Calling rename-window would re-fire the hook → infinite loop.
 
     # Emit title_changed event
     try:
@@ -1035,7 +1031,7 @@ set -g automatic-rename off
 set -g allow-rename off
 
 # Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 
 # 3-line status bar with custom window display
 set -g status-interval 5
@@ -1121,7 +1117,7 @@ bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Cla
 bind -n C-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-q    Queue command\\n  C-h    This help\\n\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
 
 # Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 """)
 
     # Launch tmux directly
@@ -1240,7 +1236,7 @@ set -g automatic-rename off
 set -g allow-rename off
 
 # Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "run-shell 'kitty-claude {f'--profile {profile} ' if profile else ''}--rename \\"%%\\"'"
+bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 
 # 3-line status bar with custom window display
 set -g status-interval 5
@@ -1395,7 +1391,7 @@ def main():
         parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
         parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
         parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
-        parser.add_argument("--rename", type=str, metavar="NAME", help="Rename current window's session (looks up session ID automatically)")
+        parser.add_argument("--rename", type=str, metavar="NAME", help="Mirror a tmux window rename into kitty-claude state (called from window-renamed hook)")
         parser.add_argument("--socket", type=str, metavar="SOCKET", help="Tmux socket name (for --rename etc)")
         parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
         parser.add_argument("--notes", action="store_true", help="Open session notes in vim popup")
