@@ -6,6 +6,7 @@ Commands: :cd, :cdpop, :cd-tmux, :reload, :clear, :fork, :call, :ask,
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from kitty_claude.colon_command import command, send_tmux_message
+from kitty_claude.claude_utils import encode_project_path
 from kitty_claude.logging import log, run
 from kitty_claude.session import get_session_name, save_session_metadata
 from kitty_claude.session_utils import session_has_messages
@@ -29,7 +31,7 @@ def get_state_dir():
     return state_dir
 
 
-# ── Shared Helpers (importable by other command modules) ─────────────────────
+# ── Shared Helpers ───────────────────────────────────────────────────────────
 
 def one_tab_relaunch(socket, launcher, current_window_id=None):
     """Relaunch in one-tab mode: open new window, then close old.
@@ -49,7 +51,12 @@ def one_tab_relaunch(socket, launcher, current_window_id=None):
 
     kill_cmd = ""
     if current_window_id:
-        kill_cmd = f" && sleep 1 && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null || true"
+        kill_cmd = (
+            f" && sleep 2"
+            f" && [ $(tmux -L {socket} list-windows 2>/dev/null | wc -l) -gt 1 ]"
+            f" && tmux -L {socket} kill-window -t {current_window_id} 2>/dev/null"
+            f" || true"
+        )
 
     subprocess.Popen([
         "sh", "-c",
@@ -206,8 +213,8 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
     socket = ctx.socket
     claude_data_dir = ctx.claude_data_dir
 
-    encoded_current = current_dir.replace('/', '-')
-    encoded_target = target_dir.replace('/', '-')
+    encoded_current = encode_project_path(current_dir)
+    encoded_target = encode_project_path(target_dir)
 
     projects_dir = claude_data_dir / "projects" / encoded_current
     if not projects_dir.exists():
@@ -415,7 +422,7 @@ exec claude
 
 @command(':fork')
 def cmd_fork(ctx):
-    encoded_current = ctx.cwd.replace('/', '-')
+    encoded_current = encode_project_path(ctx.cwd)
     projects_dir = ctx.claude_data_dir / "projects" / encoded_current
     if not projects_dir.exists():
         return ctx.stop("❌ No session found")
@@ -435,7 +442,7 @@ def cmd_fork(ctx):
 
 @command(':call')
 def cmd_call(ctx):
-    encoded_current = ctx.cwd.replace('/', '-')
+    encoded_current = encode_project_path(ctx.cwd)
     projects_dir = ctx.claude_data_dir / "projects" / encoded_current
     if not projects_dir.exists():
         return ctx.stop("❌ No session found")
@@ -471,7 +478,7 @@ def cmd_call(ctx):
 
 @command(':ask')
 def cmd_ask(ctx):
-    encoded_current = ctx.cwd.replace('/', '-')
+    encoded_current = encode_project_path(ctx.cwd)
     projects_dir = ctx.claude_data_dir / "projects" / encoded_current
     projects_dir.mkdir(parents=True, exist_ok=True)
 
@@ -504,7 +511,7 @@ def cmd_ask(ctx):
 def cmd_checkpoint(ctx):
     if not ctx.session_id:
         return ctx.stop("❌ No session ID available")
-    encoded = ctx.cwd.replace('/', '-')
+    encoded = encode_project_path(ctx.cwd)
     session_file = ctx.claude_data_dir / "projects" / encoded / f"{ctx.session_id}.jsonl"
     if not session_file.exists():
         return ctx.stop("❌ Session file not found")
@@ -521,7 +528,7 @@ def cmd_rollback(ctx):
 
     socket = ctx.socket
     current_dir = ctx.cwd
-    encoded = current_dir.replace('/', '-')
+    encoded = encode_project_path(current_dir)
     projects_dir = ctx.claude_data_dir / "projects" / encoded
 
     source_file = projects_dir / f"{session_id}.jsonl"
@@ -568,7 +575,6 @@ def cmd_login(ctx):
 
     session_configs_dir = base_config / "session-configs"
 
-    # Find freshest credentials
     import time
     best_expiry = 0
     best_creds_content = None
@@ -597,7 +603,6 @@ def cmd_login(ctx):
     if best_expiry < now_ms:
         return ctx.stop("❌ All credentials expired - need manual login")
 
-    # Copy credentials
     current_session_creds = session_configs_dir / session_id / ".credentials.json"
     try:
         current_session_creds.parent.mkdir(parents=True, exist_ok=True)
@@ -617,7 +622,6 @@ def cmd_login(ctx):
         f"✓ Logged in with credentials from session {best_source} ({remaining} min remaining)",
         profile)
 
-    # Auto-reload
     current_dir = ctx.cwd
     build_claude_md(profile)
     from kitty_claude.claude import save_auth_from_session, setup_session_config
@@ -661,7 +665,6 @@ def _enable_plan_mcp(ctx):
     profile = ctx.profile
     kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
 
-    # Add planning MCP to .mcp.json
     mcp_config_file = Path(current_dir) / ".mcp.json"
     if mcp_config_file.exists():
         try:
@@ -682,7 +685,6 @@ def _enable_plan_mcp(ctx):
     except Exception as e:
         return ctx.stop(f"❌ Error writing .mcp.json: {str(e)}")
 
-    # Reload
     build_claude_md(profile)
     from kitty_claude.claude import save_auth_from_session, setup_session_config
     save_auth_from_session(session_id, profile)

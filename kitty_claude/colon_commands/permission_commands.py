@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from kitty_claude.colon_command import command, send_tmux_message, get_state_dir
+from kitty_claude.claude_utils import encode_project_path
 from kitty_claude.colon_command import (
     load_timed_permissions, save_timed_permissions,
     parse_duration, format_remaining_time
@@ -128,7 +129,7 @@ def tool_to_pattern(tool):
 
 def find_session_file(claude_data_dir, cwd, session_id):
     """Find the session JSONL file."""
-    path_hash = cwd.replace('/', '-')
+    path_hash = encode_project_path(cwd)
     return claude_data_dir.parent / "projects" / path_hash / f"{session_id}.jsonl"
 
 
@@ -271,7 +272,7 @@ def cmd_allow_last(ctx):
     else:
         base_config = Path.home() / ".config" / "kitty-claude"
 
-    path_hash = ctx.cwd.replace('/', '-')
+    path_hash = encode_project_path(ctx.cwd)
     session_file = base_config / "claude-data" / "projects" / path_hash / f"{ctx.session_id}.jsonl"
     if not session_file.exists():
         return ctx.stop(f"Session log not found: {session_file}")
@@ -308,7 +309,7 @@ def cmd_allow_recent(ctx):
     else:
         base_config = Path.home() / ".config" / "kitty-claude"
 
-    path_hash = ctx.cwd.replace('/', '-')
+    path_hash = encode_project_path(ctx.cwd)
     session_file = base_config / "claude-data" / "projects" / path_hash / f"{ctx.session_id}.jsonl"
     if not session_file.exists():
         return ctx.stop(f"Session log not found: {session_file}")

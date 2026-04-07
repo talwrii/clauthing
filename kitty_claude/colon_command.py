@@ -15,6 +15,7 @@ import shlex
 from pathlib import Path
 
 from kitty_claude.logging import log, run
+from kitty_claude.claude_utils import encode_project_path
 from kitty_claude.colon_commands.time import (
     save_request_start_time,
     save_response_duration,
@@ -503,7 +504,7 @@ def cmd_todo(ctx):
     state_dir = get_state_dir()
     todos_dir = state_dir / "todos"
     todos_dir.mkdir(parents=True, exist_ok=True)
-    encoded = current_dir.replace('/', '-').strip('-')
+    encoded = encode_project_path(current_dir)
     todos_file = todos_dir / f"{encoded}.json"
     todos = json.loads(todos_file.read_text()) if todos_file.exists() else []
 
@@ -527,7 +528,7 @@ def cmd_todo(ctx):
 def cmd_done(ctx):
     current_dir = ctx.cwd
     state_dir = get_state_dir()
-    encoded = current_dir.replace('/', '-').strip('-')
+    encoded = encode_project_path(current_dir)
     todos_file = state_dir / "todos" / f"{encoded}.json"
     if not todos_file.exists():
         return ctx.stop("No todos for this directory.")
