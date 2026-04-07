@@ -1,6 +1,8 @@
 # clauthing
 A soft-warm wrapper around claude code, using kitty and tmux.  Keep all you claude codes in one place.
 
+![clauthing](picture.png)
+
 THIS IS BUGGY ALPHA SOFTWARE; IT IS AI-GENERATED AND NOT WELL REVIEWED. It does however contain some magic and I wanted to throw it onto the internet so othes could use it.
 
 Only tested on linux.
@@ -75,3 +77,7 @@ I'm vibe coding. You're vibe coding. I suggest you create a fork named clauthing
 
 # About
 I am @readwith. As part of my work i make a stream of tools related to AI-coding and useing a computer in general. If this is interesting I suggest following me on github. If I am interesting, follow me on X.
+
+---
+
+Image from Lewis Carroll.
