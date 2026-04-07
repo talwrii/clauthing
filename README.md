@@ -1,5 +1,5 @@
 # clauthing
-A soft, warm wrapper around claude code, using kitty and tmux.  Keep all you claude codes in one place with some useful commands 
+A snazzy wrapper around claude code, using kitty and tmux.  Keep all you claude codes in one place and some useful commands which take advantage of hooks and tmux pop ups. Deterministic skills.
 
 ![clauthing](picture.png)
 
