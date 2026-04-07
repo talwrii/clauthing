@@ -9,23 +9,23 @@ Only tested on Linux.
 
 ## Features
 
-* :command to run *DETERMINISTIC actions written in P
+* `:command` to run *DETERMINISTIC actions written in P
 python*
-* :cd command to change directory
-* :fork command to clone a conversation
-* :permissions to view permissions
-* :rule to modularly define context which is always laded.
-* :skill SKILL to creeate a new school
-* :reload to restart claude at the same point with new features
-* ::skill new to define a template to be *deterministally added to the context at this point* using ::new
+* `:cd` command to change directory
+* `:fork` command to clone a conversation
+* `:permissions` to view permissions
+* `:rule` to modularly define context which is always laded.
+* `:skill` SKILL to creeate a new school
+* `:reload` to restart claude at the same point with new features
+* `::skill new` to define a template to be *deterministally added to the context at this point* using ::new
 * Various other features
 
-Planned features: Use arbitrary terminals rather than kitty.
+Planned features: Use any terminal, rather than just kitty.
 
 ## Motivation
 Claude code has a number of features that that I want which are absent from the claude desktop app. Mostly things related to programmatic access to messages, hooks surrounding messages being sent, and the ability to run deterministic commands.
 
-However, I will likely still want to use a terminal even with claude code and I don't want claude code using up all my terminals. So I want to wrap up claude code in a kitty window running tmux away from terminals. 
+However, I will likely still want to use a terminal even while usinf claude code and I don't want claude code using up all my terminals. I, therefore, want to wrap up claude code in a kitty window running tmux away from terminals. 
 
 As a side effect, wrapping claude with `tmux` lets me do lots of weird magic to add features.
 
