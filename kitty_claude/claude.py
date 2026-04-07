@@ -704,12 +704,21 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
                 jail_dir = Path(f"/var/run/{uid}/kitty-claude")
                 if not jail_dir.exists():
                     jail_dir = Path(f"/tmp/kitty-claude-{uid}")
-                
+
                 # Get kitty-claude command
                 kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
-                
-                # Restore all open sessions except the first one (we're in window 1)
-                log(f"Restore: Restoring {len(open_sessions[1:])} sessions (skipping first)", profile)
+
+                # If the caller didn't specify a session to resume, use the
+                # first open session for window 1. (Without this, window 1
+                # would silently spawn a brand-new session and the first
+                # entry of open_sessions would be dropped.)
+                if not resume_session_id:
+                    resume_session_id = open_sessions[0]
+                    log(f"Restore: Using {resume_session_id} for window 1", profile)
+
+                # Restore all sessions other than the one we just claimed
+                # for window 1.
+                log(f"Restore: Restoring {len(open_sessions[1:])} additional sessions", profile)
                 for sess_id in open_sessions[1:]:
                     win_name = get_session_name(sess_id)
                     
@@ -834,7 +843,10 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     except Exception as e:
         print(f"Warning: Could not update state: {e}", file=sys.stderr)
     
-    # Add to open sessions list
+    # Record this session as a window-to-restore. Whether we --resume it
+    # or spawn fresh on next launch is decided at restore time based on
+    # session metadata's has_messages flag (set by the UserPromptSubmit
+    # hook). This way blank windows still get their slot back.
     add_open_session(session_id, profile)
 
     # Emit session_opened event and update windows file
@@ -856,8 +868,12 @@ def new_window(profile=None, resume_session_id=None, socket="kitty-claude"):
     # Set up session-specific config directory with shared projects
     session_config_dir = setup_session_config(session_id, profile)
 
-    # Launch claude and wait for it to exit
-    if resume_session_id:
+    # Launch claude and wait for it to exit. Resume only if the session
+    # actually has messages — blank sessions get re-spawned with the same
+    # id so the window slot is preserved without claude failing on
+    # "No conversation found".
+    from kitty_claude.session import session_metadata_has_messages
+    if resume_session_id and session_metadata_has_messages(resume_session_id):
         cmd = ["claude", "--resume", session_id]
     else:
         cmd = ["claude", "--session-id", session_id]

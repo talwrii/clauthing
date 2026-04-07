@@ -24,13 +24,13 @@ from kitty_claude.tmux import (
     get_runtime_tmux_state_file
 )
 from kitty_claude.claude import new_window
-from kitty_claude.colon_command import (
+from kitty_claude.colon_command import cleanup_expired_timed_permissions
+from kitty_claude.hooks import (
     handle_session_start,
     handle_user_prompt_submit,
     handle_run_command,
     handle_stop,
     handle_pre_tool_use,
-    cleanup_expired_timed_permissions
 )
 from kitty_claude.session import (
     save_session_metadata,
@@ -78,7 +78,7 @@ bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
 bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
 
 # C-w closes current window, but not the last one
-bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
+bind -n C-w run-shell "kitty-claude --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
@@ -127,7 +127,7 @@ set -gu status-format[1]
 set -gu status-format[2]
 
 # Mirror tmux window renames into kitty-claude state.
-set-hook -g window-renamed 'run-shell "kitty-claude {profile_arg}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log"'
+set-hook -g window-renamed 'run-shell "kitty-claude {profile_arg}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log"'
 """
 
     tmux_config_path.write_text(config_content)
@@ -664,7 +664,7 @@ set -g default-command "{claude_command}"
 bind -n C-n display-message "New tabs disabled in --one-tab mode"
 
 # C-w closes window (will exit since it's the only one)
-bind -n C-w kill-window
+bind -n C-w run-shell "kitty-claude --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
@@ -844,13 +844,22 @@ def handle_copy_profile(source_profile, dest_profile):
     print(f"✓ Profile '{dest_profile}' created at {dest_dir}")
     sys.exit(0)
 
-def handle_rename(new_name, profile, tmux_socket):
-    """Rename current window's session (looks up session ID from state file)."""
-    log(f"Rename request: new_name={new_name}, profile={profile}, tmux_socket={tmux_socket}", profile)
+def handle_rename(new_name, profile, tmux_socket, window_id=None):
+    """Rename a window's session (looks up session ID from state file).
 
-    # Get current window index
+    When invoked from the window-renamed hook, ``window_id`` is the tmux
+    window id (e.g. ``@5``) of the window that was actually renamed —
+    NOT necessarily the currently focused window. Without it we'd resolve
+    via display-message and end up renaming the wrong session.
+    """
+    log(f"Rename request: new_name={new_name}, profile={profile}, tmux_socket={tmux_socket}, window_id={window_id}", profile)
+
+    # Resolve window_index — by id if the hook gave us one, else current.
     try:
-        cmd = ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_index}"]
+        if window_id:
+            cmd = ["tmux", "-L", tmux_socket, "display-message", "-p", "-t", window_id, "#{window_index}"]
+        else:
+            cmd = ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_index}"]
         result = run(
             cmd,
             capture_output=True,
@@ -1002,7 +1011,7 @@ bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
 bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
 
 # C-w closes current window, but not the last one
-bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
+bind -n C-w run-shell "kitty-claude --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
@@ -1057,7 +1066,7 @@ set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
 
 # Refresh status bar on window changes
 set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
+set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
 
 # Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
@@ -1184,6 +1193,54 @@ def handle_show_help():
             pass
 
 
+def handle_close_window(profile, tmux_socket):
+    """Close the current tmux window, removing its session from open_sessions
+    so it isn't restored on next launch. (User pressed C-w.)"""
+    from kitty_claude.session import remove_open_session
+    # Refuse to close the last window.
+    try:
+        result = run(
+            ["tmux", "-L", tmux_socket, "list-windows", "-F", "#{window_index}"],
+            capture_output=True, text=True, check=True, profile=profile,
+        )
+        if len([l for l in result.stdout.splitlines() if l.strip()]) <= 1:
+            run(
+                ["tmux", "-L", tmux_socket, "display-message", "Cannot close last window"],
+                profile=profile,
+            )
+            return
+    except Exception as e:
+        log(f"close-window: list-windows failed: {e}", profile)
+
+    # Look up the session_id for the current window from the runtime state.
+    session_id = None
+    try:
+        result = run(
+            ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_index}"],
+            capture_output=True, text=True, check=True, profile=profile,
+        )
+        window_index = result.stdout.strip()
+        state_file = get_runtime_tmux_state_file(profile)
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+            window_data = state.get("windows", {}).get(window_index) or {}
+            session_id = window_data.get("session_id")
+    except Exception as e:
+        log(f"close-window: could not resolve session_id: {e}", profile)
+
+    if session_id:
+        try:
+            remove_open_session(session_id, profile)
+            log(f"close-window: removed session {session_id} from open_sessions", profile)
+        except Exception as e:
+            log(f"close-window: remove_open_session failed: {e}", profile)
+
+    try:
+        run(["tmux", "-L", tmux_socket, "kill-window"], profile=profile)
+    except Exception as e:
+        log(f"close-window: kill-window failed: {e}", profile)
+
+
 def handle_instances(json_output=False):
     """Print running kitty-claude instances."""
     from kitty_claude.instances import list_instances
@@ -1296,7 +1353,7 @@ bind -n C-n new-window -c "{jail_dir}" {kitty_claude_cmd}
 bind c new-window -c "{jail_dir}" {kitty_claude_cmd}
 
 # C-w closes current window, but not the last one
-bind -n C-w if-shell "[ $(tmux list-windows | wc -l) -gt 1 ]" "kill-window" "display-message 'Cannot close last window'"
+bind -n C-w run-shell "kitty-claude --close-window"
 
 # C-v passthrough for paste
 bind -n C-v send-keys C-v
@@ -1351,7 +1408,7 @@ set -g status-format[2] '#({kitty_claude_path} {profile_arg}--tmux-status 2)'
 
 # Refresh status bar on window changes
 set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
+set-hook -g window-renamed 'run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/kc-rename-hook.log" ; refresh-client -S'
 
 # Window status styling (for reference)
 set -g window-status-style bg=colour235,fg=colour248
@@ -1396,11 +1453,17 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
             first_session_id = open_sessions[0]
             log(f"Restore: Creating initial session with {first_session_id}", profile)
 
-            # Create first window
+            # Create first window via kitty-claude --new-window so the
+            # has_messages / blank-session decision goes through new_window
+            # rather than running `claude --resume` directly here.
+            kc_cmd_parts = [kitty_claude_path]
+            if profile:
+                kc_cmd_parts.extend(["--profile", profile])
+            kc_cmd_parts.extend(["--new-window", "--resume-session", first_session_id])
             result = run(
                 ["tmux", "-L", tmux_socket, "-f", str(tmux_config_path),
                  "new-session", "-d", "-s", tmux_socket, "-c", str(jail_dir),
-                 "claude", "--resume", first_session_id],
+                 *kc_cmd_parts],
                 capture_output=True,
                 text=True,
                 profile=profile
@@ -1489,11 +1552,13 @@ def main():
         parser.add_argument("--restart", action="store_true", help="Restart kitty-claude with state preservation")
         parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
         parser.add_argument("--instances", action="store_true", help="List running kitty-claude instances")
+        parser.add_argument("--close-window", action="store_true", help="Close the current tmux window and remove its session from the restore list")
         parser.add_argument("--show-help", action="store_true", help="Print the keybindings help (used by the M-k popup)")
         parser.add_argument("--json", action="store_true", help="Output JSON instead of a table (used with --instances)")
         parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
         parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
         parser.add_argument("--rename", type=str, metavar="NAME", help="Mirror a tmux window rename into kitty-claude state (called from window-renamed hook)")
+        parser.add_argument("--window-id", type=str, metavar="ID", help="tmux window id (e.g. @5), passed by the window-renamed hook so --rename targets the correct window rather than whichever is focused")
         parser.add_argument("--socket", type=str, metavar="SOCKET", help="Tmux socket name (for --rename etc)")
         parser.add_argument("--no-kitty", action="store_true", help="Run tmux directly without kitty (for testing)")
         parser.add_argument("--notes", action="store_true", help="Open session notes in vim popup")
@@ -1759,8 +1824,12 @@ def main():
             restart()
             sys.exit(0)
 
+        if args.close_window:
+            handle_close_window(profile, tmux_socket)
+            sys.exit(0)
+
         if args.rename:
-            handle_rename(args.rename, profile, tmux_socket)
+            handle_rename(args.rename, profile, tmux_socket, window_id=args.window_id)
 
         if args.rename_session:
             session_id, new_name = args.rename_session

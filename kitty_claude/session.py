@@ -104,6 +104,41 @@ def remove_open_session(session_id, profile=None):
         log(f"Error removing session from open-sessions: {e}", profile)
 
 
+def mark_session_has_messages(session_id):
+    """Record in the session metadata that this session has at least one
+    user prompt. Used by the restore loop to choose between `claude --resume`
+    (has messages, jsonl exists) and a fresh `claude --session-id` spawn.
+    """
+    state_dir = get_state_dir()
+    metadata_file = state_dir / "sessions" / f"{session_id}.json"
+    try:
+        if metadata_file.exists():
+            metadata = json.loads(metadata_file.read_text())
+        else:
+            metadata = {}
+        if metadata.get("has_messages"):
+            return
+        metadata["has_messages"] = True
+        metadata_file.parent.mkdir(parents=True, exist_ok=True)
+        metadata_file.write_text(json.dumps(metadata, indent=2))
+    except Exception as e:
+        log(f"Error marking session has_messages: {e}", None)
+
+
+def session_metadata_has_messages(session_id):
+    """Return True if the session metadata records at least one user prompt.
+    (Distinct from session_utils.session_has_messages, which inspects the
+    jsonl file on disk.)"""
+    state_dir = get_state_dir()
+    metadata_file = state_dir / "sessions" / f"{session_id}.json"
+    try:
+        if metadata_file.exists():
+            return bool(json.loads(metadata_file.read_text()).get("has_messages"))
+    except Exception:
+        pass
+    return False
+
+
 def get_open_sessions(profile=None):
     """Get list of open sessions."""
     sessions_file = get_open_sessions_file(profile)
