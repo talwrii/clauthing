@@ -96,8 +96,8 @@ bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {profile_arg}--picker"
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# C-h: show keybindings help
-bind -n C-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  C-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-h: show keybindings help
+bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
 
 # Some sensible defaults
 set -g mouse on
@@ -673,8 +673,8 @@ bind -n M-l send-keys ':reload' Enter
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# C-h: show keybindings help
-bind -n C-h display-popup -E -w 50% -h 50% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-w    Close window\\n  C-q    Queue command\\n  C-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n\\nPress any key to close...\\n'; read -n1"
+# M-h: show keybindings help
+bind -n M-h display-popup -E -w 50% -h 50% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-w    Close window\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n\\nPress any key to close...\\n'; read -n1"
 
 # Some sensible defaults
 set -g mouse on
@@ -1012,8 +1012,8 @@ bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} 
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# C-h: show keybindings help
-bind -n C-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  C-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-h: show keybindings help
+bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
 
 # Some sensible defaults
 set -g mouse on
@@ -1113,8 +1113,8 @@ setw -g pane-base-index 1
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# C-h: show keybindings help
-bind -n C-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-q    Queue command\\n  C-h    This help\\n\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-h: show keybindings help
+bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
 
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
@@ -1217,8 +1217,8 @@ bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} 
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# C-h: show keybindings help
-bind -n C-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  C-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-h: show keybindings help
+bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
 
 # Some sensible defaults
 set -g mouse on
