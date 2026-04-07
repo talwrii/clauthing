@@ -1,7 +1,7 @@
 # clauthing
 A soft-warm wrapper around claude code, using kitty and tmux.  Keep all you claude codes in one place.
 
-THIS IS BUGGERY ALPHA SOFTWARE, IT IS AI-GENERATED AND NOT WELL REVIEWED. It does however contain some magic and I wanted to throw it onto the internets.
+THIS IS BUGGY ALPHA SOFTWARE; IT IS AI-GENERATED AND NOT WELL REVIEWED. It does however contain some magic and I wanted to throw it onto the internet so othes could use it.
 
 Only tested on linux.
 
