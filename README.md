@@ -16,6 +16,8 @@ THIS IS BUGGERY ALPHA SOFTWARE, IT IS AI-GENERATED AND NOT WELL REVIEWED. It doe
 
 Other stuff.
 
+Planned features. Use arbitrary terminals rather than kitty.
+
 ## Motivation
 claude code has a number of features that that I want which are absent from the claude desktop app. Mostly things related to programmatic access to messages, hooks surrounding messages being sent, and the ability to run deterministic commands.
 
