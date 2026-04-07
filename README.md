@@ -25,7 +25,7 @@ Planned features: Use any terminal, rather than just kitty.
 ## Motivation
 Claude code has a number of features that that I want which are absent from the claude desktop app. Mostly things related to programmatic access to messages, hooks surrounding messages being sent, and the ability to run deterministic commands.
 
-However, I will likely still want to use a terminal even while usinf claude code and I don't want claude code using up all my terminals. I, therefore, want to wrap up claude code in a kitty window running tmux away from terminals. 
+However, I will likely still want to use a terminal even while using claude code and I don't want claude codes cluttering up all my terminal windows. Rather, I want claude codes in one place ans terminals in another. I, therefore, want to wrap up claude code in a kitty window running tmux away from terminals. 
 
 As a side effect, wrapping claude with `tmux` lets me do lots of weird magic to add features.
 
