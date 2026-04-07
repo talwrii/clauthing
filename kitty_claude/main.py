@@ -84,10 +84,12 @@ bind -n C-w run-shell "kitty-claude --close-window"
 bind -n C-v send-keys C-v
 
 # Alt-r to restart kitty-claude
-bind -n M-r run-shell "kitty-claude {profile_arg}--restart"
+bind -n M-r send-keys ":reload" Enter
+bind -n M-R run-shell "kitty-claude {profile_arg}--restart"
 
 # Alt-l to reload (send :reload to pane)
-bind -n M-l send-keys ':reload' Enter
+bind -n M-h previous-window
+bind -n M-l next-window
 
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {profile_arg}--notes"
@@ -676,7 +678,8 @@ bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 
 # M-l to reload
-bind -n M-l send-keys ':reload' Enter
+bind -n M-h previous-window
+bind -n M-l next-window
 
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
@@ -1017,10 +1020,12 @@ bind -n C-w run-shell "kitty-claude --close-window"
 bind -n C-v send-keys C-v
 
 # Alt-r to restart kitty-claude
-bind -n M-r run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--restart"
+bind -n M-r send-keys ":reload" Enter
+bind -n M-R run-shell "kitty-claude {profile_arg}--restart"
 
 # Alt-l to reload (send :reload to pane)
-bind -n M-l send-keys ':reload' Enter
+bind -n M-h previous-window
+bind -n M-l next-window
 
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
@@ -1154,17 +1159,17 @@ KEYBINDINGS_HELP = """\
 
   C-n    New window
   C-w    Close window
-  C-j    Previous window
-  C-k    Next window
+  M-h    Previous window
+  M-l    Next window
+  M-o    Last window
   C-p    Session picker
   C-q    Queue command
   M-k    This help
 
-  M-r    Restart claude
-  M-l    Reload (:reload)
+  M-r    Reload (:reload)
+  M-R    Restart claude
   M-e    Session notes
   M-n    Rename window
-  M-o    Last window
 """
 
 
@@ -1359,10 +1364,12 @@ bind -n C-w run-shell "kitty-claude --close-window"
 bind -n C-v send-keys C-v
 
 # Alt-r to restart kitty-claude
-bind -n M-r run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--restart"
+bind -n M-r send-keys ":reload" Enter
+bind -n M-R run-shell "kitty-claude {profile_arg}--restart"
 
 # Alt-l to reload (send :reload to pane)
-bind -n M-l send-keys ':reload' Enter
+bind -n M-h previous-window
+bind -n M-l next-window
 
 # Alt-e to open session notes
 bind -n M-e run-shell "kitty-claude {f'--profile {profile} ' if profile else ''}--notes"
