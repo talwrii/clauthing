@@ -3,6 +3,8 @@ A soft-warm wrapper around claude code, using kitty and tmux.  Keep all you clau
 
 THIS IS BUGGERY ALPHA SOFTWARE, IT IS AI-GENERATED AND NOT WELL REVIEWED. It does however contain some magic and I wanted to throw it onto the internets.
 
+Onlyu tested on linux.g
+
 ## Features
 
 * :command to run *DETERMINISTIC actions written in code*
@@ -26,8 +28,11 @@ However, I will likely still want to use a terminal even with claude code and I 
 As a side effect, wrapping claude with `tmux` lets me do lots of weird magic to add features.
 
 ## Alternatives and prior work
-This is terrible. It is a wrapper around claude code and mostly implemented using tmux and kitty
+This is terrible. It is a wrapper around claude code and mostly implemented using tmux and kitty. However, it is usable and I use it and it gives you access to the claude code subscription while still using claude as as the underlying harness. 
 
+This means you get access to claude's cheaper subscriptin models, with additional features, without violating their tems and conditions.
+
+If you are willing to spend more money you can use API based usage rather than sunscription based usage and use something like opencode or PI. I have not used these myself as I want to use the cheaper model. Chatgpt is compatible with open code.
 
 ## Installation
 `pipx install clauthing`
