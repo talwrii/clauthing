@@ -57,6 +57,7 @@ def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
     kitty_claude_cmd = f"'{kitty_claude_path}' {profile_arg}--session"
 
     tmux_config_path = Path(config_dir) / "tmux.conf"
+    instance_uuid = os.environ.get("KITTY_CLAUDE_INSTANCE_UUID", "")
 
     config_content = f"""\
 # kitty-claude tmux config (auto-regenerated)
@@ -65,6 +66,7 @@ set -g destroy-unattached on
 
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -96,8 +98,8 @@ bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {profile_arg}--picker"
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# M-h: show keybindings help
-bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-k: show keybindings help
+bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -637,6 +639,11 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
     else:
         claude_command = claude_bin
 
+    # Register this instance (one-tab launch)
+    from kitty_claude.instances import register_instance, ENV_VAR as _IUUID
+    instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
+    os.environ[_IUUID] = instance_uuid
+
     # Simplified tmux config - NO C-n, NO session restoration hooks
     tmux_config_path.write_text(f"""\
 # kitty-claude tmux config (ONE-TAB MODE)
@@ -648,6 +655,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{session_config_dir}"
 
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude
 set -g default-command "{claude_command}"
@@ -673,8 +681,8 @@ bind -n M-l send-keys ':reload' Enter
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# M-h: show keybindings help
-bind -n M-h display-popup -E -w 50% -h 50% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-w    Close window\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n\\nPress any key to close...\\n'; read -n1"
+# M-k: show keybindings help
+bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -970,7 +978,8 @@ def handle_update_config(config_dir, claude_data_dir, profile, kitty_claude_cmd,
     kitty_claude_path = shutil.which("kitty-claude") or "kitty-claude"
     profile_arg = f"--profile {profile} " if profile else ""
 
-    # Regenerate tmux config
+    # Regenerate tmux config (preserve existing instance uuid from env)
+    instance_uuid = os.environ.get("KITTY_CLAUDE_INSTANCE_UUID", "")
     remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
     tmux_config_path.write_text(f"""\
 # kitty-claude tmux config (isolated server)
@@ -981,6 +990,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -1012,8 +1022,8 @@ bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} 
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# M-h: show keybindings help
-bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-k: show keybindings help
+bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -1075,6 +1085,11 @@ def handle_no_kitty(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_o
     # Set up jail directory
     jail_dir = setup_jail_directory()
 
+    # Register this instance (no-kitty launch)
+    from kitty_claude.instances import register_instance, ENV_VAR as _IUUID
+    instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
+    os.environ[_IUUID] = instance_uuid
+
     # Create tmux config
     tmux_config_path = config_dir / "tmux.conf"
     if not tmux_config_path.exists():
@@ -1089,6 +1104,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -1113,8 +1129,8 @@ setw -g pane-base-index 1
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# M-h: show keybindings help
-bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-k: show keybindings help
+bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
 
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
@@ -1123,6 +1139,82 @@ bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
     # Launch tmux directly
     os.execvp("tmux", ["tmux", "-L", tmux_socket, "-f", str(tmux_config_path),
                        "new-session", "-As", tmux_socket, "-c", str(jail_dir)])
+
+KEYBINDINGS_HELP = """\
+\033[1mKitty-Claude Keybindings\033[0m
+
+  C-n    New window
+  C-w    Close window
+  C-j    Previous window
+  C-k    Next window
+  C-p    Session picker
+  C-q    Queue command
+  M-k    This help
+
+  M-r    Restart claude
+  M-l    Reload (:reload)
+  M-e    Session notes
+  M-n    Rename window
+  M-o    Last window
+"""
+
+
+def handle_show_help():
+    """Print the keybindings help and wait for a keypress.
+
+    Designed to be wrapped in `tmux display-popup -E "kitty-claude --show-help"`
+    so the binding list lives in code (testable standalone) rather than
+    being baked into the tmux config string.
+    """
+    print(KEYBINDINGS_HELP)
+    print("Press any key to close...")
+    try:
+        import termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except Exception:
+        try:
+            sys.stdin.readline()
+        except Exception:
+            pass
+
+
+def handle_instances(json_output=False):
+    """Print running kitty-claude instances."""
+    from kitty_claude.instances import list_instances
+    instances = list_instances()
+    if json_output:
+        print(json.dumps(instances, indent=2))
+        return
+    if not instances:
+        print("No running kitty-claude instances.")
+        return
+    # Table output. Columns chosen to be useful from a terminal.
+    headers = ("PID", "SOCKET", "PROFILE", "STARTED", "CWD", "LOG_DIR", "UUID")
+    rows = [
+        (
+            str(e["pid"]),
+            e.get("tmux_socket", "") or "",
+            e.get("profile") or "-",
+            e.get("started_at", "") or "",
+            e.get("cwd", "") or "",
+            e.get("log_dir", "") or "",
+            e["uuid"],
+        )
+        for e in instances
+    ]
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    print(fmt.format(*headers))
+    print(fmt.format(*("-" * w for w in widths)))
+    for r in rows:
+        print(fmt.format(*r))
+
 
 def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, remain_on_exit=False):
     """Main launch logic for kitty-claude."""
@@ -1137,6 +1229,12 @@ def launch_kitty_claude(config_dir, profile, kitty_claude_cmd, tmux_socket, rema
 
     # Create config dir if it doesn't exist
     config_dir.mkdir(parents=True, exist_ok=True)
+
+    # Register this instance so logs/state are routed to a per-uuid dir.
+    # This must happen before any log() calls so they land in the right place.
+    from kitty_claude.instances import register_instance, ENV_VAR as _IUUID
+    instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
+    os.environ[_IUUID] = instance_uuid
 
     # Start a new run (cleanup old logs and create new run ID)
     log_dir = get_log_dir(profile)
@@ -1186,6 +1284,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
 set-environment -g KITTY_CLAUDE_TMUX_SOCKET "{tmux_socket}"
+set-environment -g KITTY_CLAUDE_INSTANCE_UUID "{instance_uuid}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{kitty_claude_cmd}"
@@ -1217,8 +1316,8 @@ bind -n C-p display-popup -E -w 80% -h 60% "kitty-claude {f'--profile {profile} 
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/kc-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
-# M-h: show keybindings help
-bind -n M-h display-popup -E -w 50% -h 70% "printf '\\033[1mKitty-Claude Keybindings\\033[0m\\n\\n  C-n    New window\\n  C-w    Close window\\n  C-j    Previous window\\n  C-k    Next window\\n  C-p    Session picker\\n  C-q    Queue command\\n  M-h    This help\\n\\n  M-r    Restart claude\\n  M-l    Reload (:reload)\\n  M-e    Session notes\\n  M-n    Rename window\\n  M-o    Last window\\n\\nPress any key to close...\\n'; read -n1"
+# M-k: show keybindings help
+bind -n M-k display-popup -E -w 50% -h 70% "kitty-claude --show-help"
 
 # Some sensible defaults
 set -g mouse on
@@ -1389,6 +1488,9 @@ def main():
         parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
         parser.add_argument("--restart", action="store_true", help="Restart kitty-claude with state preservation")
         parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
+        parser.add_argument("--instances", action="store_true", help="List running kitty-claude instances")
+        parser.add_argument("--show-help", action="store_true", help="Print the keybindings help (used by the M-k popup)")
+        parser.add_argument("--json", action="store_true", help="Output JSON instead of a table (used with --instances)")
         parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
         parser.add_argument("--rename-session", nargs=2, metavar=("SESSION_ID", "NAME"), help="Rename session (internal use)")
         parser.add_argument("--rename", type=str, metavar="NAME", help="Mirror a tmux window rename into kitty-claude state (called from window-renamed hook)")
@@ -1429,6 +1531,14 @@ def main():
         # Enable stderr logging if --log flag is set
         if args.log:
             os.environ['KITTY_CLAUDE_LOG_STDERR'] = '1'
+
+        if args.instances:
+            handle_instances(json_output=args.json)
+            sys.exit(0)
+
+        if args.show_help:
+            handle_show_help()
+            sys.exit(0)
 
         # Determine profile name
         profile = args.profile or os.environ.get('KITTY_CLAUDE_PROFILE')

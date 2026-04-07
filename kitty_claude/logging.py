@@ -7,7 +7,17 @@ import datetime
 from pathlib import Path
 
 def get_log_dir(profile=None):
-    """Get the log directory for the given profile."""
+    """Get the log directory for the current instance.
+
+    If KITTY_CLAUDE_INSTANCE_UUID is set in the environment, logs are
+    routed to that instance's per-uuid directory. Otherwise falls back
+    to the legacy per-profile directory.
+    """
+    instance_uuid = os.environ.get("KITTY_CLAUDE_INSTANCE_UUID")
+    if instance_uuid:
+        from kitty_claude.instances import get_log_dir_for_uuid
+        return get_log_dir_for_uuid(instance_uuid)
+
     uid = os.getuid()
     # Try /var/run first
     try:
