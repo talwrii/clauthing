@@ -1,15 +1,16 @@
 # clauthing
-A soft-warm wrapper around claude code, using kitty and tmux.  Keep all you claude codes in one place.
+A soft, warm wrapper around claude code, using kitty and tmux.  Keep all you claude codes in one place with some useful commands 
 
 ![clauthing](picture.png)
 
-THIS IS BUGGY ALPHA SOFTWARE; IT IS AI-GENERATED AND NOT WELL REVIEWED. It does however contain some magic and I wanted to throw it onto the internet so othes could use it.
+THIS IS BUGGY ALPHA SOFTWARE; IT IS AI-GENERATED AND NOT WELL REVIEWED. It does, however, contain some magic and I wanted to throw it onto the internet so others could use it.
 
-Only tested on linux.
+Only tested on Linux.
 
 ## Features
 
-* :command to run *DETERMINISTIC actions written in code*
+* :command to run *DETERMINISTIC actions written in P
+python*
 * :cd command to change directory
 * :fork command to clone a conversation
 * :permissions to view permissions
@@ -17,13 +18,12 @@ Only tested on linux.
 * :skill SKILL to creeate a new school
 * :reload to restart claude at the same point with new features
 * ::skill new to define a template to be *deterministally added to the context at this point* using ::new
+* Various other features
 
-Other stuff.
-
-Planned features. Use arbitrary terminals rather than kitty.
+Planned features: Use arbitrary terminals rather than kitty.
 
 ## Motivation
-claude code has a number of features that that I want which are absent from the claude desktop app. Mostly things related to programmatic access to messages, hooks surrounding messages being sent, and the ability to run deterministic commands.
+Claude code has a number of features that that I want which are absent from the claude desktop app. Mostly things related to programmatic access to messages, hooks surrounding messages being sent, and the ability to run deterministic commands.
 
 However, I will likely still want to use a terminal even with claude code and I don't want claude code using up all my terminals. So I want to wrap up claude code in a kitty window running tmux away from terminals. 
 
