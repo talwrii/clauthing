@@ -44,13 +44,12 @@ class CdTestHarness(TmuxTestHarness):
             
     def create_mock_session(self, cwd: str, session_id: str = "test-session-123"):
         """Create a mock session file with messages so :cd can clone it.
-        
+
         Returns the session file path.
         """
-        # Encode path like clauthing does (replace / with -)
-        encoded_cwd = cwd.lstrip('/').replace('/', '-')
-        if not encoded_cwd:
-            encoded_cwd = "-"  # Root directory
+        # Encode path the same way Claude Code does: replace every non-alnum with -
+        import re
+        encoded_cwd = re.sub(r'[^a-zA-Z0-9]', '-', cwd)
         
         projects_dir = self.claude_data_dir / "projects" / encoded_cwd
         projects_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +65,7 @@ class CdTestHarness(TmuxTestHarness):
     def get_launcher_scripts(self):
         """Find any launcher scripts created by :cd in one-tab mode."""
         uid = os.getuid()
-        return list(Path("/tmp").glob(f"cl-cd-{uid}-*.sh"))
+        return list(Path("/tmp").glob(f"cl-launch-{uid}-*.sh"))
         
     def cleanup_launchers(self):
         """Remove any leftover launcher scripts."""
@@ -173,9 +172,11 @@ def run_cd_tests():
             # Create target directory
             target = tempfile.mkdtemp(prefix="cd-target-")
             try:
-                # Manually clone session (simulating what :cd does)
-                source_encoded = source_cwd.lstrip('/').replace('/', '-') or "-"
-                target_encoded = target.lstrip('/').replace('/', '-') or "-"
+                # Manually clone session (simulating what :cd does).
+                # Use the same encoding as claude_utils.encode_project_path.
+                import re
+                source_encoded = re.sub(r'[^a-zA-Z0-9]', '-', source_cwd)
+                target_encoded = re.sub(r'[^a-zA-Z0-9]', '-', target)
                 
                 source_file = h.claude_data_dir / "projects" / source_encoded / f"{session_id}.jsonl"
                 target_dir = h.claude_data_dir / "projects" / target_encoded
@@ -201,7 +202,8 @@ def run_cd_tests():
             session_id = "preserve-test"
             
             # Create session with multiple messages
-            encoded = source_cwd.lstrip('/').replace('/', '-') or "-"
+            import re
+            encoded = re.sub(r'[^a-zA-Z0-9]', '-', source_cwd)
             projects_dir = h.claude_data_dir / "projects" / encoded
             projects_dir.mkdir(parents=True, exist_ok=True)
             
@@ -217,7 +219,7 @@ def run_cd_tests():
             # Clone it
             target = tempfile.mkdtemp(prefix="cd-target-")
             try:
-                target_encoded = target.lstrip('/').replace('/', '-')
+                target_encoded = re.sub(r'[^a-zA-Z0-9]', '-', target)
                 target_dir = h.claude_data_dir / "projects" / target_encoded
                 target_dir.mkdir(parents=True, exist_ok=True)
                 
@@ -448,8 +450,9 @@ exec claude --resume {session_id}
                 env['CLAUDE_CONFIG_DIR'] = str(harness.claude_data_dir)
                 env['CLAUTHING_TMUX_SOCKET'] = harness.socket_name
                 
+                clauthing_bin = shutil.which("clauthing") or "clauthing"
                 result = subprocess.run(
-                    ["python3", "-m", "clauthing.colon_command"],
+                    [clauthing_bin, "--user-prompt-submit"],
                     input=input_data,
                     capture_output=True,
                     text=True,
@@ -468,8 +471,9 @@ exec claude --resume {session_id}
                 # Verify launcher content
                 content = launchers[0].read_text()
                 assert_true(target in content, f"Launcher should cd to target: {content}")
-                assert_true("claude --resume" in content, f"Launcher should resume: {content}")
-                
+                assert_true("--resume" in content and "claude" in content,
+                           f"Launcher should resume claude: {content}")
+
             finally:
                 shutil.rmtree(target, ignore_errors=True)
                 harness.cleanup_launchers()
@@ -499,17 +503,18 @@ exec claude --resume {session_id}
             env['CLAUDE_CONFIG_DIR'] = str(harness.claude_data_dir)
             env['CLAUTHING_TMUX_SOCKET'] = harness.socket_name
             
+            clauthing_bin = shutil.which("clauthing") or "clauthing"
             result = subprocess.run(
-                ["python3", "-m", "clauthing.colon_command"],
+                [clauthing_bin, "--user-prompt-submit"],
                 input=input_data,
                 capture_output=True,
                 text=True,
                 timeout=10,
                 env=env
             )
-            
+
             time.sleep(0.2)
-            
+
             # Should NOT create launcher for invalid dir
             launchers = harness.get_launcher_scripts()
             assert_eq(len(launchers), 0,

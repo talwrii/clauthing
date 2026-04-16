@@ -1,0 +1,48 @@
+#!/bin/bash
+# Run all clauthing tests using the pipx-installed venv.
+# Prereq: `pipx install -e .` so the `clauthing` venv has the package installed.
+#
+# Exit status: 0 if all suites pass, 1 otherwise.
+
+set -o nounset
+set -o pipefail
+
+cd "$(dirname "$0")"
+
+PY=$(pipx-python clauthing --venv)/bin/python
+
+failed=()
+
+run_suite() {
+    local label=$1
+    shift
+    echo
+    echo "=== $label ==="
+    if "$@"; then
+        echo "✓ $label"
+    else
+        echo "✗ $label (exit $?)"
+        failed+=("$label")
+    fi
+}
+
+run_suite "unit tests" "$PY" -m pytest tests/ -v
+
+# Functional tests have a bespoke runner (not pytest). Run each file directly.
+# test_cd_e2e.py needs a real login context so it is not run here.
+for f in \
+    functional_tests/test_cd_command.py \
+    functional_tests/test_claude_config.py \
+    functional_tests/test_picker.py \
+    functional_tests/test_tab_switching.py; do
+    run_suite "$f" "$PY" "$f"
+done
+
+echo
+if [ ${#failed[@]} -eq 0 ]; then
+    echo "All suites passed."
+    exit 0
+else
+    echo "FAILED: ${failed[*]}"
+    exit 1
+fi
