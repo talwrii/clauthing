@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
 from harness import TmuxTestHarness, TestRunner, assert_eq, assert_true
 
 
@@ -133,17 +134,21 @@ def run_clauthing_config_tests():
     runner.run_test("config_generation", test_config_generation)
     
     def test_jail_directory():
-        """Test that new windows open in jail directory."""
+        """Test that new windows opened via ctrl+n start in the jail directory."""
         with KittyClaudeTestHarness() as h:
-            # Get current directory
-            h.send_keys_to_pane("pwd", literal=True)
-            h.send_keys_to_pane("Enter")
-            time.sleep(0.3)
-            
-            output = h.capture_pane()
-            # Should contain "jail" since that's where we configured it
-            assert_true("jail" in output or "/home" in output, 
-                       f"Window in expected directory, got: {output[:100]}")
+            # Open a new window via ctrl+n (bound to new-window -c jail_dir in config)
+            h.ctrl('n')
+            time.sleep(0.5)
+
+            # Query tmux directly for the pane's current path
+            import subprocess
+            result = subprocess.run(
+                ["tmux", "-L", h.socket_name, "display-message", "-p", "#{pane_current_path}"],
+                capture_output=True, text=True, timeout=5
+            )
+            pane_path = result.stdout.strip()
+            assert_true("jail" in pane_path,
+                       f"New window should start in jail dir, got: {pane_path!r}")
     runner.run_test("jail_directory", test_jail_directory)
     
     print()

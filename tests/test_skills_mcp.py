@@ -12,7 +12,7 @@ os.environ["HOME"] = tmpdir
 from clauthing.skills_mcp_server import get_kc_skills_dir
 
 
-def test_create_skill(name, content):
+def create_skill(name, content):
     """Simulate what the MCP tool does."""
     if not name:
         return "Error: skill name is required"
@@ -35,25 +35,25 @@ def test_skills_dir():
 
 
 def test_create():
-    result = test_create_skill("test-danish", "Help me practice Danish vocabulary.")
+    result = create_skill("test-danish", "Help me practice Danish vocabulary.")
     assert "Created" in result, f"Expected success, got: {result}"
     print(f"  {result}")
 
 
 def test_no_overwrite():
-    result = test_create_skill("test-danish", "overwrite attempt")
+    result = create_skill("test-danish", "overwrite attempt")
     assert "already exists" in result, f"Expected error, got: {result}"
     print(f"  {result}")
 
 
 def test_invalid_name():
-    result = test_create_skill("bad name!", "content")
+    result = create_skill("bad name!", "content")
     assert "Error" in result, f"Expected error, got: {result}"
     print(f"  {result}")
 
 
 def test_empty_name():
-    result = test_create_skill("", "content")
+    result = create_skill("", "content")
     assert "required" in result, f"Expected error, got: {result}"
     print(f"  {result}")
 

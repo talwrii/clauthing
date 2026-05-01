@@ -635,11 +635,35 @@ def handle_one_tab(config_dir, profile, remain_on_exit=False, no_kitty=False, re
     # tmux config goes in session directory
     tmux_config_path = session_config_dir / "tmux.conf"
 
-    # Build the claude command (with --resume if resuming)
-    if resume_session_id:
-        claude_command = f"{claude_bin} --resume {resume_session_id}"
-    else:
-        claude_command = claude_bin
+    # Build boomerang launcher script that loops and checks @startup_command
+    boomerang_path = session_config_dir / "boomerang.sh"
+    initial_session_id = resume_session_id or ""
+    boomerang_path.write_text(f"""\
+#!/bin/sh
+SESSION_ID="{initial_session_id}"
+export CLAUDE_CONFIG_DIR="{session_config_dir}"
+cd "{working_dir}"
+SOCKET="{tmux_socket}"
+CLAUDE_BIN="{claude_bin}"
+
+while true; do
+    CMD=$(tmux -L "$SOCKET" display-message -p '#{{@startup_command}}' 2>/dev/null)
+    if [ -n "$CMD" ]; then
+        tmux -L "$SOCKET" set-option -w @startup_command '' 2>/dev/null
+        eval "$CMD"
+        continue
+    fi
+    if [ -n "$SESSION_ID" ]; then
+        "$CLAUDE_BIN" --resume "$SESSION_ID"
+    else
+        "$CLAUDE_BIN"
+    fi
+    CMD=$(tmux -L "$SOCKET" display-message -p '#{{@startup_command}}' 2>/dev/null)
+    [ -z "$CMD" ] && break
+done
+""")
+    boomerang_path.chmod(0o755)
+    claude_command = str(boomerang_path)
 
     # Register this instance (one-tab launch)
     from clauthing.instances import register_instance, ENV_VAR as _IUUID
@@ -733,7 +757,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
             "tmux", "-L", tmux_socket,
             "-f", str(tmux_config_path),
             "new-session", "-As", tmux_socket,
-            "-c", str(jail_dir)
+            "-c", str(working_dir)
         ]
         if window_name:
             tmux_cmd.extend(["-n", window_name])
@@ -1541,6 +1565,43 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
     ])
 
 
+AUTH_FIELDS_FROM_CLAUDE_JSON = (
+    "userID",
+    "oauthAccount",
+    "claudeCodeFirstTokenDate",
+    "hasCompletedOnboarding",
+    "lastOnboardingVersion",
+)
+
+
+def _inject_credentials_from_snapshot(snapshot_path, config_dir, claude_data_dir, profile=None):
+    """Seed .credentials.json + claude-auth.json from a creds-for-claude snapshot.
+
+    The snapshot is a JSON object with keys ".credentials.json" and ".claude.json",
+    as produced by `creds-for-claude collect` or `get`. Writes:
+      - claude_data_dir/.credentials.json
+      - config_dir/claude-auth.json  (subset of .claude.json auth fields)
+    """
+    snap_file = Path(snapshot_path).expanduser()
+    snap = json.loads(snap_file.read_text())
+
+    claude_data_dir.mkdir(parents=True, exist_ok=True)
+    if ".credentials.json" in snap:
+        (claude_data_dir / ".credentials.json").write_text(snap[".credentials.json"])
+        log(f"Injected .credentials.json into {claude_data_dir}", profile)
+
+    if ".claude.json" in snap:
+        claude_json = json.loads(snap[".claude.json"])
+        auth = {k: claude_json[k] for k in AUTH_FIELDS_FROM_CLAUDE_JSON if k in claude_json}
+        # Always mark onboarding as complete so claude skips the theme/login pickers
+        auth["hasCompletedOnboarding"] = True
+        auth.setdefault("lastOnboardingVersion", "1.0")
+        if auth:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "claude-auth.json").write_text(json.dumps(auth, indent=2))
+            log(f"Injected claude-auth.json with fields: {sorted(auth)}", profile)
+
+
 # ============================================================================
 # MAIN FUNCTION
 # ============================================================================
@@ -1597,6 +1658,7 @@ def main():
         parser.add_argument("--events-since", type=float, metavar="TIMESTAMP", help="With --events, replay from this unix timestamp")
         parser.add_argument("--set-title", nargs=2, metavar=("SESSION_ID", "NAME"), help="Set session title (updates metadata, tmux, emits event)")
         parser.add_argument("--send-login", nargs=2, metavar=("SOCKET", "WINDOW"), help="Test send :login to a cl1 socket/window (debug)")
+        parser.add_argument("--inject-credentials", type=str, metavar="PATH", help="Seed .credentials.json + claude-auth.json from a creds-for-claude JSON snapshot, then continue normal startup")
 
         args = parser.parse_args()
 
@@ -1634,10 +1696,11 @@ def main():
 
         claude_data_dir = config_dir / "claude-data"
 
+        if args.inject_credentials:
+            _inject_credentials_from_snapshot(args.inject_credentials, config_dir, claude_data_dir, profile)
+
         # Dispatch to command handlers
         if args.send_login:
-            import subprocess
-            import time
             socket, window = args.send_login
             print(f"Sending hello + Enter to {socket} window {window}", file=sys.stderr)
 
@@ -1824,7 +1887,36 @@ def main():
             sys.exit(0)
 
         if args.new_window:
-            new_window(profile=profile, resume_session_id=args.resume_session, socket=tmux_socket)
+            resume_session_id = args.resume_session
+            skip_restore = False
+            # Boomerang: when :cd respawns the pane, this fresh process reads
+            # @startup_command and uses it to resume the cloned session.
+            try:
+                result = subprocess.run(
+                    ["tmux", "-L", tmux_socket, "display-message", "-p", "#{@startup_command}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                cmd = result.stdout.strip()
+            except Exception:
+                cmd = ""
+            if cmd:
+                try:
+                    subprocess.run(
+                        ["tmux", "-L", tmux_socket, "set-option", "-w", "@startup_command", ""],
+                        timeout=5
+                    )
+                except Exception:
+                    pass
+                import re as _re
+                m = _re.search(r'SESSION_ID="([^"]+)"', cmd)
+                if m:
+                    resume_session_id = m.group(1)
+                    skip_restore = True
+                cd_match = _re.search(r'cd "([^"]+)"', cmd)
+                if cd_match and Path(cd_match.group(1)).exists():
+                    os.chdir(cd_match.group(1))
+            new_window(profile=profile, resume_session_id=resume_session_id,
+                       socket=tmux_socket, skip_restore=skip_restore)
             sys.exit(0)
 
         if args.restart:

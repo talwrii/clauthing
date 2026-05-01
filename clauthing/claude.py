@@ -664,18 +664,19 @@ def cleanup_session_config(session_id, profile=None):
         except Exception as e:
             log(f"Error cleaning up session config: {e}", profile)
 
-def new_window(profile=None, resume_session_id=None, socket="clauthing"):
+def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_restore=False):
     """Create a new Claude window with session tracking.
-    
+
     Args:
         profile: Profile name (optional)
         resume_session_id: Optional session ID to resume instead of creating new
         socket: Tmux socket name (optional, defaults to "clauthing")
+        skip_restore: If True, skip restoring open sessions (used by boomerang loop)
     """
     log(f"new_window called: profile={profile}, resume_session_id={resume_session_id}, socket={socket}", profile)
-    
+
     state_file = get_runtime_tmux_state_file(profile)
-    
+
     # Get current window index
     try:
         result = run(
@@ -690,9 +691,9 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing"):
     except Exception as e:
         window_index = "unknown"
         log(f"Error getting window index: {e}", profile)
-    
+
     # If this is the first window (index 1, since base-index is 1), restore open sessions
-    if window_index == "1":
+    if window_index == "1" and not skip_restore:
         log("Window index is 1, checking for sessions to restore", profile)
         try:
             open_sessions = get_open_sessions(profile)

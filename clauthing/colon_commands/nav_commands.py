@@ -16,7 +16,7 @@ from pathlib import Path
 from clauthing.colon_command import command, send_tmux_message
 from clauthing.claude_utils import encode_project_path
 from clauthing.logging import log, run
-from clauthing.session import get_session_name, save_session_metadata
+from clauthing.session import get_session_name, save_session_metadata, mark_session_has_messages
 from clauthing.session_utils import session_has_messages
 from clauthing.rules import build_claude_md
 
@@ -216,51 +216,73 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
     encoded_current = encode_project_path(current_dir)
     encoded_target = encode_project_path(target_dir)
 
+    # Find the most recent session file with messages. If there isn't one
+    # (fresh window, no messages sent yet), skip cloning and just respawn fresh
+    # in the target dir — there's nothing useful to preserve.
+    new_session_id = None
     projects_dir = claude_data_dir / "projects" / encoded_current
-    if not projects_dir.exists():
-        ctx.message("❌ Claude cannot resume without a message. Send one first.")
-        return ctx.stop("❌ Claude cannot resume without a message. Send one first.")
+    if projects_dir.exists():
+        session_files = sorted(projects_dir.glob("*.jsonl"),
+                               key=lambda p: p.stat().st_mtime, reverse=True)
+        for sf in session_files:
+            if session_has_messages(sf):
+                old_session_id = sf.stem
+                new_session_id = str(uuid.uuid4())
+                target_projects_dir = claude_data_dir / "projects" / encoded_target
+                target_projects_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(sf, target_projects_dir / f"{new_session_id}.jsonl")
+                save_session_metadata(new_session_id, get_session_name(old_session_id), target_dir)
+                mark_session_has_messages(new_session_id)
+                carry_over_session_state(old_session_id, new_session_id)
+                break
 
-    session_files = sorted(projects_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not session_files:
-        ctx.message("❌ Claude cannot resume without a message. Send one first.")
-        return ctx.stop("❌ Claude cannot resume without a message. Send one first.")
-
-    source_file = session_files[0]
-    if not session_has_messages(source_file):
-        ctx.message("❌ Claude cannot resume without a message. Send one first.")
-        return ctx.stop("❌ Claude cannot resume without a message. Send one first.")
-
-    old_session_id = source_file.stem
-    new_session_id = str(uuid.uuid4())
     current_window_id = get_current_window_id(socket)
 
-    target_projects_dir = claude_data_dir / "projects" / encoded_target
-    target_projects_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(session_files[0], target_projects_dir / f"{new_session_id}.jsonl")
+    # Boomerang: set @startup_command, then respawn-pane to kill the running
+    # claude. ctx.stop() alone returns to the prompt — it doesn't exit claude
+    # — so the launcher loop would never pick @startup_command up. respawn-pane
+    # restarts the pane's default-command (boomerang.sh / `clauthing --new-window`)
+    # which then reads @startup_command at startup.
+    if new_session_id:
+        startup_cmd = f'SESSION_ID="{new_session_id}"; cd "{target_dir}"'
+    else:
+        # Fresh start in target dir — no session to resume.
+        startup_cmd = f'SESSION_ID=""; cd "{target_dir}"'
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "set-option", "-w", "@startup_command", startup_cmd],
+            check=True, timeout=5
+        )
+        log(f":cd set @startup_command for session {new_session_id} in {target_dir}")
+        # Capture pane id explicitly since the scheduler subprocess runs detached.
+        try:
+            r = subprocess.run(
+                ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+                capture_output=True, text=True, timeout=5
+            )
+            pane_id = r.stdout.strip()
+        except Exception:
+            pane_id = ""
+        target_arg = f"-t {pane_id}" if pane_id else ""
+        # start_new_session=True detaches from the pane's process group so that
+        # respawn-pane killing the pane doesn't also kill this scheduler.
+        subprocess.Popen([
+            "sh", "-c",
+            f"sleep 0.5 && tmux -L {socket} respawn-pane -k {target_arg} 2>/dev/null"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+           start_new_session=True)
+    except Exception as e:
+        log(f":cd failed to set @startup_command: {e} — falling back to window-open approach")
+        if new_session_id:
+            if socket.startswith("cl1-"):
+                claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
+                claude_bin = get_claude_binary(ctx.profile)
+                launcher = make_one_tab_launcher(target_dir, new_session_id, claude_config, claude_bin)
+                one_tab_relaunch(socket, launcher, current_window_id)
+            else:
+                open_new_multi_tab_window(socket, ctx.profile, target_dir, new_session_id, current_window_id)
 
-    save_session_metadata(new_session_id, get_session_name(old_session_id), target_dir)
-    carry_over_session_state(old_session_id, new_session_id)
-
-    if socket.startswith("cl1-"):
-        claude_config = os.environ.get('CLAUDE_CONFIG_DIR', str(claude_data_dir))
-        claude_bin = get_claude_binary(ctx.profile)
-
-        log(f"one-tab :cd - config={claude_config}, session={new_session_id}, target={target_dir}")
-        log(f"one-tab :cd - claude binary: {claude_bin}")
-
-        session_file = target_projects_dir / f"{new_session_id}.jsonl"
-        log(f"one-tab :cd - session file exists: {session_file.exists()}")
-
-        launcher = make_one_tab_launcher(target_dir, new_session_id, claude_config, claude_bin)
-        log(f"one-tab :cd - launcher script: {launcher}")
-
-        one_tab_relaunch(socket, launcher, current_window_id)
-        ctx.message(f"✓ Changing to {target_dir}...")
-        return ctx.stop(f"✓ Changing to {target_dir}")
-
-    open_new_multi_tab_window(socket, ctx.profile, target_dir, new_session_id, current_window_id)
-    ctx.message(f"✓ Moving to {target_dir}")
+    ctx.message(f"✓ Moving to {target_dir}...")
     return ctx.stop(f"✓ Moving to {target_dir}")
 
 

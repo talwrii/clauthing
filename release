@@ -6,6 +6,23 @@ set -o pipefail
 # Run tests before doing anything irreversible.
 "$(dirname "$0")/run-tests"
 
+# Run live tests if credentials are available.
+PY=$(pipx-python clauthing --venv)/bin/python
+CREDS=/tmp/creds.json
+if [ -f "$CREDS" ]; then
+    echo
+    echo "=== live_tests/test_cd_live.py ==="
+    if "$PY" live_tests/test_cd_live.py "$CREDS"; then
+        echo "✓ live_tests/test_cd_live.py"
+    else
+        echo "✗ live tests failed — aborting release"
+        exit 1
+    fi
+else
+    echo
+    echo "Skipping live tests (no $CREDS — run: creds-for-claude get > $CREDS)"
+fi
+
 git push
 
 # Extract version from pyproject.toml if it exists, otherwise fall back to setup.py

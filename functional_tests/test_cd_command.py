@@ -429,27 +429,26 @@ exec claude --resume {session_id}
     print("End-to-End (real colon_command):")
     
     def test_cd_e2e_one_tab_valid_dir():
-        """E2E: :cd to valid directory in one-tab mode creates launcher."""
+        """E2E: :cd in one-tab mode sets @startup_command (boomerang pattern)."""
         harness = CdTestHarness(one_tab_mode=True)
         harness.cleanup_launchers()
-        
+
         try:
             harness.start()
             harness.create_mock_session("/tmp", "test-session-e2e")
-            
+
             target = tempfile.mkdtemp(prefix="cd-e2e-target-")
             try:
-                # Call the real colon_command handler
                 input_data = json.dumps({
                     "prompt": f":cd {target}",
                     "cwd": "/tmp",
                     "session_id": "test-session-e2e"
                 })
-                
+
                 env = os.environ.copy()
                 env['CLAUDE_CONFIG_DIR'] = str(harness.claude_data_dir)
                 env['CLAUTHING_TMUX_SOCKET'] = harness.socket_name
-                
+
                 clauthing_bin = shutil.which("clauthing") or "clauthing"
                 result = subprocess.run(
                     [clauthing_bin, "--user-prompt-submit"],
@@ -459,20 +458,34 @@ exec claude --resume {session_id}
                     timeout=10,
                     env=env
                 )
-                
-                # Give it a moment
+
                 time.sleep(0.2)
-                
-                # In one-tab mode, should create launcher script
+
+                # Boomerang: no launcher file, no new window — @startup_command is set
                 launchers = harness.get_launcher_scripts()
-                assert_true(len(launchers) > 0,
-                           f"Should create launcher for valid dir. stdout={result.stdout}, stderr={result.stderr}")
-                
-                # Verify launcher content
-                content = launchers[0].read_text()
-                assert_true(target in content, f"Launcher should cd to target: {content}")
-                assert_true("--resume" in content and "claude" in content,
-                           f"Launcher should resume claude: {content}")
+                assert_true(len(launchers) == 0,
+                           f"Boomerang should not create launcher files: {launchers}")
+
+                # @startup_command should contain target dir and session id
+                opt_result = subprocess.run(
+                    ["tmux", "-L", harness.socket_name, "show-option", "-wv",
+                     "-t", "test:1", "@startup_command"],
+                    capture_output=True, text=True, timeout=5
+                )
+                startup_cmd = opt_result.stdout.strip()
+                assert_true(target in startup_cmd,
+                           f"@startup_command should contain target dir. Got: {startup_cmd!r}")
+                assert_true("SESSION_ID=" in startup_cmd,
+                           f"@startup_command should contain SESSION_ID. Got: {startup_cmd!r}")
+
+                # Window count should stay at 1 (replace in-place, not new window)
+                win_result = subprocess.run(
+                    ["tmux", "-L", harness.socket_name, "list-windows"],
+                    capture_output=True, text=True, timeout=5
+                )
+                windows = [l for l in win_result.stdout.strip().splitlines() if l]
+                assert_true(len(windows) == 1,
+                           f":cd should not open a new window. Windows: {windows!r}")
 
             finally:
                 shutil.rmtree(target, ignore_errors=True)

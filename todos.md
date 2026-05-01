@@ -1,0 +1,1 @@
+- kitty-claude: handle C-d (and other ungraceful window closes) gracefully — see state.md.

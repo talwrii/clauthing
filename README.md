@@ -72,6 +72,31 @@ To create the skill `blah` you can use `::skill blah`.
 ## Session Storage
 Session metadata is stored in `~/.local/state/clauthing/sessions/` and open sessions are tracked in `~/.config/clauthing/open-sessions.json` (for debugging purposes only - liable to change).
 
+## Testing
+
+Fast tests (no credentials needed):
+
+```bash
+./run-tests
+```
+
+Live tests run a real `claude` session and require a credential snapshot:
+
+```bash
+# One-time: open a browser OAuth flow and capture the resulting credentials
+creds-for-claude get > /tmp/creds.json
+
+# Verify the credentials work
+creds-for-claude check < /tmp/creds.json
+
+# Run the live :cd test
+python live_tests/test_cd_live.py
+```
+
+`creds-for-claude` is a separate tool (`pipx install creds-for-claude`) that drives a
+fresh `claude` through OAuth login in an isolated temp directory and captures the
+resulting tokens — so live tests never touch your main claude config.
+
 ## Contributing
 I'm vibe coding. You're vibe coding. I suggest you create a fork named clauthing-whatever and try to get people to use it. Send me your fork in a PR, describing what it does in as much detail as you can muster and I will have an LLM tell me what is going on and reimplement your idea.
 
