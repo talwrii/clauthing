@@ -27,6 +27,7 @@ from clauthing.claude import new_window
 from clauthing.colon_command import cleanup_expired_timed_permissions
 from clauthing.hooks import (
     handle_session_start,
+    handle_notification,
     handle_user_prompt_submit,
     handle_run_command,
     handle_stop,
@@ -43,30 +44,31 @@ from clauthing.session import (
 from clauthing.tmux_status import handle_tmux_status
 from clauthing.rules import save_rule, build_claude_md, list_rules, show_rule
 
-def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
-    """Regenerate the tmux.conf file and source it if tmux is running.
+def build_multi_tab_tmux_config(*, claude_data_dir, tmux_socket, instance_uuid,
+                                profile, clauthing_cmd, jail_dir,
+                                remain_on_exit=False, header_comment=""):
+    """Render the canonical multi-tab tmux config string.
 
-    This ensures hooks and bindings are updated when code changes.
+    Used by launch_clauthing (initial), handle_update_config, and
+    regenerate_tmux_config (called on :reload). Keeping these in sync means
+    `:reload` doesn't degrade the status bar / bindings vs the original
+    launch.
     """
-    if tmux_socket is None:
-        tmux_socket = f"clauthing-{profile}" if profile else "clauthing"
-
     clauthing_path = shutil.which("clauthing") or "clauthing"
     profile_arg = f"--profile {profile} " if profile else ""
-    jail_dir = f"/tmp/{tmux_socket}"
-    clauthing_cmd = f"'{clauthing_path}' {profile_arg}--session"
-
-    tmux_config_path = Path(config_dir) / "tmux.conf"
-    instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID", "")
-
-    config_content = f"""\
-# clauthing tmux config (auto-regenerated)
+    remain_config = ("# Keep panes open after command exits (for debugging)\n"
+                     "set -g remain-on-exit on\n") if remain_on_exit else ""
+    return f"""\
+{header_comment}# clauthing tmux config (isolated server)
 # Kill session when kitty window closes
 set -g destroy-unattached on
+{remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
+set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 
 # Set tmux socket name so hooks can find it
 set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_PROFILE "{profile or ''}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{clauthing_cmd}"
@@ -121,16 +123,65 @@ set -g allow-rename off
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 
-# Simple status bar (use status-format to avoid conflicts)
-set -g status on
+# 3-line status bar with custom window display
+set -g status-interval 5
+set -g status 3
 set -g status-style bg=colour235,fg=colour248
-set -g status-format[0] '#[align=left] #W #[align=right] #{{pane_current_path}} '
-set -gu status-format[1]
-set -gu status-format[2]
 
-# Mirror tmux window renames into clauthing state.
-set-hook -g window-renamed 'run-shell "clauthing {profile_arg}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log"'
+# Line 0: label (left) and path (right)
+set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [clauthing] #[align=right]#{{pane_current_path}} '
+
+# Lines 1 & 2: windows (split across two lines)
+set -g status-format[1] '#({clauthing_path} {profile_arg}--tmux-status 1)'
+set -g status-format[2] '#({clauthing_path} {profile_arg}--tmux-status 2)'
+
+# Refresh status bar on window changes
+set-hook -g after-select-window 'refresh-client -S'
+set-hook -g window-renamed 'run-shell "clauthing {profile_arg}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log" ; refresh-client -S'
+
+# Window status styling (for reference)
+set -g window-status-style bg=colour235,fg=colour248
+set -g window-status-current-style bg=colour39,fg=colour235,bold
+set -g window-status-format " #I:#W "
+set -g window-status-current-format " #I:#W "
 """
+
+
+def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
+    """Regenerate the tmux.conf file and source it if tmux is running.
+
+    This ensures hooks and bindings are updated when code changes. Uses the
+    same canonical config as launch_clauthing so reload doesn't degrade the
+    status bar or bindings.
+    """
+    if tmux_socket is None:
+        tmux_socket = f"clauthing-{profile}" if profile else "clauthing"
+
+    profile_arg = f"--profile {profile} " if profile else ""
+    jail_dir = f"/tmp/{tmux_socket}"
+    clauthing_cmd = f"clauthing {profile_arg}--new-window"
+
+    tmux_config_path = Path(config_dir) / "tmux.conf"
+    instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID", "")
+
+    # Use the same claude_data_dir the running tmux is already using.
+    claude_data_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if not claude_data_dir:
+        if profile:
+            claude_data_dir = str(Path.home() / ".config" / "clauthing"
+                                  / "other-profiles" / profile / "claude-data")
+        else:
+            claude_data_dir = str(Path.home() / ".config" / "clauthing" / "claude-data")
+
+    config_content = build_multi_tab_tmux_config(
+        claude_data_dir=claude_data_dir,
+        tmux_socket=tmux_socket,
+        instance_uuid=instance_uuid,
+        profile=profile,
+        clauthing_cmd=clauthing_cmd,
+        jail_dir=jail_dir,
+        header_comment="# auto-regenerated on :reload\n",
+    )
 
     tmux_config_path.write_text(config_content)
 
@@ -327,6 +378,16 @@ def setup_claude_config(config_dir):
                             }
                         ]
                     }
+                ],
+                "Notification": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{clauthing_path} --notification"
+                            }
+                        ]
+                    }
                 ]
             }
         }, indent=2))
@@ -357,6 +418,18 @@ def setup_claude_config(config_dir):
                             {
                                 "type": "command",
                                 "command": f"{clauthing_path} --pre-tool-use"
+                            }
+                        ]
+                    }
+                ]
+                modified = True
+            if "Notification" not in settings["hooks"]:
+                settings["hooks"]["Notification"] = [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{clauthing_path} --notification"
                             }
                         ]
                     }
@@ -654,8 +727,10 @@ while true; do
         continue
     fi
     if [ -n "$SESSION_ID" ]; then
+        tmux -L "$SOCKET" set-option -w @session_id "$SESSION_ID" 2>/dev/null
         "$CLAUDE_BIN" --resume "$SESSION_ID"
     else
+        tmux -L "$SOCKET" set-option -w @session_id '' 2>/dev/null
         "$CLAUDE_BIN"
     fi
     CMD=$(tmux -L "$SOCKET" display-message -p '#{{@startup_command}}' 2>/dev/null)
@@ -682,6 +757,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{session_config_dir}"
 # Set tmux socket name so hooks can find it
 set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_PROFILE "{profile or ''}"
 
 # Default command is claude
 set -g default-command "{claude_command}"
@@ -1010,99 +1086,17 @@ def handle_update_config(config_dir, claude_data_dir, profile, clauthing_cmd, tm
         kitty_config_path.unlink()
         print(f"Removed old {kitty_config_path}")
 
-    # Get clauthing executable for status bar
-    clauthing_path = shutil.which("clauthing") or "clauthing"
-    profile_arg = f"--profile {profile} " if profile else ""
-
     # Regenerate tmux config (preserve existing instance uuid from env)
     instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID", "")
-    remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
-    tmux_config_path.write_text(f"""\
-# clauthing tmux config (isolated server)
-# Kill session when kitty window closes
-set -g destroy-unattached on
-{remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
-set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
-
-# Set tmux socket name so hooks can find it
-set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
-set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
-
-# Default command is claude wrapper for session tracking
-set -g default-command "{clauthing_cmd}"
-
-# Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" {clauthing_cmd}
-
-# Also override default C-b c
-bind c new-window -c "{jail_dir}" {clauthing_cmd}
-
-# C-w closes current window, but not the last one
-bind -n C-w run-shell "clauthing --close-window"
-
-# C-v passthrough for paste
-bind -n C-v send-keys C-v
-
-# Alt-r to restart clauthing
-bind -n M-r send-keys ":reload" Enter
-bind -n M-R run-shell "clauthing {profile_arg}--restart"
-
-# Alt-l to reload (send :reload to pane)
-bind -n M-h previous-window
-bind -n M-l next-window
-
-# Alt-e to open session notes
-bind -n M-e run-shell "clauthing {f'--profile {profile} ' if profile else ''}--notes"
-
-# C-p for session picker (fuzzy find with popup)
-bind -n C-p display-popup -E -w 80% -h 60% "clauthing {f'--profile {profile} ' if profile else ''}--picker"
-
-# C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
-
-# M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
-
-# Some sensible defaults
-set -g mouse on
-set -g history-limit 10000
-set -g base-index 1
-setw -g pane-base-index 1
-
-# Easier window switching
-bind -n C-j previous-window
-bind -n C-k next-window
-bind -n M-o last-window
-
-# Disable automatic window renaming (we manage names manually)
-set -g automatic-rename off
-set -g allow-rename off
-
-# Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
-
-# 3-line status bar with custom window display
-set -g status-interval 5
-set -g status 3
-set -g status-style bg=colour235,fg=colour248
-
-# Line 0: label (left) and path (right)
-set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [clauthing] #[align=right]#{{pane_current_path}} '
-
-# Lines 1 & 2: windows (split across two lines)
-set -g status-format[1] '#({clauthing_path} {profile_arg}--tmux-status 1)'
-set -g status-format[2] '#({clauthing_path} {profile_arg}--tmux-status 2)'
-
-# Refresh status bar on window changes
-set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'run-shell "clauthing {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log" ; refresh-client -S'
-
-# Window status styling (for reference)
-set -g window-status-style bg=colour235,fg=colour248
-set -g window-status-current-style bg=colour39,fg=colour235,bold
-set -g window-status-format " #I:#W "
-set -g window-status-current-format " #I:#W "
-""")
+    tmux_config_path.write_text(build_multi_tab_tmux_config(
+        claude_data_dir=claude_data_dir,
+        tmux_socket=tmux_socket,
+        instance_uuid=instance_uuid,
+        profile=profile,
+        clauthing_cmd=clauthing_cmd,
+        jail_dir=jail_dir,
+        remain_on_exit=remain_on_exit,
+    ))
     print(f"✓ Created {tmux_config_path}")
 
     # Regenerate kitty config
@@ -1143,6 +1137,7 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 # Set tmux socket name so hooks can find it
 set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
+set-environment -g CLAUTHING_PROFILE "{profile or ''}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{clauthing_cmd}"
@@ -1351,102 +1346,21 @@ def launch_clauthing(config_dir, profile, clauthing_cmd, tmux_socket, remain_on_
 
     # Get clauthing executable for status bar
     clauthing_path = shutil.which("clauthing") or "clauthing"
-    profile_arg = f"--profile {profile} " if profile else ""
-
     # Always regenerate tmux config (it's ephemeral, not user-editable)
-    remain_config = "# Keep panes open after command exits (for debugging)\nset -g remain-on-exit on\n" if remain_on_exit else ""
-    tmux_config_path.write_text(f"""\
-# ============================================================================
-# DO NOT MODIFY THIS FILE - IT IS AUTO-GENERATED ON EVERY LAUNCH
-# This file is regenerated each time clauthing starts
-# To customize: Use hooks or environment variables (future feature)
-# ============================================================================
-#
-# clauthing tmux config (isolated server)
-# Kill session when kitty window closes
-set -g destroy-unattached on
-{remain_config}# Set CLAUDE_CONFIG_DIR for isolated Claude data
-set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
-
-# Set tmux socket name so hooks can find it
-set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
-set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
-
-# Default command is claude wrapper for session tracking
-set -g default-command "{clauthing_cmd}"
-
-# Bind C-n directly (no prefix) to open new window with claude in jail
-bind -n C-n new-window -c "{jail_dir}" {clauthing_cmd}
-
-# Also override default C-b c
-bind c new-window -c "{jail_dir}" {clauthing_cmd}
-
-# C-w closes current window, but not the last one
-bind -n C-w run-shell "clauthing --close-window"
-
-# C-v passthrough for paste
-bind -n C-v send-keys C-v
-
-# Alt-r to restart clauthing
-bind -n M-r send-keys ":reload" Enter
-bind -n M-R run-shell "clauthing {profile_arg}--restart"
-
-# Alt-l to reload (send :reload to pane)
-bind -n M-h previous-window
-bind -n M-l next-window
-
-# Alt-e to open session notes
-bind -n M-e run-shell "clauthing {f'--profile {profile} ' if profile else ''}--notes"
-
-# C-p for session picker (fuzzy find) - use popup for interactive fzf
-bind -n C-p display-popup -E -w 80% -h 60% "clauthing {f'--profile {profile} ' if profile else ''}--picker"
-
-# C-q: queue a command for when Claude finishes responding
-bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
-
-# M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
-
-# Some sensible defaults
-set -g mouse on
-set -g history-limit 10000
-set -g base-index 1
-setw -g pane-base-index 1
-
-# Easier window switching
-bind -n C-j previous-window
-bind -n C-k next-window
-bind -n M-o last-window
-
-# Disable automatic window renaming (we manage names manually)
-set -g automatic-rename off
-set -g allow-rename off
-
-# Bind M-n to prompt for window name and update session metadata
-bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
-
-# 3-line status bar with custom window display
-set -g status-interval 5
-set -g status 3
-set -g status-style bg=colour235,fg=colour248
-
-# Line 0: label (left) and path (right)
-set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [clauthing] #[align=right]#{{pane_current_path}} '
-
-# Lines 1 & 2: windows (split across two lines)
-set -g status-format[1] '#({clauthing_path} {profile_arg}--tmux-status 1)'
-set -g status-format[2] '#({clauthing_path} {profile_arg}--tmux-status 2)'
-
-# Refresh status bar on window changes
-set-hook -g after-select-window 'refresh-client -S'
-set-hook -g window-renamed 'run-shell "clauthing {f'--profile {profile} ' if profile else ''}--socket {tmux_socket} --window-id #{{hook_window}} --rename \\"#W\\" 2>&1 | tee -a /tmp/cl-rename-hook.log" ; refresh-client -S'
-
-# Window status styling (for reference)
-set -g window-status-style bg=colour235,fg=colour248
-set -g window-status-current-style bg=colour39,fg=colour235,bold
-set -g window-status-format " #I:#W "
-set -g window-status-current-format " #I:#W "
-""")
+    tmux_config_path.write_text(build_multi_tab_tmux_config(
+        claude_data_dir=claude_data_dir,
+        tmux_socket=tmux_socket,
+        instance_uuid=instance_uuid,
+        profile=profile,
+        clauthing_cmd=clauthing_cmd,
+        jail_dir=jail_dir,
+        remain_on_exit=remain_on_exit,
+        header_comment=(
+            "# ============================================================================\n"
+            "# DO NOT MODIFY THIS FILE - IT IS AUTO-GENERATED ON EVERY LAUNCH\n"
+            "# ============================================================================\n"
+        ),
+    ))
     print(f"Created tmux config at {tmux_config_path}")
 
     # Always regenerate kitty config (it's ephemeral, not user-editable)
@@ -1614,6 +1528,7 @@ def main():
         parser.add_argument("--user-prompt-submit", action="store_true", help="Handle UserPromptSubmit hook (internal use)")
         parser.add_argument("--stop", action="store_true", help="Handle Stop hook (internal use)")
         parser.add_argument("--pre-tool-use", action="store_true", help="Handle PreToolUse hook (internal use)")
+        parser.add_argument("--notification", action="store_true", help="Handle Notification hook (internal use)")
         parser.add_argument("--new-window", action="store_true", help="Create new window with session tracking (internal use)")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
         parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
@@ -1884,6 +1799,10 @@ def main():
 
         if args.pre_tool_use:
             handle_pre_tool_use()
+            sys.exit(0)
+
+        if args.notification:
+            handle_notification()
             sys.exit(0)
 
         if args.new_window:

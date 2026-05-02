@@ -76,12 +76,44 @@ def cmd_sessions(ctx):
 
 @command(':resume')
 def cmd_resume(ctx):
-    arg = ctx.args.strip()
-    if not arg:
-        return ctx.stop("Usage: :resume <number|session-id>")
+    from clauthing.claude import get_recent_sessions, new_window
+    from datetime import datetime
+    import tempfile
 
-    if arg.isdigit():
-        from clauthing.claude import get_recent_sessions
+    arg = ctx.args.strip()
+    target_session_id = None
+
+    if not arg:
+        sessions = get_recent_sessions(ctx.profile, limit=20)
+        if not sessions:
+            return ctx.stop("No recent sessions found")
+
+        fzf_lines = []
+        for sess in sessions:
+            sid = sess['session_id']
+            title = sess.get('title') or sid[:8]
+            cwd = sess.get('cwd') or '?'
+            mtime = datetime.fromtimestamp(sess['last_modified']).strftime('%Y-%m-%d %H:%M')
+            last_msg = (sess.get('last_message') or '').replace('\n', ' ').strip()
+            if len(last_msg) > 60:
+                last_msg = last_msg[:60] + '...'
+            fzf_lines.append(f"{sid}\t{title}\t{cwd}\t{mtime}\t{last_msg}")
+
+        tmp_in = Path(tempfile.mktemp())
+        tmp_out = Path(tempfile.mktemp())
+        tmp_in.write_text("\n".join(fzf_lines))
+        subprocess.run([
+            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "80%", "-h", "60%",
+            f"cat {tmp_in} | fzf --delimiter='\\t' --with-nth=2,3,4,5 "
+            f"--header='Select session to resume' > {tmp_out}"
+        ])
+        sel = tmp_out.read_text().strip() if tmp_out.exists() else ""
+        tmp_in.unlink(missing_ok=True)
+        tmp_out.unlink(missing_ok=True)
+        if not sel:
+            return ctx.stop("Cancelled")
+        target_session_id = sel.split('\t')[0]
+    elif arg.isdigit():
         sessions = get_recent_sessions(ctx.profile, limit=10)
         index = int(arg) - 1
         if 0 <= index < len(sessions):
@@ -91,9 +123,72 @@ def cmd_resume(ctx):
     else:
         target_session_id = arg
 
-    from clauthing.claude import new_window
-    new_window(profile=ctx.profile, resume_session_id=target_session_id, socket=ctx.socket)
-    ctx.message("✓ Resuming session")
+    # Look up the session's stored path / name from metadata so the new
+    # window opens in the right cwd with the right title.
+    state_dir = get_state_dir()
+    meta_file = state_dir / "sessions" / f"{target_session_id}.json"
+    session_path = ctx.cwd
+    session_name = target_session_id[:8]
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text())
+            session_path = meta.get("path", session_path)
+            if meta.get("name"):
+                session_name = meta["name"]
+        except Exception:
+            pass
+
+    if ctx.socket.startswith("cl1-"):
+        # One-tab mode: only one window allowed, so boomerang-replace via
+        # @startup_command + respawn-pane (same flow as :cd).
+        # Include rename-window so the title reflects the resumed session.
+        startup_cmd = (
+            f'tmux -L {ctx.socket} rename-window "{session_name}" 2>/dev/null; '
+            f'SESSION_ID="{target_session_id}"; cd "{session_path}"'
+        )
+        try:
+            subprocess.run(
+                ["tmux", "-L", ctx.socket, "set-option", "-w",
+                 "@startup_command", startup_cmd],
+                check=True, timeout=5,
+            )
+            r = subprocess.run(
+                ["tmux", "-L", ctx.socket, "display-message", "-p", "#{pane_id}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pane_id = r.stdout.strip()
+            target_arg = f"-t {pane_id}" if pane_id else ""
+            subprocess.Popen(
+                ["sh", "-c",
+                 f"sleep 0.5 && tmux -L {ctx.socket} respawn-pane -k {target_arg} 2>/dev/null"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            log(f":resume one-tab boomerang failed: {e}", ctx.profile)
+            return ctx.stop(f"❌ Resume failed: {e}")
+    else:
+        # Multi-tab mode: open a new tmux window running clauthing --new-window
+        # --resume-session. The new window's clauthing process sets @session_id
+        # itself; we don't call new_window() here (which would clobber the
+        # current window and trip the window-1 restore logic).
+        clauthing_path = shutil.which("clauthing") or "clauthing"
+        cmd_parts = [clauthing_path]
+        if ctx.profile:
+            cmd_parts.extend(["--profile", ctx.profile])
+        cmd_parts.extend(["--new-window", "--resume-session", target_session_id])
+        cmd_str = " ".join(cmd_parts)
+        try:
+            subprocess.run(
+                ["tmux", "-L", ctx.socket, "new-window",
+                 "-c", session_path, "-n", session_name, cmd_str],
+                check=True, timeout=5,
+            )
+        except Exception as e:
+            log(f":resume multi-tab new-window failed: {e}", ctx.profile)
+            return ctx.stop(f"❌ Resume failed: {e}")
+
+    ctx.message(f"✓ Resuming {session_name}")
     return ctx.stop(f"✓ Opening session {target_session_id[:8]}... in new window")
 
 
@@ -197,6 +292,63 @@ def cmd_resume_new(ctx):
     cwd_msg = f" in {target_cwd}" if target_cwd else ""
     ctx.message(f"✓ Spawning new window{cwd_msg[:30]}")
     return ctx.stop(f"✓ Resuming {target_session_id[:8]}...{cwd_msg} in new clauthing window")
+
+
+@command(':waiting')
+def cmd_waiting(ctx):
+    """Switch to the most recent multi-tab window that's waiting for attention."""
+    from clauthing.hooks import _load_attention, clear_attention
+    from datetime import datetime
+
+    data = _load_attention(ctx.profile)
+    if not data:
+        return ctx.stop("✓ Nothing waiting")
+
+    # Sort by ts desc, prefer multi-tab (default-socket) entries
+    items = sorted(data.items(), key=lambda kv: kv[1].get('ts', 0), reverse=True)
+    multi = [(sid, info) for sid, info in items
+             if info.get('socket') and not info.get('socket', '').startswith('cl1-')]
+
+    if not multi:
+        # Show what's waiting even if we can't switch
+        lines = ["Waiting (one-tab — switch manually):"]
+        for sid, info in items[:5]:
+            ts = datetime.fromtimestamp(info.get('ts', 0)).strftime('%H:%M:%S')
+            lines.append(f"  [{ts}] {info.get('title') or sid[:8]} — {info.get('path') or '?'}")
+        return ctx.stop("\n".join(lines))
+
+    target_sid, target_info = multi[0]
+    target_socket = target_info.get('socket') or 'default'
+
+    # Find window_id by querying tmux user-option @session_id on each window
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+            capture_output=True, text=True, timeout=5
+        )
+    except Exception as e:
+        return ctx.stop(f"❌ tmux query failed: {e}")
+
+    target_wid = None
+    for line in result.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == target_sid:
+            target_wid = parts[0]
+            break
+
+    if not target_wid:
+        clear_attention(target_sid, ctx.profile)
+        return ctx.stop(f"❌ Window for {target_sid[:8]} not found — cleared")
+
+    try:
+        subprocess.run(["tmux", "-L", target_socket, "select-window", "-t", target_wid],
+                       check=True, timeout=5)
+    except subprocess.CalledProcessError:
+        return ctx.stop(f"❌ Could not switch to {target_wid}")
+
+    title = target_info.get('title') or target_sid[:8]
+    ctx.message(f"→ {title}")
+    return ctx.stop(f"→ Switched to {title} ({target_wid})")
 
 
 @command(':spawn')

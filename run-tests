@@ -34,7 +34,9 @@ for f in \
     functional_tests/test_cd_command.py \
     functional_tests/test_claude_config.py \
     functional_tests/test_picker.py \
-    functional_tests/test_tab_switching.py; do
+    functional_tests/test_tab_switching.py \
+    functional_tests/test_auth_propagation.py \
+    functional_tests/test_resume.py; do
     run_suite "$f" "$PY" "$f"
 done
 

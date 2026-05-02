@@ -375,6 +375,32 @@ def cmd_reload(ctx):
         window_name = None
         log(f"Error updating window: {e}", profile)
 
+    # Boomerang: replace in-place via @startup_command + respawn-pane.
+    startup_cmd = f'SESSION_ID="{session_id}"; cd "{current_dir}"'
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "set-option", "-w", "@startup_command", startup_cmd],
+            check=True, timeout=5
+        )
+        try:
+            r = subprocess.run(
+                ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+                capture_output=True, text=True, timeout=5
+            )
+            pane_id = r.stdout.strip()
+        except Exception:
+            pane_id = ""
+        target_arg = f"-t {pane_id}" if pane_id else ""
+        subprocess.Popen([
+            "sh", "-c",
+            f"sleep 0.5 && tmux -L {socket} respawn-pane -k {target_arg} 2>/dev/null"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+           start_new_session=True)
+        ctx.message("✓ Reloading...")
+        return ctx.stop("✓ Reloading...")
+    except Exception as e:
+        log(f":reload failed to set @startup_command: {e} — falling back", profile)
+
     if socket.startswith("cl1-"):
         claude_bin = get_claude_binary(profile)
         launcher = make_one_tab_launcher(current_dir, session_id, str(session_config_dir), claude_bin)

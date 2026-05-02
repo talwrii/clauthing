@@ -874,10 +874,13 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
     # id so the window slot is preserved without claude failing on
     # "No conversation found".
     from clauthing.session import session_metadata_has_messages
+    # Honor configured claude_binary (so tests can swap in a fake claude)
+    from clauthing.main import get_claude_binary
+    claude_bin = get_claude_binary(profile)
     if resume_session_id and session_metadata_has_messages(resume_session_id):
-        cmd = ["claude", "--resume", session_id]
+        cmd = [claude_bin, "--resume", session_id]
     else:
-        cmd = ["claude", "--session-id", session_id]
+        cmd = [claude_bin, "--session-id", session_id]
 
     log(f"Starting claude: {' '.join(cmd)}", profile)
 

@@ -480,6 +480,287 @@ def run_test():
 
     runner.run_test("cd_changes_directory_multi_tab", test_cd_changes_directory_multi_tab)
 
+    def test_reload_preserves_messages_one_tab():
+        """
+        :reload in one-tab mode should replace the pane in-place AND preserve
+        all previous messages (the resumed session shows the conversation).
+        """
+        rl_profile = f"reload-live-{int(time.time())}"
+        child = None
+        socket = None
+
+        try:
+            clauthing_bin = shutil.which("clauthing") or "clauthing"
+            t0 = time.time()
+
+            child = pexpect.spawn(
+                clauthing_bin,
+                ["--no-kitty", "--one-tab",
+                 "--inject-credentials", str(CREDS_PATH),
+                 "--profile", rl_profile],
+                encoding="utf-8",
+                timeout=120,
+                dimensions=(50, 200),
+            )
+            child.logfile_read = sys.stderr
+
+            print(f"\n  [reload] waiting for tmux socket...", flush=True)
+            socket = find_socket(rl_profile, after_time=t0, timeout=15)
+            print(f"  [reload] socket: {socket}", flush=True)
+            time.sleep(3)
+
+            print("  [reload] waiting for claude prompt...", flush=True)
+            wait_for_claude_prompt(socket, timeout=60)
+            time.sleep(1)
+
+            claude_config = get_claude_config(socket, rl_profile)
+            cwd = tmux(socket, "display-message", "-p", "#{pane_current_path}")
+
+            # Send a unique message to look for after reload
+            marker = f"reload-marker-{int(time.time())}"
+            print(f"  [reload] sending marker message: {marker}", flush=True)
+            send_keys(socket, f"reply with the single word '{marker}'", literal=True)
+            send_keys(socket, "Enter")
+
+            assert claude_config, "CLAUDE_CONFIG_DIR not found"
+            print("  [reload] waiting for session file with messages...", flush=True)
+            find_session_file_with_messages(claude_config, cwd, timeout=90)
+
+            # Wait for claude to respond (so message + response are in transcript)
+            def marker_seen():
+                return marker in capture_pane(socket).lower()
+            try:
+                wait_for(marker_seen, timeout=60, poll=1, label="marker in response")
+            except TimeoutError:
+                pass
+            time.sleep(2)
+
+            before_windows = list_windows(socket)
+            before_count = len(before_windows)
+            print(f"  [reload] before :reload — windows: {before_windows}", flush=True)
+
+            # ── :reload ──────────────────────────────────────────────────────
+            print("  [reload] sending :reload", flush=True)
+            send_keys(socket, ":reload", literal=True)
+            send_keys(socket, "Enter")
+
+            # Boomerang replaces in-place — wait for claude prompt to come back
+            print("  [reload] waiting for claude prompt after reload...", flush=True)
+            time.sleep(3)
+            try:
+                wait_for_claude_prompt(socket, timeout=60)
+            except TimeoutError:
+                pane = capture_pane(socket)
+                print(f"  [reload] TIMEOUT pane:\n{pane}", flush=True)
+                raise
+            time.sleep(2)
+
+            after_windows = list_windows(socket)
+            print(f"  [reload] after :reload — windows: {after_windows}", flush=True)
+            assert_true(len(after_windows) == before_count,
+                       f":reload should not open a new window. Before: {before_count}, after: {len(after_windows)}")
+
+            # Previous message should be visible (resumed session)
+            pane = capture_pane(socket)
+            assert_true(marker.lower() in pane.lower(),
+                       f"Resumed session should show previous marker '{marker}' in pane")
+            print(f"  [reload] confirmed: marker '{marker}' visible after reload", flush=True)
+
+        finally:
+            if socket:
+                try:
+                    tmux(socket, "kill-server", check=False)
+                except Exception:
+                    pass
+            if child:
+                try:
+                    child.close(force=True)
+                except Exception:
+                    pass
+
+    runner.run_test("reload_preserves_messages_one_tab", test_reload_preserves_messages_one_tab)
+
+    def test_reload_no_messages_one_tab():
+        """
+        :reload should work in a fresh window with no messages sent yet.
+        After reload, claude should still come back to a working prompt.
+        """
+        rl_profile = f"reload-empty-{int(time.time())}"
+        child = None
+        socket = None
+
+        try:
+            clauthing_bin = shutil.which("clauthing") or "clauthing"
+            t0 = time.time()
+
+            child = pexpect.spawn(
+                clauthing_bin,
+                ["--no-kitty", "--one-tab",
+                 "--inject-credentials", str(CREDS_PATH),
+                 "--profile", rl_profile],
+                encoding="utf-8",
+                timeout=120,
+                dimensions=(50, 200),
+            )
+            child.logfile_read = sys.stderr
+
+            print(f"\n  [reload-empty] waiting for tmux socket...", flush=True)
+            socket = find_socket(rl_profile, after_time=t0, timeout=15)
+            print(f"  [reload-empty] socket: {socket}", flush=True)
+            time.sleep(3)
+
+            print("  [reload-empty] waiting for claude prompt...", flush=True)
+            wait_for_claude_prompt(socket, timeout=60)
+            time.sleep(1)
+
+            before_count = len(list_windows(socket))
+
+            # No message sent — go straight to :reload
+            print("  [reload-empty] sending :reload (no prior messages)", flush=True)
+            send_keys(socket, ":reload", literal=True)
+            send_keys(socket, "Enter")
+
+            print("  [reload-empty] waiting for claude prompt after reload...", flush=True)
+            time.sleep(3)
+            try:
+                wait_for_claude_prompt(socket, timeout=60)
+            except TimeoutError:
+                pane = capture_pane(socket)
+                print(f"  [reload-empty] TIMEOUT pane:\n{pane}", flush=True)
+                raise
+            time.sleep(1)
+
+            after_windows = list_windows(socket)
+            assert_true(len(after_windows) == before_count,
+                       f":reload should not open a new window. Before: {before_count}, after: {len(after_windows)}")
+            print(f"  [reload-empty] confirmed: claude prompt back, {len(after_windows)} window(s)", flush=True)
+
+        finally:
+            if socket:
+                try:
+                    tmux(socket, "kill-server", check=False)
+                except Exception:
+                    pass
+            if child:
+                try:
+                    child.close(force=True)
+                except Exception:
+                    pass
+
+    runner.run_test("reload_no_messages_one_tab", test_reload_no_messages_one_tab)
+
+    def test_reload_preserves_messages_multi_tab():
+        """
+        :reload in multi-tab mode should replace the pane in-place AND keep
+        all other windows alive. Messages from before reload remain visible.
+        """
+        rl_profile = f"reload-mt-live-{int(time.time())}"
+        socket = f"clauthing-{rl_profile}"
+        child = None
+
+        try:
+            clauthing_bin = shutil.which("clauthing") or "clauthing"
+
+            child = pexpect.spawn(
+                clauthing_bin,
+                ["--no-kitty",
+                 "--inject-credentials", str(CREDS_PATH),
+                 "--profile", rl_profile],
+                encoding="utf-8",
+                timeout=120,
+                dimensions=(50, 200),
+            )
+            child.logfile_read = sys.stderr
+
+            print(f"\n  [reload-mt] waiting for tmux session ({socket})...", flush=True)
+            def session_exists():
+                r = subprocess.run(["tmux", "-L", socket, "has-session"],
+                                   capture_output=True)
+                return r.returncode == 0
+            wait_for(session_exists, timeout=15, label="tmux session")
+            time.sleep(2)
+
+            print("  [reload-mt] waiting for claude prompt...", flush=True)
+            wait_for_claude_prompt(socket, timeout=60)
+            time.sleep(1)
+
+            cwd = tmux(socket, "display-message", "-p", "#{pane_current_path}")
+            claude_config = get_claude_config(socket, rl_profile)
+
+            # Send a marker message
+            marker = f"reload-mt-marker-{int(time.time())}"
+            print(f"  [reload-mt] sending marker: {marker}", flush=True)
+            send_keys(socket, f"reply with the single word '{marker}'", literal=True)
+            send_keys(socket, "Enter")
+
+            assert claude_config, "CLAUDE_CONFIG_DIR not found"
+            print("  [reload-mt] waiting for session file...", flush=True)
+            find_session_file_with_messages(claude_config, cwd, timeout=90)
+
+            def marker_seen():
+                return marker in capture_pane(socket).lower()
+            try:
+                wait_for(marker_seen, timeout=60, poll=1, label="marker in response")
+            except TimeoutError:
+                pass
+            time.sleep(2)
+
+            # Open a second window so we can verify :reload doesn't kill it
+            print("  [reload-mt] opening 2nd window via tmux new-window...", flush=True)
+            jail_dir = f"/tmp/clauthing-{UID}"
+            tmux(socket, "new-window", "-c", jail_dir,
+                 f"{clauthing_bin} --profile {rl_profile} --new-window")
+            wait_for(lambda: len(list_windows(socket)) >= 2, timeout=15, poll=0.5,
+                     label="2nd window")
+            time.sleep(2)
+            # Switch back to window 1 (where the marker was sent)
+            tmux(socket, "select-window", "-t", "1")
+            time.sleep(1)
+
+            before_windows = list_windows(socket)
+            before_count = len(before_windows)
+            print(f"  [reload-mt] before :reload — windows: {before_windows}", flush=True)
+            assert_true(before_count == 2, f"setup expected 2 windows, got {before_count}")
+
+            # ── :reload ──────────────────────────────────────────────────────
+            print("  [reload-mt] sending :reload (in window 1)", flush=True)
+            send_keys(socket, ":reload", literal=True)
+            send_keys(socket, "Enter")
+
+            print("  [reload-mt] waiting for claude prompt after reload...", flush=True)
+            time.sleep(3)
+            try:
+                wait_for_claude_prompt(socket, timeout=90)
+            except TimeoutError:
+                pane = capture_pane(socket)
+                wins = list_windows(socket)
+                print(f"  [reload-mt] TIMEOUT windows={wins}\npane:\n{pane}", flush=True)
+                raise
+            time.sleep(2)
+
+            after_windows = list_windows(socket)
+            print(f"  [reload-mt] after :reload — windows: {after_windows}", flush=True)
+            assert_true(len(after_windows) == before_count,
+                       f":reload should not change window count. Before: {before_count}, after: {len(after_windows)}")
+
+            pane = capture_pane(socket)
+            assert_true(marker.lower() in pane.lower(),
+                       f"Resumed session should show marker '{marker}' after reload")
+            print(f"  [reload-mt] confirmed: marker visible after reload", flush=True)
+
+        finally:
+            try:
+                subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True, timeout=5)
+            except Exception:
+                pass
+            if child:
+                try:
+                    child.close(force=True)
+                except Exception:
+                    pass
+
+    runner.run_test("reload_preserves_messages_multi_tab", test_reload_preserves_messages_multi_tab)
+
     return runner.summary()
 
 

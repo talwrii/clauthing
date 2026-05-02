@@ -31,6 +31,60 @@ from clauthing.session import (
     mark_session_has_messages,
     remove_open_session,
 )
+from clauthing.events import get_runtime_dir, load_windows
+
+
+def _attention_file(profile=None):
+    return get_runtime_dir(profile) / "attention.json"
+
+
+def _load_attention(profile=None):
+    f = _attention_file(profile)
+    if f.exists():
+        try:
+            return json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_attention(data, profile=None):
+    _attention_file(profile).write_text(json.dumps(data, indent=2))
+
+
+def mark_attention(session_id, profile=None):
+    if not session_id:
+        return
+    data = _load_attention(profile)
+    win = load_windows(profile).get(session_id, {})
+    data[session_id] = {
+        "ts": time.time(),
+        "title": win.get("title"),
+        "socket": win.get("socket"),
+        "path": win.get("path"),
+    }
+    _save_attention(data, profile)
+
+
+def clear_attention(session_id, profile=None):
+    if not session_id:
+        return
+    data = _load_attention(profile)
+    if session_id in data:
+        del data[session_id]
+        _save_attention(data, profile)
+
+
+def handle_notification():
+    """Handle Notification hook — Claude wants the user's attention."""
+    try:
+        input_data = json.loads(sys.stdin.read())
+        session_id = input_data.get('session_id')
+        profile = os.environ.get('CLAUTHING_PROFILE')
+        mark_attention(session_id, profile)
+    except Exception as e:
+        with open("/tmp/clauthing-notification-hook-error.log", "a") as f:
+            f.write(f"Notification hook error: {str(e)}\n")
 
 
 def handle_user_prompt_submit(claude_data_dir=None):
@@ -48,6 +102,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
         session_id = input_data.get('session_id')
         if session_id:
             profile = os.environ.get('CLAUTHING_PROFILE')
+            clear_attention(session_id, profile)
             cwd = input_data.get('cwd', os.getcwd())
             try:
                 claude_pid = None
@@ -168,7 +223,15 @@ def handle_session_start():
             print(json.dumps({"continue": True}))
             return
 
-        profile = os.environ.get('CLAUTHING_PROFILE')
+        profile = os.environ.get('CLAUTHING_PROFILE') or None
+        # Snapshot auth fields from the session's .claude.json into
+        # claude-auth.json early — so future sessions / reloads can repopulate
+        # auth even if claude is killed before exiting cleanly.
+        try:
+            from clauthing.claude import save_auth_from_session
+            save_auth_from_session(session_id, profile)
+        except Exception as _e:
+            log(f"SessionStart save_auth failed: {_e}", profile)
         if profile:
             base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
         else:
@@ -229,8 +292,16 @@ def handle_stop():
     try:
         input_data = json.loads(sys.stdin.read())
         session_id = input_data.get('session_id')
+        profile = os.environ.get('CLAUTHING_PROFILE') or None
         if session_id:
+            clear_attention(session_id, profile)
             save_response_duration(session_id)
+            # Snapshot auth so :reload / restarts can repopulate without OAuth.
+            try:
+                from clauthing.claude import save_auth_from_session
+                save_auth_from_session(session_id, profile)
+            except Exception as _e:
+                log(f"Stop save_auth failed: {_e}", profile)
             # NB: do NOT remove from open_sessions here. open_sessions
             # means "window is worth restoring", not "currently mid-response".
             # Removal happens when the user explicitly closes the window
@@ -265,6 +336,9 @@ def handle_pre_tool_use():
     """Handle PreToolUse hook - deny expired timed permissions."""
     try:
         input_data = json.loads(sys.stdin.read())
+        session_id = input_data.get('session_id')
+        if session_id:
+            clear_attention(session_id, os.environ.get('CLAUTHING_PROFILE'))
         tool_name = input_data.get('tool_name', '')
         tool_input = input_data.get('tool_input', {})
 
