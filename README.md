@@ -22,6 +22,11 @@ Other stuff.
 
 Planned features. Use arbitrary terminals rather than kitty.
 
+## Changelog
+
+1.0.0 - Basic packaging up of one I am using. I was mostly using --one-tab
+1.1.0 - Fixed a bunch of bugs in multi-window setting since I am using it. `:resume`, `:cd`, got multi logging working. End-to-end tests
+
 ## Motivation
 claude code has a number of features that that I want which are absent from the claude desktop app. Mostly things related to programmatic access to messages, hooks surrounding messages being sent, and the ability to run deterministic commands.
 
