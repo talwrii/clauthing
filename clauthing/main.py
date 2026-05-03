@@ -69,6 +69,8 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 set-environment -g CLAUTHING_PROFILE "{profile or ''}"
+set-environment -g CLAUTHING_EDIT_MCP "{os.environ.get('CLAUTHING_EDIT_MCP', '1')}"
+set-environment -g CLAUTHING_ALLOWED_COMMANDS "{os.environ.get('CLAUTHING_ALLOWED_COMMANDS', '')}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{clauthing_cmd}"
@@ -272,6 +274,38 @@ def get_state_dir():
         state_dir = Path.home() / ".local" / "state" / "clauthing"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir
+
+def get_config(profile=None):
+    """Read config.json for the given profile. Returns {} on missing/invalid."""
+    if profile:
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "clauthing"
+    config_file = config_dir / "config.json"
+    if config_file.exists():
+        try:
+            return json.loads(config_file.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def get_edit_mcp_enabled(profile=None):
+    """Whether the edit-mcp server should be auto-included in sessions.
+    Defaults to True. Can be overridden by config.edit_mcp."""
+    return bool(get_config(profile).get("edit_mcp", True))
+
+
+def get_allowed_commands(profile=None):
+    """Resolve the auto-allow list of colon commands. Defaults are extended
+    (not replaced) by config.allowed_commands. Default list lives in
+    command_mcp_server.DEFAULT_ALLOWED_COMMANDS so the MCP can fall back to it
+    independently."""
+    from clauthing.command_mcp_server import DEFAULT_ALLOWED_COMMANDS
+    cfg = get_config(profile).get("allowed_commands")
+    extra = list(cfg) if isinstance(cfg, list) else []
+    return list(DEFAULT_ALLOWED_COMMANDS) + extra
+
 
 def get_claude_binary(profile=None):
     """Get the path to the claude binary from config."""
@@ -758,6 +792,8 @@ set-environment -g CLAUDE_CONFIG_DIR "{session_config_dir}"
 set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 set-environment -g CLAUTHING_PROFILE "{profile or ''}"
+set-environment -g CLAUTHING_EDIT_MCP "{os.environ.get('CLAUTHING_EDIT_MCP', '1')}"
+set-environment -g CLAUTHING_ALLOWED_COMMANDS "{os.environ.get('CLAUTHING_ALLOWED_COMMANDS', '')}"
 
 # Default command is claude
 set -g default-command "{claude_command}"
@@ -1138,6 +1174,8 @@ set-environment -g CLAUDE_CONFIG_DIR "{claude_data_dir}"
 set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 set-environment -g CLAUTHING_PROFILE "{profile or ''}"
+set-environment -g CLAUTHING_EDIT_MCP "{os.environ.get('CLAUTHING_EDIT_MCP', '1')}"
+set-environment -g CLAUTHING_ALLOWED_COMMANDS "{os.environ.get('CLAUTHING_ALLOWED_COMMANDS', '')}"
 
 # Default command is claude wrapper for session tracking
 set -g default-command "{clauthing_cmd}"
@@ -1565,6 +1603,12 @@ def main():
         parser.add_argument("--command-mcp", action="store_true", help="Run command MCP server (exposes colon commands to Claude)")
         parser.add_argument("--skills-mcp", action="store_true", help="Run skills MCP server (lets Claude create cl-skills)")
         parser.add_argument("--claude-skills-mcp", action="store_true", help="Run Claude Code skills MCP server (lets Claude manage /skills)")
+        parser.add_argument("--edit-mcp-server", action="store_true", help="Run edit MCP server (vim in tmux popup) — internal subprocess flag")
+        parser.add_argument("--edit-mcp", action=argparse.BooleanOptionalAction, default=None,
+                            help="Enable/disable the edit-mcp server in new sessions. Defaults to config.edit_mcp (default true). --no-edit-mcp disables for this launch.")
+        parser.add_argument("--allow-command", action="append", default=[],
+                            metavar="COLON_COMMAND",
+                            help="Add a colon command (e.g. ':tmuxpath-current') to the kitty_command auto-allow list. Repeatable. Extends config.allowed_commands and the built-in defaults.")
         parser.add_argument("--with-commands", action="store_true", help="Enable kitty_command tool in command MCP server")
         parser.add_argument("--run-command", type=str, metavar="COMMAND", help="Run a colon command directly (e.g. ':tmuxpath')")
         parser.add_argument("--proxy-mcp", type=str, metavar="MCPDEF_JSON", help="Run MCP proxy with tmux approval (internal use)")
@@ -1610,6 +1654,21 @@ def main():
             tmux_socket = args.socket
 
         claude_data_dir = config_dir / "claude-data"
+
+        # Resolve edit-mcp setting: config (default True) overridden by flag.
+        # Stashed in env so children (and tmux-spawned clauthing instances) see
+        # the same value.
+        if args.edit_mcp is None:
+            edit_mcp_enabled = get_edit_mcp_enabled(profile)
+        else:
+            edit_mcp_enabled = args.edit_mcp
+        os.environ['CLAUTHING_EDIT_MCP'] = '1' if edit_mcp_enabled else '0'
+
+        # Resolve auto-allow list of colon commands and propagate via env.
+        allowed_cmds = get_allowed_commands(profile) + list(args.allow_command or [])
+        os.environ['CLAUTHING_ALLOWED_COMMANDS'] = ",".join(
+            c.strip() for c in allowed_cmds if c.strip()
+        )
 
         if args.inject_credentials:
             _inject_credentials_from_snapshot(args.inject_credentials, config_dir, claude_data_dir, profile)
@@ -1742,6 +1801,13 @@ def main():
             # Run Claude Code skills MCP server
             from clauthing.claude_skills_mcp_server import main as claude_skills_mcp_main
             claude_skills_mcp_main()
+            sys.exit(0)
+
+        if args.edit_mcp_server:
+            # Run edit MCP server (vim-in-popup for interactive editing).
+            # Internal subprocess flag — invoked by claude via .claude.json.
+            from clauthing.edit_mcp_server import main as edit_mcp_main
+            edit_mcp_main()
             sys.exit(0)
 
         if args.proxy_mcp:

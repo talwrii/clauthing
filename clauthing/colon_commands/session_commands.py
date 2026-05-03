@@ -84,9 +84,29 @@ def cmd_resume(ctx):
     target_session_id = None
 
     if not arg:
-        sessions = get_recent_sessions(ctx.profile, limit=20)
+        sessions = get_recent_sessions(ctx.profile, limit=200)
         if not sessions:
             return ctx.stop("No recent sessions found")
+
+        from clauthing.claude_utils import encode_project_path
+        if ctx.profile:
+            projects_root = (Path.home() / ".config" / "clauthing"
+                             / "other-profiles" / ctx.profile / "claude-data" / "projects")
+        else:
+            projects_root = Path.home() / ".config" / "clauthing" / "claude-data" / "projects"
+
+        def count_user_messages(sid, cwd):
+            if not cwd:
+                return 0
+            sf = projects_root / encode_project_path(cwd) / f"{sid}.jsonl"
+            if not sf.exists():
+                return 0
+            try:
+                # Each user message = one '"type":"user"' substring (or with space).
+                text = sf.read_text(errors="ignore")
+                return text.count('"type":"user"') + text.count('"type": "user"')
+            except Exception:
+                return 0
 
         fzf_lines = []
         for sess in sessions:
@@ -97,14 +117,15 @@ def cmd_resume(ctx):
             last_msg = (sess.get('last_message') or '').replace('\n', ' ').strip()
             if len(last_msg) > 60:
                 last_msg = last_msg[:60] + '...'
-            fzf_lines.append(f"{sid}\t{title}\t{cwd}\t{mtime}\t{last_msg}")
+            n_msgs = count_user_messages(sid, sess.get('cwd'))
+            fzf_lines.append(f"{sid}\t{title}\t{cwd}\t{mtime}\t{n_msgs}msg\t{last_msg}")
 
         tmp_in = Path(tempfile.mktemp())
         tmp_out = Path(tempfile.mktemp())
         tmp_in.write_text("\n".join(fzf_lines))
         subprocess.run([
             "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "80%", "-h", "60%",
-            f"cat {tmp_in} | fzf --delimiter='\\t' --with-nth=2,3,4,5 "
+            f"cat {tmp_in} | fzf --delimiter='\\t' --with-nth=2,3,4,5,6 "
             f"--header='Select session to resume' > {tmp_out}"
         ])
         sel = tmp_out.read_text().strip() if tmp_out.exists() else ""

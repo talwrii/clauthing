@@ -3,7 +3,7 @@ A snazzy wrapper around claude code, using kitty and tmux.  Keep all you claude 
 
 ![clauthing](picture.png)
 
-THIS IS BUGGY ALPHA SOFTWARE; IT IS AI-GENERATED AND NOT WELL REVIEWED. It does, however, contain some magic and I wanted to throw it onto the internet so others could use it.
+THIS IS BUGGY ALPHA SOFTWARE; IT IS AI-GENERATED AND NOT WELL REVIEWED. It is, however, becoming better tested and contain some magic to extend claude (often in arbitrary ways).
 
 Only tested on Linux.
 
@@ -103,6 +103,8 @@ resulting tokens — so live tests never touch your main claude config.
 
 ## Contributing
 I'm vibe coding. You're vibe coding. I suggest you create a fork named clauthing-whatever and try to get people to use it. Send me your fork in a PR, describing what it does in as much detail as you can muster and I will have an LLM tell me what is going on and reimplement your idea.
+
+The generated LLMs actions are constrained by [CLAUDE.md](CLAUDE.md) and the files it links to.
 
 # About
 I am @readwith. As part of my work i make a stream of tools related to AI-coding and useing a computer in general. If this is interesting I suggest following me on github. If I am interesting, follow me on X.

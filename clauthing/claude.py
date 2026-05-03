@@ -271,6 +271,16 @@ def setup_session_config(session_id, profile=None):
             "args": ["--claude-skills-mcp"],
         }
 
+    # Include edit MCP server (vim in tmux popup) unless disabled.
+    # CLAUTHING_EDIT_MCP env is set by main() at launch time from
+    # config.edit_mcp (default true) and possibly overridden by --edit-mcp /
+    # --no-edit-mcp.
+    if os.environ.get("CLAUTHING_EDIT_MCP", "1") == "1" and "clauthing-edit" not in mcp_servers:
+        mcp_servers["clauthing-edit"] = {
+            "command": clauthing_path,
+            "args": ["--edit-mcp-server"],
+        }
+
     # Auto-approve all MCP server tools + role permissions in settings
     # NOTE: skills MCPs write tools are NOT auto-approved (dangerous - can write arbitrary code)
     # But read/list are safe and auto-approved

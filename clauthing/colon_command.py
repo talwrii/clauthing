@@ -561,6 +561,24 @@ def cmd_tmux_unlink(ctx):
     return ctx.stop("No tmux window linked")
 
 
+@command(':tmuxpath-current')
+def cmd_tmuxpath_current(ctx):
+    """Get the cwd of the current (focused) window in the user's default tmux
+    server. Independent of any linked-window state."""
+    try:
+        result = run(
+            ["tmux", "-L", "default", "display-message", "-p",
+             "#{pane_current_path}"],
+            capture_output=True, text=True, check=True,
+        )
+        path = result.stdout.strip()
+        if not path:
+            return ctx.stop("❌ No path returned (no current window?)")
+        return ctx.stop(f"Current default-tmux window cwd: {path}")
+    except subprocess.CalledProcessError as e:
+        return ctx.stop(f"❌ Could not get current path: {e.stderr or e}")
+
+
 @command(':tmuxpath')
 def cmd_tmuxpath(ctx):
     if not ctx.session_id:
@@ -662,6 +680,67 @@ def cmd_tmuxs(ctx):
         return ctx.stop(f"✓ Switched to {wid}")
     except subprocess.CalledProcessError:
         return ctx.stop(f"❌ Window {wid} not found")
+
+
+@command(':tmux-spawn')
+def cmd_tmux_spawn(ctx):
+    """Spawn a fresh tmux window in the user's default tmux server, owned by
+    this clauthing session. Refuses if a window is already linked — clear the
+    link first with :tmux-unlink.
+
+    Optional argument: a shell command to run in the new window
+    (e.g. `:tmux-spawn vim README.md`). If omitted, the window opens an
+    interactive shell."""
+    if not ctx.session_id:
+        return ctx.stop("❌ No session ID")
+    state_dir = get_state_dir()
+    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
+    meta = json.loads(mf.read_text()) if mf.exists() else {}
+    if meta.get("linked_tmux_window"):
+        return ctx.stop(
+            f"❌ Already linked to {meta['linked_tmux_window']}. "
+            "Use :tmux-unlink first."
+        )
+    sess_name = get_session_name(ctx.session_id) or ctx.session_id[:8]
+    win_name = f"cl-{sess_name}"
+    shell_cmd = ctx.args.strip()
+    cmd = ["tmux", "-L", "default", "new-window", "-d", "-n", win_name,
+           "-P", "-F", "#{window_id}"]
+    if shell_cmd:
+        cmd.append(shell_cmd)
+    try:
+        result = run(cmd, capture_output=True, text=True, check=True)
+        wid = result.stdout.strip()
+        meta["linked_tmux_window"] = wid
+        mf.parent.mkdir(parents=True, exist_ok=True)
+        mf.write_text(json.dumps(meta, indent=2))
+        ran = f" running `{shell_cmd}`" if shell_cmd else ""
+        return ctx.stop(f"✓ Spawned and linked tmux window '{win_name}' ({wid}){ran}")
+    except subprocess.CalledProcessError as e:
+        return ctx.stop(f"❌ Could not spawn window: {e.stderr or e}")
+
+
+@command(':tmux-kill')
+def cmd_tmux_kill(ctx):
+    """Kill the linked tmux window in the user's default tmux server and
+    clear the link."""
+    if not ctx.session_id:
+        return ctx.stop("❌ No session ID")
+    state_dir = get_state_dir()
+    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
+    meta = json.loads(mf.read_text()) if mf.exists() else {}
+    linked = meta.get("linked_tmux_window")
+    if not linked:
+        return ctx.stop("No tmux window linked.")
+    try:
+        run(["tmux", "-L", "default", "kill-window", "-t", linked],
+            capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        # Window may already be gone — still clear the link
+        log(f":tmux-kill: kill-window failed (window may be gone): {e.stderr or e}")
+    del meta["linked_tmux_window"]
+    mf.write_text(json.dumps(meta, indent=2))
+    return ctx.stop(f"✓ Killed and unlinked tmux window {linked}")
 
 
 @command(':tmux')
