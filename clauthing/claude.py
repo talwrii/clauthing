@@ -200,6 +200,7 @@ def setup_session_config(session_id, profile=None):
     # Load MCP servers and active roles from session metadata
     state_dir = get_state_dir()
     metadata_file = state_dir / "sessions" / f"{session_id}.json"
+    metadata = {}
     mcp_servers = {}
     active_roles = []
     if metadata_file.exists():
@@ -306,6 +307,23 @@ def setup_session_config(session_id, profile=None):
         if rule not in allow:
             allow.append(rule)
     merged_settings.setdefault("permissions", {})["allow"] = allow
+
+    # Inject PreToolUse hook for pattern-approve if this session opted in
+    # (toggled via :pattern-approve). Persists across :reload because the
+    # toggle lives in session metadata, and :reload re-runs this function.
+    if metadata.get("pattern_approve"):
+        hooks_cfg = merged_settings.setdefault("hooks", {})
+        pretool = hooks_cfg.setdefault("PreToolUse", [])
+        already = any(
+            any(h.get("command", "").startswith("pattern-approve")
+                for h in entry.get("hooks", []) or [])
+            for entry in pretool
+        )
+        if not already:
+            pretool.append({
+                "hooks": [{"type": "command", "command": "pattern-approve --tmux"}]
+            })
+
     merged_settings_file.write_text(json.dumps(merged_settings, indent=2))
 
     # Auto-trust the current working directory

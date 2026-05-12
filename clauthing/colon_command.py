@@ -682,6 +682,39 @@ def cmd_tmuxs(ctx):
         return ctx.stop(f"❌ Window {wid} not found")
 
 
+@command(':pattern-approve')
+def cmd_pattern_approve(ctx):
+    """Toggle pattern-approve PreToolUse hook for this session.
+
+    Usage:
+        :pattern-approve            toggle on/off
+        :pattern-approve on         enable
+        :pattern-approve off        disable
+
+    The setting lives in session metadata so it survives :reload. Run
+    :reload after toggling for the change to take effect (claude reads
+    settings.json at startup, so the new hook needs a fresh claude)."""
+    if not ctx.session_id:
+        return ctx.stop("❌ No session ID")
+    state_dir = get_state_dir()
+    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
+    meta = json.loads(mf.read_text()) if mf.exists() else {}
+    arg = ctx.args.strip().lower()
+    if arg in ("on", "enable", "true", "1"):
+        new = True
+    elif arg in ("off", "disable", "false", "0"):
+        new = False
+    elif arg == "":
+        new = not bool(meta.get("pattern_approve"))
+    else:
+        return ctx.stop("Usage: :pattern-approve [on|off]")
+    meta["pattern_approve"] = new
+    mf.parent.mkdir(parents=True, exist_ok=True)
+    mf.write_text(json.dumps(meta, indent=2))
+    state = "on" if new else "off"
+    return ctx.stop(f"✓ pattern-approve {state} (run :reload to apply)")
+
+
 @command(':tmux-spawn')
 def cmd_tmux_spawn(ctx):
     """Spawn a fresh tmux window in the user's default tmux server, owned by
