@@ -333,6 +333,257 @@ def cmd_cd_tmux(ctx):
     return clone_session_and_change_directory(target_dir, ctx.cwd, ctx)
 
 
+def _move_relative(ctx, target_name, offset, label):
+    """Move current window to target_name's index ± 1. label is 'after'/'before'."""
+    socket = ctx.socket
+    try:
+        out = subprocess.run(
+            ["tmux", "-L", socket, "list-windows",
+             "-F", "#{window_index}\t#{window_name}"],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout
+    except Exception as e:
+        return ctx.stop(f"❌ tmux list-windows failed: {e}")
+
+    target_idx = None
+    occupied = set()
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue
+        idx_s, name = line.split("\t", 1)
+        try:
+            idx = int(idx_s)
+        except ValueError:
+            continue
+        occupied.add(idx)
+        if name == target_name and target_idx is None:
+            target_idx = idx
+
+    if target_idx is None:
+        return ctx.stop(f"❌ no window named '{target_name}'")
+
+    try:
+        cur_id = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+        cur_idx = int(subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{window_index}"],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip())
+    except Exception as e:
+        return ctx.stop(f"❌ could not resolve current window: {e}")
+
+    if cur_idx == target_idx:
+        return ctx.stop(f"❌ current window IS '{target_name}'")
+
+    dest_idx = target_idx + offset
+    if dest_idx < 1:
+        return ctx.stop(f"❌ no slot {label} '{target_name}' (it's the first window)")
+    if cur_idx == dest_idx:
+        return ctx.stop(f"✓ already {label} '{target_name}'")
+
+    if dest_idx in occupied:
+        cmd = ["tmux", "-L", socket, "swap-window", "-d",
+               "-s", cur_id, "-t", f":{dest_idx}"]
+    else:
+        cmd = ["tmux", "-L", socket, "move-window", "-d",
+               "-s", cur_id, "-t", f":{dest_idx}"]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True,
+                       text=True, timeout=5)
+    except subprocess.CalledProcessError as e:
+        return ctx.stop(f"❌ move failed: {e.stderr.strip() or e}")
+    # Keep focus on the (now-moved) window — without this, tmux may switch
+    # to whichever window ended up in the old slot.
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "select-window", "-t", cur_id],
+            check=False, capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+    return ctx.stop(f"✓ moved {label} '{target_name}'")
+
+
+@command(':after')
+def cmd_after(ctx):
+    """Move the current window to immediately after the named window.
+
+    Usage: :after <window-name>
+
+    If the destination slot is already occupied, the resident window is
+    swapped into the current window's old slot.
+    """
+    target_name = ctx.args.strip()
+    if not target_name:
+        return ctx.stop("Usage: :after <window-name>")
+    return _move_relative(ctx, target_name, +1, "after")
+
+
+@command(':before')
+def cmd_before(ctx):
+    """Move the current window to immediately before the named window.
+
+    Usage: :before <window-name>
+
+    If the destination slot is occupied, swaps with the resident window
+    (same semantics as :after).
+    """
+    target_name = ctx.args.strip()
+    if not target_name:
+        return ctx.stop("Usage: :before <window-name>")
+    return _move_relative(ctx, target_name, -1, "before")
+
+
+@command(':close')
+def cmd_close(ctx):
+    """Close a window by index or name.
+
+    Usage:
+        :close <index>   close window at index N
+        :close <name>    close window by name (must be unique)
+
+    Refuses to close the last window. Removes the closed session from
+    open-sessions so it won't be restored on the next launch.
+    """
+    arg = ctx.args.strip()
+    if not arg:
+        return ctx.stop("Usage: :close <index|name>")
+    socket = ctx.socket
+    try:
+        out = subprocess.run(
+            ["tmux", "-L", socket, "list-windows",
+             "-F", "#{window_index}\t#{window_name}\t#{window_id}\t#{@session_id}"],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout
+    except Exception as e:
+        return ctx.stop(f"❌ tmux list-windows failed: {e}")
+
+    windows = []  # (idx, name, wid, session_id)
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        try:
+            idx = int(parts[0])
+        except ValueError:
+            continue
+        windows.append((idx, parts[1], parts[2], parts[3]))
+
+    if len(windows) <= 1:
+        return ctx.stop("❌ refusing to close the last window")
+
+    if arg.isdigit():
+        idx_arg = int(arg)
+        target = next((w for w in windows if w[0] == idx_arg), None)
+        if not target:
+            return ctx.stop(f"❌ no window at index {idx_arg}")
+    else:
+        matches = [w for w in windows if w[1] == arg]
+        if not matches:
+            return ctx.stop(f"❌ no window named '{arg}'")
+        if len(matches) > 1:
+            return ctx.stop(f"❌ {len(matches)} windows named '{arg}' — use the index")
+        target = matches[0]
+
+    idx, name, wid, sess_id = target
+    if sess_id:
+        try:
+            from clauthing.session import remove_open_session
+            remove_open_session(sess_id, ctx.profile)
+        except Exception as e:
+            log(f":close remove_open_session failed: {e}", ctx.profile)
+
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "kill-window", "-t", wid],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+    except subprocess.CalledProcessError as e:
+        return ctx.stop(f"❌ kill-window failed: {e.stderr.strip() or e}")
+
+    return ctx.stop(f"✓ closed window {idx} ({name})")
+
+
+@command(':first')
+def cmd_first(ctx):
+    """Cycle the window list so the current window is first.
+
+    Windows before the current one are rotated to the end (preserving
+    their relative order); current ends up at base-index. Focus stays
+    on the current window.
+    """
+    socket = ctx.socket
+    try:
+        out = subprocess.run(
+            ["tmux", "-L", socket, "list-windows",
+             "-F", "#{window_index}\t#{window_id}"],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout
+    except Exception as e:
+        return ctx.stop(f"❌ tmux list-windows failed: {e}")
+
+    windows = []
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue
+        idx_s, wid = line.split("\t", 1)
+        try:
+            windows.append((int(idx_s), wid))
+        except ValueError:
+            pass
+    windows.sort()
+    if not windows:
+        return ctx.stop("❌ no windows")
+
+    try:
+        cur_id = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+    except Exception as e:
+        return ctx.stop(f"❌ could not get current window: {e}")
+
+    cur_pos = next((i for i, (_, wid) in enumerate(windows) if wid == cur_id), None)
+    if cur_pos is None:
+        return ctx.stop("❌ current window not found in list")
+    if cur_pos == 0:
+        return ctx.stop("✓ already first")
+
+    # Move each window before current to a fresh index beyond the current
+    # max, in order — this preserves their relative order. Then renumber.
+    max_idx = windows[-1][0]
+    free = max_idx + 1
+    for _, wid in windows[:cur_pos]:
+        try:
+            subprocess.run(
+                ["tmux", "-L", socket, "move-window", "-d",
+                 "-s", wid, "-t", f":{free}"],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            free += 1
+        except subprocess.CalledProcessError as e:
+            return ctx.stop(f"❌ move failed: {e.stderr.strip() or e}")
+
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "move-window", "-r"],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+    except subprocess.CalledProcessError as e:
+        return ctx.stop(f"❌ renumber failed: {e.stderr.strip() or e}")
+
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "select-window", "-t", cur_id],
+            check=False, capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+    return ctx.stop("✓ cycled to first")
+
+
 @command(':reload')
 def cmd_reload(ctx):
     session_id = ctx.session_id
