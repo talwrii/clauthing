@@ -1628,6 +1628,8 @@ def main():
         parser.add_argument("--set-title", nargs=2, metavar=("SESSION_ID", "NAME"), help="Set session title (updates metadata, tmux, emits event)")
         parser.add_argument("--send-login", nargs=2, metavar=("SOCKET", "WINDOW"), help="Test send :login to a cl1 socket/window (debug)")
         parser.add_argument("--inject-credentials", type=str, metavar="PATH", help="Seed .credentials.json + claude-auth.json from a creds-for-claude JSON snapshot, then continue normal startup")
+        parser.add_argument("--launch-workflow", type=str, metavar="CMD", help="Open a new tmux window running CMD as a 'workflow window' with CLAUTHING_WORKFLOW_ID set. The CMD can use clauthing-workflow to manage other windows. Pair with --workflow-name to set the window name.")
+        parser.add_argument("--workflow-name", type=str, metavar="NAME", default="workflow", help="Window name for --launch-workflow (default: 'workflow')")
 
         args = parser.parse_args()
 
@@ -1704,6 +1706,27 @@ def main():
 
         if args.set_claude:
             set_claude_binary(args.set_claude, profile)
+            sys.exit(0)
+
+        if args.launch_workflow:
+            # Open a new tmux window in the running clauthing instance running
+            # the given command, with CLAUTHING_WORKFLOW_ID set so the program
+            # can use clauthing-workflow to manage other windows.
+            r = subprocess.run(
+                ["tmux", "-L", tmux_socket, "has-session"],
+                capture_output=True,
+            )
+            if r.returncode != 0:
+                print(f"error: no tmux session on socket {tmux_socket!r} — "
+                      f"is clauthing running for this profile?", file=sys.stderr)
+                sys.exit(1)
+            wrapped = (f"CLAUTHING_WORKFLOW_ID={shlex.quote(tmux_socket)} "
+                       f"exec {args.launch_workflow}")
+            subprocess.run(
+                ["tmux", "-L", tmux_socket, "new-window",
+                 "-n", args.workflow_name, wrapped],
+                check=True,
+            )
             sys.exit(0)
 
         if args.add_rules:
