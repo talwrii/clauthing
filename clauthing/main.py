@@ -118,6 +118,9 @@ bind -n C-j previous-window
 bind -n C-k next-window
 bind -n M-o last-window
 
+# M-w: fuzzy-pick a window by name
+bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_index}}: #{{window_name}}' | fzf --header='Jump to window' | grep -oE '^[0-9]+' | xargs -I{{}} tmux select-window -t {{}}"
+
 # Disable automatic window renaming (we manage names manually)
 set -g automatic-rename off
 set -g allow-rename off
@@ -817,6 +820,9 @@ bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 bind -n M-h previous-window
 bind -n M-l next-window
 
+# M-w: fuzzy-pick a window by name
+bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_index}}: #{{window_name}}' | fzf --header='Jump to window' | grep -oE '^[0-9]+' | xargs -I{{}} tmux select-window -t {{}}"
+
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
@@ -1191,6 +1197,9 @@ bind -n C-j previous-window
 bind -n C-k next-window
 bind -n M-o last-window
 
+# M-w: fuzzy-pick a window by name
+bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_index}}: #{{window_name}}' | fzf --header='Jump to window' | grep -oE '^[0-9]+' | xargs -I{{}} tmux select-window -t {{}}"
+
 # Some sensible defaults
 set -g mouse on
 set -g history-limit 10000
@@ -1219,6 +1228,7 @@ KEYBINDINGS_HELP = """\
   M-h    Previous window
   M-l    Next window
   M-o    Last window
+  M-w    Pick window by name (fzf)
   C-p    Session picker
   C-q    Queue command
   M-k    This help
