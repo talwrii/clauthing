@@ -1,0 +1,10 @@
+#!/bin/bash
+# Fast smoke tests — unit tests only, sub-second. Run on every change.
+# For the full suite use ./run-tests.
+
+set -o nounset
+set -o pipefail
+cd "$(dirname "$0")"
+
+PY=$(pipx-python clauthing --venv)/bin/python
+exec "$PY" -m pytest tests/ -v

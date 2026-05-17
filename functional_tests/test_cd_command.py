@@ -414,7 +414,7 @@ exec claude --resume {session_id}
                        "Should be multi-tab mode")
             
             # In multi-tab, :cd would run something like:
-            # clauthing --new-window --resume-session <id>
+            # clauthing --new-claude --resume-session <id>
             # We can't easily test that without the full clauthing,
             # but we can verify the socket naming is correct
             

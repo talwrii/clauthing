@@ -692,6 +692,28 @@ def cleanup_session_config(session_id, profile=None):
         except Exception as e:
             log(f"Error cleaning up session config: {e}", profile)
 
+def _next_new_window_name(socket, profile=None):
+    """Return 'newN' one greater than the highest newN currently on this
+    tmux server. 'new1' if there are none."""
+    import re as _re
+    highest = 0
+    try:
+        result = run(
+            ["tmux", "-L", socket, "list-windows", "-F", "#{window_name}"],
+            capture_output=True, text=True, check=True, profile=profile,
+        )
+        for line in result.stdout.splitlines():
+            m = _re.fullmatch(r"new(\d+)", line.strip())
+            if m:
+                try:
+                    highest = max(highest, int(m.group(1)))
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return f"new{highest + 1}"
+
+
 def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_restore=False):
     """Create a new Claude window with session tracking.
 
@@ -720,9 +742,28 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
         window_index = "unknown"
         log(f"Error getting window index: {e}", profile)
 
-    # If this is the first window (index 1, since base-index is 1), restore open sessions
-    if window_index == "1" and not skip_restore:
-        log("Window index is 1, checking for sessions to restore", profile)
+    # Restore-on-first-window: gated by a sentinel file written at clauthing
+    # bootstrap (launch_clauthing / handle_no_kitty / handle_one_tab). The
+    # first new_window invocation consumes the sentinel and does the
+    # restoration; subsequent invocations (e.g. user pressing C-n) see no
+    # sentinel and skip the restore loop.
+    needs_restore = False
+    instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID")
+    if instance_uuid:
+        try:
+            from clauthing.instances import get_log_dir_for_uuid
+            sentinel = Path(get_log_dir_for_uuid(instance_uuid)) / "needs-restore"
+            if sentinel.exists():
+                needs_restore = True
+                try:
+                    sentinel.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if needs_restore and not skip_restore:
+        log("Bootstrap restore: needs-restore sentinel present", profile)
         try:
             open_sessions = get_open_sessions(profile)
             log(f"Restore: Found {len(open_sessions)} open sessions: {open_sessions}", profile)
@@ -770,7 +811,7 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
                     cmd_parts = [clauthing_path]
                     if profile:
                         cmd_parts.extend(["--profile", profile])
-                    cmd_parts.extend(["--new-window", "--resume-session", sess_id])
+                    cmd_parts.extend(["--new-claude", "--resume-session", sess_id])
                     cmd_str = " ".join(cmd_parts)
                     
                     log(f"Restore: Running command: tmux new-window -c {path} -n {win_name} {cmd_str}", profile)
@@ -815,11 +856,16 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
     current_path = os.getcwd()
     log(f"Current working directory when launching Claude: {current_path}", profile)
     
-    # Get session name from metadata if resuming, otherwise generate from path
+    # Get session name from metadata if resuming, otherwise pick a name.
     if resume_session_id:
         default_name = get_session_name(session_id)
     else:
-        # Check if tmux window already has a custom name (from :spawn --window-name)
+        # If tmux already has a "real" (user-set) name, respect it. Otherwise
+        # auto-generate "newN" where N is one greater than the highest
+        # existing newN on this tmux server.
+        _AUTO_NAMES = {"bash", "zsh", "sh", "fish", "python", "python3",
+                       "clauthing", "claude"}
+        tmux_window_name = None
         try:
             result = run(
                 ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
@@ -827,14 +873,15 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
                 text=True,
                 profile=profile
             )
-            tmux_window_name = result.stdout.strip() if result.returncode == 0 else None
-            # Use tmux window name if it's not a default tmux name
-            if tmux_window_name and not tmux_window_name.startswith("bash") and not tmux_window_name.startswith("zsh"):
-                default_name = tmux_window_name
-            else:
-                default_name = Path(current_path).name or "claude"
-        except:
-            default_name = Path(current_path).name or "claude"
+            if result.returncode == 0:
+                tmux_window_name = result.stdout.strip()
+        except Exception:
+            pass
+
+        if tmux_window_name and tmux_window_name not in _AUTO_NAMES:
+            default_name = tmux_window_name
+        else:
+            default_name = _next_new_window_name(socket, profile)
         # Save session metadata with name
         save_session_metadata(session_id, default_name, current_path)
     

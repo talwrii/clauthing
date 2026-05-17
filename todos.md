@@ -1,1 +1,2 @@
 - kitty-claude: handle C-d (and other ungraceful window closes) gracefully — see state.md.
+- Switch from tmux to Zellij. tmux `display-popup` is client-relative, not window-relative — there is no way to render a permission popup on a specific window without `select-window`-switching the client's view. Zellij supports floating panes anchored to a tab, which is what we actually need for MCP permission prompts.

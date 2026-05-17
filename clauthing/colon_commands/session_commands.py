@@ -189,7 +189,7 @@ def cmd_resume(ctx):
             log(f":resume one-tab boomerang failed: {e}", ctx.profile)
             return ctx.stop(f"❌ Resume failed: {e}")
     else:
-        # Multi-tab mode: open a new tmux window running clauthing --new-window
+        # Multi-tab mode: open a new tmux window running clauthing --new-claude
         # --resume-session. The new window's clauthing process sets @session_id
         # itself; we don't call new_window() here (which would clobber the
         # current window and trip the window-1 restore logic).
@@ -197,7 +197,7 @@ def cmd_resume(ctx):
         cmd_parts = [clauthing_path]
         if ctx.profile:
             cmd_parts.extend(["--profile", ctx.profile])
-        cmd_parts.extend(["--new-window", "--resume-session", target_session_id])
+        cmd_parts.extend(["--new-claude", "--resume-session", target_session_id])
         cmd_str = " ".join(cmd_parts)
         try:
             subprocess.run(

@@ -116,7 +116,7 @@ def run_test():
             jail_dir = f"/tmp/clauthing-{UID}"
             for name in ("beta", "gamma"):
                 tmux(socket, "new-window", "-c", jail_dir, "-n", name,
-                     f"{clauthing_bin} --profile {profile} --new-window")
+                     f"{clauthing_bin} --profile {profile} --new-claude")
             wait_for(lambda: len(window_order(socket)) >= 3, timeout=15,
                      label="3 windows present")
             time.sleep(1)
@@ -201,7 +201,7 @@ def run_test():
         jail_dir = f"/tmp/clauthing-{UID}"
         for name in ("beta", "gamma"):
             tmux(socket, "new-window", "-c", jail_dir, "-n", name,
-                 f"{clauthing_bin} --profile {profile} --new-window")
+                 f"{clauthing_bin} --profile {profile} --new-claude")
         wait_for(lambda: len(window_order(socket)) >= 3, timeout=15,
                  label="3 windows present")
         time.sleep(1)

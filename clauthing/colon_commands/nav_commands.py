@@ -187,7 +187,7 @@ def open_new_multi_tab_window(socket, profile, target_dir, session_id, current_w
     cmd_parts = [clauthing_path]
     if profile:
         cmd_parts.extend(["--profile", profile])
-    cmd_parts.extend(["--new-window", "--resume-session", session_id])
+    cmd_parts.extend(["--new-claude", "--resume-session", session_id])
     cmd_str = " ".join(cmd_parts)
 
     new_window_cmd = ["tmux", "-L", socket, "new-window"]
@@ -241,7 +241,7 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
     # Boomerang: set @startup_command, then respawn-pane to kill the running
     # claude. ctx.stop() alone returns to the prompt — it doesn't exit claude
     # — so the launcher loop would never pick @startup_command up. respawn-pane
-    # restarts the pane's default-command (boomerang.sh / `clauthing --new-window`)
+    # restarts the pane's default-command (boomerang.sh / `clauthing --new-claude`)
     # which then reads @startup_command at startup.
     if new_session_id:
         startup_cmd = f'SESSION_ID="{new_session_id}"; cd "{target_dir}"'
@@ -700,7 +700,7 @@ exec claude
     cmd_parts = [clauthing_path]
     if profile:
         cmd_parts.extend(["--profile", profile])
-    cmd_parts.append("--new-window")
+    cmd_parts.append("--new-claude")
     cmd_str = " ".join(cmd_parts)
 
     new_window_cmd = ["tmux", "-L", socket, "new-window"]

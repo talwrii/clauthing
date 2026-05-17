@@ -36,10 +36,10 @@ def generate_clauthing_config(config_dir: Path, profile: str = None) -> Path:
     
     # Generate config similar to clauthing
     if profile:
-        clauthing_cmd = f"echo 'clauthing --profile {profile} --new-window'"
+        clauthing_cmd = f"echo 'clauthing --profile {profile} --new-claude'"
         profile_arg = f"--profile {profile} "
     else:
-        clauthing_cmd = "echo 'clauthing --new-window'"
+        clauthing_cmd = "echo 'clauthing --new-claude'"
         profile_arg = ""
     
     tmux_config = config_dir / "tmux.conf"

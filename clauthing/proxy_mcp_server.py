@@ -21,10 +21,13 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp import ClientSession
 from mcp.types import TextContent
 
+from clauthing.tmux import focus_mcp_origin
+
 
 def confirm_popup(tool_name, arguments):
     """Show a tmux popup to approve a tool call. Returns True if approved."""
     socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
+    focus_mcp_origin(socket)
 
     # Format for display
     args_summary = json.dumps(arguments, indent=2)

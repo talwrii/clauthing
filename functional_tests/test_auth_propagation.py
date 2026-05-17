@@ -155,7 +155,7 @@ def run_test():
             jail_dir = f"/tmp/clauthing-{UID}"
             print("  [auth] opening 2nd window...", flush=True)
             tmux(socket, "new-window", "-c", jail_dir,
-                 f"{clauthing_bin} --profile {profile} --new-window")
+                 f"{clauthing_bin} --profile {profile} --new-claude")
             wait_for(lambda: len(list_windows(socket)) >= 2, timeout=10,
                      label="2nd window")
             time.sleep(2)

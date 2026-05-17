@@ -18,6 +18,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from clauthing.tmux import focus_mcp_origin
+
 
 def get_tmux_socket():
     """Get the clauthing tmux socket name."""
@@ -43,6 +45,7 @@ def get_state_dir():
 def confirm_popup(message):
     """Show a tmux confirmation popup. Returns True if confirmed."""
     socket = get_tmux_socket()
+    focus_mcp_origin(socket)
     # Use a temp file for the message body so we don't have to worry about
     # quoting (the message contains arbitrary user-controlled text including
     # colons, dashes, paths).

@@ -164,7 +164,7 @@ def regenerate_tmux_config(config_dir, profile=None, tmux_socket=None):
 
     profile_arg = f"--profile {profile} " if profile else ""
     jail_dir = f"/tmp/{tmux_socket}"
-    clauthing_cmd = f"clauthing {profile_arg}--new-window"
+    clauthing_cmd = f"clauthing {profile_arg}--new-claude"
 
     tmux_config_path = Path(config_dir) / "tmux.conf"
     instance_uuid = os.environ.get("CLAUTHING_INSTANCE_UUID", "")
@@ -664,7 +664,7 @@ def handle_session_picker(profile, socket="clauthing"):
             clauthing_cmd = ["clauthing"]
             if profile:
                 clauthing_cmd.extend(["--profile", profile])
-            clauthing_cmd.extend(["--new-window", "--resume-session", session_id])
+            clauthing_cmd.extend(["--new-claude", "--resume-session", session_id])
             print(f"Running: {' '.join(clauthing_cmd)}")
             subprocess.Popen(clauthing_cmd)
         else:
@@ -1160,9 +1160,17 @@ def handle_no_kitty(config_dir, profile, clauthing_cmd, tmux_socket, remain_on_e
     jail_dir = setup_jail_directory()
 
     # Register this instance (no-kitty launch)
-    from clauthing.instances import register_instance, ENV_VAR as _IUUID
+    from clauthing.instances import register_instance, ENV_VAR as _IUUID, get_log_dir_for_uuid
     instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
     os.environ[_IUUID] = instance_uuid
+
+    # Sentinel for the first new_window: triggers session restoration.
+    try:
+        instance_dir = Path(get_log_dir_for_uuid(instance_uuid))
+        instance_dir.mkdir(parents=True, exist_ok=True)
+        (instance_dir / "needs-restore").touch()
+    except Exception:
+        pass
 
     # Create tmux config
     tmux_config_path = config_dir / "tmux.conf"
@@ -1265,10 +1273,15 @@ def handle_show_help():
             pass
 
 
-def handle_close_window(profile, tmux_socket):
-    """Close the current tmux window, removing its session from open_sessions
-    so it isn't restored on next launch. (User pressed C-w.)"""
+def handle_close_window(profile, tmux_socket, target=None):
+    """Close a tmux window and remove its session from open_sessions.
+
+    target: None → current window (default, e.g. C-w binding).
+            str  → tmux window target (index, name, or @ID) — passed to
+                   `tmux -t` so any standard tmux target syntax works.
+    """
     from clauthing.session import remove_open_session
+
     # Refuse to close the last window.
     try:
         result = run(
@@ -1284,21 +1297,29 @@ def handle_close_window(profile, tmux_socket):
     except Exception as e:
         log(f"close-window: list-windows failed: {e}", profile)
 
-    # Look up the session_id for the current window from the runtime state.
-    session_id = None
+    # Resolve the target window's index, so we can find its session_id in
+    # the runtime state file.
+    window_index = None
     try:
-        result = run(
-            ["tmux", "-L", tmux_socket, "display-message", "-p", "#{window_index}"],
-            capture_output=True, text=True, check=True, profile=profile,
-        )
+        dm_cmd = ["tmux", "-L", tmux_socket, "display-message", "-p"]
+        if target:
+            dm_cmd += ["-t", target]
+        dm_cmd.append("#{window_index}")
+        result = run(dm_cmd, capture_output=True, text=True, check=True, profile=profile)
         window_index = result.stdout.strip()
-        state_file = get_runtime_tmux_state_file(profile)
-        if state_file.exists():
-            state = json.loads(state_file.read_text())
-            window_data = state.get("windows", {}).get(window_index) or {}
-            session_id = window_data.get("session_id")
     except Exception as e:
-        log(f"close-window: could not resolve session_id: {e}", profile)
+        log(f"close-window: could not resolve window index for target={target!r}: {e}", profile)
+
+    session_id = None
+    if window_index is not None:
+        try:
+            state_file = get_runtime_tmux_state_file(profile)
+            if state_file.exists():
+                state = json.loads(state_file.read_text())
+                window_data = state.get("windows", {}).get(window_index) or {}
+                session_id = window_data.get("session_id")
+        except Exception as e:
+            log(f"close-window: could not read state for window {window_index}: {e}", profile)
 
     if session_id:
         try:
@@ -1307,8 +1328,11 @@ def handle_close_window(profile, tmux_socket):
         except Exception as e:
             log(f"close-window: remove_open_session failed: {e}", profile)
 
+    kill_cmd = ["tmux", "-L", tmux_socket, "kill-window"]
+    if target:
+        kill_cmd += ["-t", target]
     try:
-        run(["tmux", "-L", tmux_socket, "kill-window"], profile=profile)
+        run(kill_cmd, profile=profile)
     except Exception as e:
         log(f"close-window: kill-window failed: {e}", profile)
 
@@ -1361,9 +1385,18 @@ def launch_clauthing(config_dir, profile, clauthing_cmd, tmux_socket, remain_on_
 
     # Register this instance so logs/state are routed to a per-uuid dir.
     # This must happen before any log() calls so they land in the right place.
-    from clauthing.instances import register_instance, ENV_VAR as _IUUID
+    from clauthing.instances import register_instance, ENV_VAR as _IUUID, get_log_dir_for_uuid
     instance_uuid = register_instance(tmux_socket, profile, os.getcwd())
     os.environ[_IUUID] = instance_uuid
+
+    # Sentinel for the first new_window of this instance: triggers session
+    # restoration. Consumed (deleted) by the first new_window call.
+    try:
+        instance_dir = Path(get_log_dir_for_uuid(instance_uuid))
+        instance_dir.mkdir(parents=True, exist_ok=True)
+        (instance_dir / "needs-restore").touch()
+    except Exception:
+        pass
 
     # Start a new run (cleanup old logs and create new run ID)
     log_dir = get_log_dir(profile)
@@ -1446,13 +1479,13 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
             first_session_id = open_sessions[0]
             log(f"Restore: Creating initial session with {first_session_id}", profile)
 
-            # Create first window via clauthing --new-window so the
+            # Create first window via clauthing --new-claude so the
             # has_messages / blank-session decision goes through new_window
             # rather than running `claude --resume` directly here.
             kc_cmd_parts = [clauthing_path]
             if profile:
                 kc_cmd_parts.extend(["--profile", profile])
-            kc_cmd_parts.extend(["--new-window", "--resume-session", first_session_id])
+            kc_cmd_parts.extend(["--new-claude", "--resume-session", first_session_id])
             result = run(
                 ["tmux", "-L", tmux_socket, "-f", str(tmux_config_path),
                  "new-session", "-d", "-s", tmux_socket, "-c", str(jail_dir),
@@ -1506,7 +1539,7 @@ shell tmux -L {tmux_socket} -f {tmux_config_path} new-session -As {tmux_socket} 
                         cmd_parts = [clauthing_path]
                         if profile:
                             cmd_parts.extend(["--profile", profile])
-                        cmd_parts.extend(["--new-window", "--resume-session", sess_id])
+                        cmd_parts.extend(["--new-claude", "--resume-session", sess_id])
                         cmd_str = " ".join(cmd_parts)
 
                         run(
@@ -1577,13 +1610,16 @@ def main():
         parser.add_argument("--stop", action="store_true", help="Handle Stop hook (internal use)")
         parser.add_argument("--pre-tool-use", action="store_true", help="Handle PreToolUse hook (internal use)")
         parser.add_argument("--notification", action="store_true", help="Handle Notification hook (internal use)")
-        parser.add_argument("--new-window", action="store_true", help="Create new window with session tracking (internal use)")
+        parser.add_argument("--new-claude", action="store_true", help="In-window startup: register session, restore state, exec claude. Used as the tmux default-command of a freshly-spawned window. Does NOT create a window itself.")
+        parser.add_argument("--new-window", action="store_true", help="Spawn a new clauthing window in the current tmux server (the one named by $CLAUTHING_TMUX_SOCKET). Pairs with --name and --cwd.")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
         parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
+        parser.add_argument("--name", type=str, metavar="NAME", help="Initial window name for --new-claude. Calls `tmux rename-window` so the standard window-renamed hook fires (same path as M-n).")
         parser.add_argument("--restart", action="store_true", help="Restart clauthing with state preservation")
         parser.add_argument("--update-config", action="store_true", help="Regenerate tmux and kitty config files")
         parser.add_argument("--instances", action="store_true", help="List running clauthing instances")
-        parser.add_argument("--close-window", action="store_true", help="Close the current tmux window and remove its session from the restore list")
+        parser.add_argument("--close-window", action="store_true", help="Close a tmux window and remove its session from the restore list. Defaults to the current window; combine with --window to target a specific one.")
+        parser.add_argument("--window", type=str, metavar="TARGET", help="Target a specific tmux window by index, name, or window-id (e.g. '3', 'alive', '@5'). Only honored by --close-window for now.")
         parser.add_argument("--show-help", action="store_true", help="Print the keybindings help (used by the M-k popup)")
         parser.add_argument("--json", action="store_true", help="Output JSON instead of a table (used with --instances)")
         parser.add_argument("--force-new", action="store_true", help="Launch new kitty window regardless of existing windows")
@@ -1655,11 +1691,11 @@ def main():
         if profile:
             config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
             tmux_socket = f"clauthing-{profile}"
-            clauthing_cmd = f"clauthing --profile {profile} --new-window"
+            clauthing_cmd = f"clauthing --profile {profile} --new-claude"
         else:
             config_dir = Path.home() / ".config" / "clauthing"
             tmux_socket = "clauthing"
-            clauthing_cmd = "clauthing --new-window"
+            clauthing_cmd = "clauthing --new-claude"
 
         # Override socket if explicitly provided
         if args.socket:
@@ -1905,6 +1941,42 @@ def main():
             sys.exit(0)
 
         if args.new_window:
+            socket = os.environ.get("CLAUTHING_TMUX_SOCKET")
+            if not socket:
+                print("Error: --new-window requires $CLAUTHING_TMUX_SOCKET (must be invoked inside a clauthing tmux session).", file=sys.stderr)
+                sys.exit(1)
+            clauthing_path = shutil.which("clauthing") or "clauthing"
+            inner_cmd_parts = [clauthing_path]
+            if profile:
+                inner_cmd_parts.extend(["--profile", profile])
+            inner_cmd_parts.append("--new-claude")
+            if args.name:
+                inner_cmd_parts.extend(["--name", args.name])
+            inner_cmd = " ".join(shlex.quote(p) for p in inner_cmd_parts)
+            new_window_cmd = ["tmux", "-L", socket, "new-window"]
+            if args.cwd:
+                new_window_cmd.extend(["-c", args.cwd])
+            if args.name:
+                new_window_cmd.extend(["-n", args.name])
+            new_window_cmd.append(inner_cmd)
+            try:
+                subprocess.run(new_window_cmd, check=True, timeout=5)
+            except subprocess.CalledProcessError as e:
+                print(f"Error spawning window: {e}", file=sys.stderr)
+                sys.exit(1)
+            sys.exit(0)
+
+        if args.new_claude:
+            if args.name:
+                pane = os.environ.get("TMUX_PANE")
+                rename_target = ["-t", pane] if pane else []
+                try:
+                    subprocess.run(
+                        ["tmux", "-L", tmux_socket, "rename-window", *rename_target, args.name],
+                        capture_output=True, timeout=5,
+                    )
+                except Exception:
+                    pass
             resume_session_id = args.resume_session
             skip_restore = False
             # Boomerang: when :cd respawns the pane, this fresh process reads
@@ -1942,7 +2014,7 @@ def main():
             sys.exit(0)
 
         if args.close_window:
-            handle_close_window(profile, tmux_socket)
+            handle_close_window(profile, tmux_socket, target=args.window)
             sys.exit(0)
 
         if args.rename:
