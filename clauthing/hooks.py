@@ -75,6 +75,52 @@ def clear_attention(session_id, profile=None):
         _save_attention(data, profile)
 
 
+def _idle_file(profile=None):
+    return get_runtime_dir(profile) / "idle.json"
+
+
+def _load_idle(profile=None):
+    f = _idle_file(profile)
+    if f.exists():
+        try:
+            return json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_idle(data, profile=None):
+    _idle_file(profile).write_text(json.dumps(data, indent=2))
+
+
+def mark_idle(session_id, profile=None):
+    """Record that claude just stopped responding in this session.
+
+    Powers the third tier of --attention (after urgent + messages): "the
+    window you haven't returned to in the longest time".
+    """
+    if not session_id:
+        return
+    data = _load_idle(profile)
+    win = load_windows(profile).get(session_id, {})
+    data[session_id] = {
+        "ts": time.time(),
+        "title": win.get("title"),
+        "socket": win.get("socket"),
+        "path": win.get("path"),
+    }
+    _save_idle(data, profile)
+
+
+def clear_idle(session_id, profile=None):
+    if not session_id:
+        return
+    data = _load_idle(profile)
+    if session_id in data:
+        del data[session_id]
+        _save_idle(data, profile)
+
+
 def handle_notification():
     """Handle Notification hook — Claude wants the user's attention."""
     try:
@@ -103,6 +149,7 @@ def handle_user_prompt_submit(claude_data_dir=None):
         if session_id:
             profile = os.environ.get('CLAUTHING_PROFILE')
             clear_attention(session_id, profile)
+            clear_idle(session_id, profile)
             cwd = input_data.get('cwd', os.getcwd())
             try:
                 claude_pid = None
@@ -295,6 +342,7 @@ def handle_stop():
         profile = os.environ.get('CLAUTHING_PROFILE') or None
         if session_id:
             clear_attention(session_id, profile)
+            mark_idle(session_id, profile)
             save_response_duration(session_id)
             # Snapshot auth so :reload / restarts can repopulate without OAuth.
             try:

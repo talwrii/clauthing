@@ -406,6 +406,34 @@ def _move_relative(ctx, target_name, offset, label):
     return ctx.stop(f"✓ moved {label} '{target_name}'")
 
 
+@command(':echo', independent=True)
+def cmd_echo(ctx):
+    """Echo back whatever follows. Proof that colon commands can print."""
+    return ctx.stop(ctx.args)
+
+
+@command(':go', independent=True)
+def cmd_go(ctx):
+    """Jump to a window by name (or index).
+
+    Usage: :go <window-name>
+    """
+    target = ctx.args.strip()
+    if not target:
+        return ctx.stop("Usage: :go <window-name>")
+    socket = ctx.socket
+    try:
+        result = run(
+            ["tmux", "-L", socket, "select-window", "-t", target],
+            capture_output=True, text=True,
+        )
+    except Exception as e:
+        return ctx.stop(f"❌ select-window failed: {e}")
+    if result.returncode != 0:
+        return ctx.stop(f"❌ No window matching '{target}' on socket {socket}")
+    return ctx.stop(f"✓ Switched to {target}")
+
+
 @command(':after')
 def cmd_after(ctx):
     """Move the current window to immediately after the named window.
@@ -933,12 +961,37 @@ def cmd_login(ctx):
         one_tab_relaunch(socket, launcher)
         return ctx.stop("")
 
-    clauthing_path = shutil.which("clauthing") or "clauthing"
-    subprocess.Popen([clauthing_path, "--resume-session", session_id])
-    subprocess.Popen([
-        "sh", "-c",
-        f"sleep 1.5 && tmux -L {socket} kill-pane"
-    ])
+    # Multi-tab boomerang: respawn-pane in place so the same tmux window
+    # keeps living, just with a fresh claude that reads the new creds.
+    startup_cmd = f'SESSION_ID="{session_id}"; cd "{current_dir}"'
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "set-option", "-w", "@startup_command", startup_cmd],
+            check=True, timeout=5,
+        )
+        try:
+            r = subprocess.run(
+                ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pane_id = r.stdout.strip()
+        except Exception:
+            pane_id = ""
+        target_arg = f"-t {pane_id}" if pane_id else ""
+        subprocess.Popen(
+            ["sh", "-c",
+             f"sleep 0.5 && tmux -L {socket} respawn-pane -k {target_arg} 2>/dev/null"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        log(f":login boomerang failed: {e} — falling back to kill+spawn", profile)
+        clauthing_path = shutil.which("clauthing") or "clauthing"
+        subprocess.Popen([clauthing_path, "--resume-session", session_id])
+        subprocess.Popen([
+            "sh", "-c",
+            f"sleep 1.5 && tmux -L {socket} kill-pane",
+        ])
     return ctx.stop("")
 
 

@@ -204,12 +204,26 @@ def cleanup_expired_timed_permissions(claude_data_dir=None):
 # ── Command Registry ─────────────────────────────────────────────────────────
 
 COMMANDS = {}
+# Commands marked `independent=True` can run via `clauthing --run-independent`
+# (M-; popup) without going through claude's hook pipeline. They must not
+# rely on stdin's hook payload or modify claude's running state.
+INDEPENDENT_COMMANDS = set()
 
 
-def command(prefix):
-    """Register a colon command handler."""
+def command(prefix, *, independent=False):
+    """Register a colon command handler.
+
+    Args:
+        prefix: The :prefix string (e.g. ":msg").
+        independent: When True, the command is also exposed to the M-; popup
+            and can run without round-tripping through claude. Use for
+            commands that only read/write external state or other tmux
+            windows — NOT for ones that touch the current claude session.
+    """
     def decorator(fn):
         COMMANDS[prefix] = fn
+        if independent:
+            INDEPENDENT_COMMANDS.add(prefix)
         return fn
     return decorator
 
@@ -220,6 +234,64 @@ def dispatch(prompt, ctx):
         if prompt == prefix or prompt.startswith(prefix + ' '):
             return COMMANDS[prefix](ctx)
     return None
+
+
+def run_independent(prompt):
+    """Run an independent colon command outside the hook pipeline.
+
+    Used by `clauthing --run-independent` (M-; popup). Constructs a minimal
+    CommandContext: pulls session_id from the current tmux pane's
+    `@session_id`, cwd from the pane's working directory, socket from env.
+
+    Returns (ok, message). Refuses commands not marked `independent=True`.
+    """
+    import subprocess as _sp
+    prompt = (prompt or "").strip()
+    # Strip any leading colons so the user can type either `foo` or `:foo`
+    # in the popup, then prepend exactly one.
+    prompt = ":" + prompt.lstrip(":").strip()
+    if prompt == ":":
+        return False, "Empty command"
+
+    matched = None
+    for prefix in sorted(COMMANDS.keys(), key=len, reverse=True):
+        if prompt == prefix or prompt.startswith(prefix + ' '):
+            matched = prefix
+            break
+    if matched is None:
+        head = prompt.split()[0] if prompt.split() else prompt
+        return False, f"Unknown colon command: {head}"
+    if matched not in INDEPENDENT_COMMANDS:
+        return False, f"{matched} is not marked independent — won't run outside claude"
+
+    socket = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
+    session_id = None
+    cwd = os.getcwd()
+    try:
+        r = _sp.run(
+            ["tmux", "-L", socket, "display-message", "-p",
+             "#{@session_id}\t#{pane_current_path}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        parts = r.stdout.strip().split("\t", 1)
+        if parts and parts[0]:
+            session_id = parts[0]
+        if len(parts) > 1 and parts[1]:
+            cwd = parts[1]
+    except Exception:
+        pass
+
+    input_data = {"session_id": session_id, "cwd": cwd}
+    claude_data_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    ctx = CommandContext(prompt, input_data, socket, claude_data_dir)
+    try:
+        result = COMMANDS[matched](ctx)
+    except Exception as e:
+        import traceback as _tb
+        return False, f"❌ {matched} raised: {e}\n{_tb.format_exc()}"
+    if isinstance(result, dict):
+        return True, result.get("stopReason", "")
+    return True, str(result or "")
 
 
 class CommandContext:

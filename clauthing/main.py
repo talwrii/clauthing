@@ -121,6 +121,14 @@ bind -n M-o last-window
 # M-w: fuzzy-pick a window by name
 bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_index}}: #{{window_name}}' | fzf --header='Jump to window' | grep -oE '^[0-9]+' | xargs -I{{}} tmux select-window -t {{}}"
 
+# M-,: jump to the window currently waiting for attention (:waiting)
+bind -n M-, run-shell "clauthing {f'--profile {profile} ' if profile else ''}--attention > /dev/null 2>&1"
+
+# M-;: prompt for an "independent" colon command (one that doesn't touch
+# the current claude). Uses tmux's native command-prompt which is more
+# reliable for input than display-popup + read.
+bind -n M-\\; command-prompt -p ":" "run-shell \\"clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':%%' > /dev/null 2>&1\\""
+
 # Disable automatic window renaming (we manage names manually)
 set -g automatic-rename off
 set -g allow-rename off
@@ -132,6 +140,9 @@ bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
 set -g status-interval 5
 set -g status 3
 set -g status-style bg=colour235,fg=colour248
+
+# Readable message popups (default yellow bg is unreadable on many terms)
+set -g message-style bg=colour235,fg=colour255,bold
 
 # Line 0: label (left) and path (right)
 set -g status-format[0] '#[bg=colour235,fg=colour248,align=left] [clauthing] #[align=right]#{{pane_current_path}} '
@@ -823,6 +834,14 @@ bind -n M-l next-window
 # M-w: fuzzy-pick a window by name
 bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_index}}: #{{window_name}}' | fzf --header='Jump to window' | grep -oE '^[0-9]+' | xargs -I{{}} tmux select-window -t {{}}"
 
+# M-,: jump to the window currently waiting for attention (:waiting)
+bind -n M-, run-shell "clauthing {f'--profile {profile} ' if profile else ''}--attention > /dev/null 2>&1"
+
+# M-;: prompt for an "independent" colon command (one that doesn't touch
+# the current claude). Uses tmux's native command-prompt which is more
+# reliable for input than display-popup + read.
+bind -n M-\\; command-prompt -p ":" "run-shell \\"clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':%%' > /dev/null 2>&1\\""
+
 # C-q: queue a command for when Claude finishes responding
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
@@ -841,6 +860,9 @@ set -sg escape-time 0
 # Simple status bar (use status-format to avoid conflicts)
 set -g status on
 set -g status-style bg=colour235,fg=colour248
+
+# Readable message popups (default yellow bg is unreadable on many terms)
+set -g message-style bg=colour235,fg=colour255,bold
 set -g status-format[0] '#[align=left] #W #[align=right] #{{pane_current_path}} '
 set -gu status-format[1]
 set -gu status-format[2]
@@ -1207,6 +1229,14 @@ bind -n M-o last-window
 
 # M-w: fuzzy-pick a window by name
 bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_index}}: #{{window_name}}' | fzf --header='Jump to window' | grep -oE '^[0-9]+' | xargs -I{{}} tmux select-window -t {{}}"
+
+# M-,: jump to the window currently waiting for attention (:waiting)
+bind -n M-, run-shell "clauthing {f'--profile {profile} ' if profile else ''}--attention > /dev/null 2>&1"
+
+# M-;: prompt for an "independent" colon command (one that doesn't touch
+# the current claude). Uses tmux's native command-prompt which is more
+# reliable for input than display-popup + read.
+bind -n M-\\; command-prompt -p ":" "run-shell \\"clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':%%' > /dev/null 2>&1\\""
 
 # Some sensible defaults
 set -g mouse on
@@ -1612,6 +1642,10 @@ def main():
         parser.add_argument("--notification", action="store_true", help="Handle Notification hook (internal use)")
         parser.add_argument("--new-claude", action="store_true", help="In-window startup: register session, restore state, exec claude. Used as the tmux default-command of a freshly-spawned window. Does NOT create a window itself.")
         parser.add_argument("--new-window", action="store_true", help="Spawn a new clauthing window in the current tmux server (the one named by $CLAUTHING_TMUX_SOCKET). Pairs with --name and --cwd.")
+        parser.add_argument("--waiting", action="store_true", help="Jump to the most recent window flagged by Claude's Notification hook (i.e. claude is blocked waiting on user input).")
+        parser.add_argument("--attention", action="store_true", help="DWIM version of --waiting: picks the most-recent signal across BOTH claude-attention AND unread inter-window messages, switching to whichever's freshest. Used by the M-, keybinding.")
+        parser.add_argument("--dry-run", "-n", action="store_true", help="With --attention: show which window WOULD be chosen, without switching.")
+        parser.add_argument("--run-independent", type=str, metavar="CMD", help="Run a colon command marked independent=True directly (no claude hook round-trip). Used by the M-; popup.")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
         parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
         parser.add_argument("--name", type=str, metavar="NAME", help="Initial window name for --new-claude. Calls `tmux rename-window` so the standard window-renamed hook fires (same path as M-n).")
@@ -1939,6 +1973,65 @@ def main():
         if args.notification:
             handle_notification()
             sys.exit(0)
+
+        if args.waiting:
+            from clauthing.colon_commands.session_commands import jump_to_waiting
+            ok, msg = jump_to_waiting(profile)
+            print(msg)
+            sys.exit(0 if ok else 1)
+
+        if args.run_independent is not None:
+            # Make sure colon commands are loaded (their @command decorators
+            # register them into COMMANDS).
+            import clauthing.colon_command  # noqa: F401
+            from clauthing.colon_command import run_independent
+            ok, msg = run_independent(args.run_independent)
+            if msg:
+                print(msg)
+                # Also surface the result in the tmux status bar so the
+                # M-; binding (which redirects stdout) can show feedback
+                # without tmux's run-shell result popup.
+                sock = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
+                first_line = msg.splitlines()[0] if msg else ""
+                if first_line:
+                    try:
+                        subprocess.run(
+                            ["tmux", "-L", sock, "display-message", "-d", "3000", first_line],
+                            capture_output=True, timeout=2,
+                        )
+                    except Exception:
+                        pass
+            sys.exit(0 if ok else 1)
+
+        if args.attention:
+            # Wrap in try/except — this is invoked via run-shell with
+            # output discarded, so any uncaught exception would be silent.
+            # We tee errors to both the shared log AND stderr (so when run
+            # directly they're visible).
+            import traceback as _tb
+            try:
+                from clauthing.colon_commands.session_commands import jump_to_attention
+                ok, msg = jump_to_attention(profile, dry_run=bool(getattr(args, "dry_run", False)))
+            except Exception as e:
+                err = f"--attention failed: {e}\n{_tb.format_exc()}"
+                log(err, profile)
+                print(err, file=sys.stderr)
+                sys.exit(1)
+            print(msg)
+            # Also flash the result in the tmux status bar — M-, redirects
+            # stdout to /dev/null, so this is how the user actually sees it
+            # (especially the "already on the window with messages" case).
+            sock = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
+            try:
+                subprocess.run(
+                    ["tmux", "-L", sock, "display-message", "-d", "3000", msg],
+                    capture_output=True, timeout=2,
+                )
+            except Exception as e:
+                err = f"--attention display-message failed: {e}"
+                log(err, profile)
+                print(err, file=sys.stderr)
+            sys.exit(0 if ok else 1)
 
         if args.new_window:
             socket = os.environ.get("CLAUTHING_TMUX_SOCKET")

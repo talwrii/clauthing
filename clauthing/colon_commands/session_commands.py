@@ -1,7 +1,7 @@
 """Session listing, resume, spawn, and messaging colon commands.
 
 Commands: :sessions, :resume, :resume-new, :spawn, :current-sessions,
-          :login-all, :reload-all, :send, :msgs
+          :login-all, :reload-all, :send, :msgs, :message, :msg
 """
 
 import json
@@ -17,25 +17,65 @@ from clauthing.logging import log, run
 from clauthing.session import get_session_name
 
 
-@command(':current-sessions')
+@command(':current-sessions', independent=True)
 def cmd_current_sessions(ctx):
     from clauthing.claude import get_running_sessions
+    from clauthing.hooks import _load_attention, _load_idle
+    from clauthing.events import get_all_windows, get_runtime_dir
+
     sessions = get_running_sessions(ctx.profile)
     if not sessions:
         return ctx.stop("No currently running sessions")
 
+    attention = _load_attention(ctx.profile) or {}
+    idle = _load_idle(ctx.profile) or {}
+    windows = get_all_windows(ctx.profile) or {}
+
+    # Count unread per session from inbox files.
+    msgs_dir = get_runtime_dir(ctx.profile) / "messages"
+    unread = {}
+    if msgs_dir.exists():
+        for inbox in msgs_dir.glob("*.jsonl"):
+            try:
+                n = sum(1 for line in inbox.read_text().splitlines()
+                        if line and not json.loads(line).get("read"))
+                if n:
+                    unread[inbox.stem] = n
+            except Exception:
+                continue
+
+    now = time.time()
     lines = ["Currently running sessions:\n"]
     for i, sess in enumerate(sessions, 1):
         cwd = sess.get('cwd', '?')
         session_id = sess['session_id']
         pid = sess['pid']
-        lines.append(f"{i}. {session_id[:8]}... (PID {pid}) - {cwd}")
+        title = (windows.get(session_id) or {}).get("title")
+        label = f"[{title}] " if title else ""
+
+        tags = []
+        if session_id in attention:
+            tags.append("urgent")
+        n = unread.get(session_id, 0)
+        if n:
+            tags.append(f"msgs:{n}")
+        if session_id in idle:
+            secs = int(now - idle[session_id].get("ts", now))
+            if secs < 60:
+                tags.append(f"idle {secs}s")
+            elif secs < 3600:
+                tags.append(f"idle {secs // 60}m")
+            else:
+                tags.append(f"idle {secs // 3600}h{(secs % 3600) // 60}m")
+        state = f" [{' | '.join(tags)}]" if tags else ""
+
+        lines.append(f"{i}. {label}{session_id[:8]}... (PID {pid}) - {cwd}{state}")
 
     ctx.message(f"✓ {len(sessions)} running")
     return ctx.stop("\n".join(lines))
 
 
-@command(':sessions')
+@command(':sessions', independent=True)
 def cmd_sessions(ctx):
     from clauthing.claude import get_recent_sessions
     from datetime import datetime
@@ -315,40 +355,193 @@ def cmd_resume_new(ctx):
     return ctx.stop(f"✓ Resuming {target_session_id[:8]}...{cwd_msg} in new clauthing window")
 
 
-@command(':waiting')
-def cmd_waiting(ctx):
-    """Switch to the most recent multi-tab window that's waiting for attention."""
+def _unread_message_signals(profile=None):
+    """Return [(session_id, ts), ...] for sessions with unread messages.
+
+    `ts` is the timestamp of the newest unread message in that inbox.
+    """
+    from clauthing.events import get_runtime_dir
+    msgs_dir = get_runtime_dir(profile) / "messages"
+    if not msgs_dir.exists():
+        return []
+    out = []
+    for inbox in msgs_dir.glob("*.jsonl"):
+        try:
+            latest = 0
+            for line in inbox.read_text().splitlines():
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except Exception:
+                    continue
+                if not msg.get("read"):
+                    ts = msg.get("ts", 0)
+                    if ts > latest:
+                        latest = ts
+            if latest:
+                out.append((inbox.stem, latest))
+        except Exception:
+            continue
+    return out
+
+
+def _try_switch_to(session_id, socket, dry_run=False):
+    """Resolve session_id → window on socket and (unless dry_run) select-window.
+
+    Returns the window_id on success, None on failure.
+    """
+    if not socket or socket.startswith("cl1-"):
+        return None
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return None
+    wid = None
+    for line in result.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == session_id:
+            wid = parts[0]
+            break
+    if not wid:
+        return None
+    if dry_run:
+        return wid
+    try:
+        subprocess.run(["tmux", "-L", socket, "select-window", "-t", wid],
+                       check=True, timeout=5)
+    except subprocess.CalledProcessError:
+        return None
+    return wid
+
+
+def jump_to_attention(profile=None, dry_run=False):
+    """Switch to whichever window most wants attention right now.
+
+    Priority tiers (each tier exhausted before falling to the next):
+      1. urgent  — claude's Notification hook fired (permission popup etc.),
+                   sorted most-recent first.
+      2. message — unread inter-window message, sorted most-recent first.
+      3. idle    — claude finished responding and the user hasn't returned,
+                   sorted OLDEST first (return to the most-neglected window).
+
+    Skips entries that resolve to the current window, one-tab sockets, or
+    stale window ids. Returns "✓ Nothing waiting" only when every tier is
+    empty.
+    """
+    from clauthing.hooks import _load_attention, clear_attention, _load_idle
+
+    attention = _load_attention(profile) or {}
+    idle = _load_idle(profile) or {}
+
+    # Tier-tagged candidate list: (tier_rank, sort_key, sid, socket_hint, source, info).
+    # tier_rank ascending = higher priority.
+    # sort_key: for urgent/message we negate ts so largest ts comes first
+    # within the tier; for idle we use the raw ts so smallest (oldest) wins.
+    candidates = []
+    for sid, info in attention.items():
+        candidates.append((0, -info.get("ts", 0), sid, info.get("socket"), "urgent", info))
+    for sid, ts in _unread_message_signals(profile):
+        hint = (attention.get(sid) or {}).get("socket") \
+            or (idle.get(sid) or {}).get("socket")
+        candidates.append((1, -ts, sid, hint, "message", None))
+    for sid, info in idle.items():
+        candidates.append((2, info.get("ts", 0), sid, info.get("socket"), "idle", info))
+
+    if not candidates:
+        return True, "✓ Nothing waiting"
+
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    # Unpack back into the shape the loop below expects.
+    candidates = [(sid, -sort_key if tier < 2 else sort_key, hint, src, info)
+                  for tier, sort_key, sid, hint, src, info in candidates]
+
+    fallback_socket = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
+
+    # Skip the *current* window — switching to where you already are is a
+    # silent no-op. But remember whether we saw any current-window signals
+    # so we can surface them via the message instead of silently doing
+    # nothing.
+    current_session = None
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", fallback_socket, "display-message", "-p", "#{@session_id}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        current_session = r.stdout.strip() or None
+    except Exception:
+        pass
+
+    here_sources = []
+    for sid, ts, socket_hint, source, info in candidates:
+        if sid == current_session:
+            here_sources.append(source)
+            continue
+        socket = socket_hint or fallback_socket
+        wid = _try_switch_to(sid, socket, dry_run=dry_run)
+        if wid:
+            title = (info or {}).get("title") if info else None
+            label = title or sid[:8]
+            prefix = "[dry-run] → " if dry_run else "→ "
+            return True, f"{prefix}{label} ({wid}) [{source}]"
+        if source == "urgent" and not socket_hint:
+            # Stale urgent entry with no socket — drop it.
+            clear_attention(sid, profile)
+        if source == "idle":
+            # Stale idle entry whose window has disappeared. Drop so we
+            # don't keep trying it next time.
+            from clauthing.hooks import clear_idle
+            clear_idle(sid, profile)
+
+    if here_sources:
+        labels = {"urgent": "attention", "message": "messages", "idle": "idle"}
+        bits = []
+        for s in ("urgent", "message", "idle"):
+            if s in here_sources:
+                bits.append(labels[s])
+        return True, f"📬 You're already on the window with {' + '.join(bits)}"
+
+    return False, "❌ Nothing switchable (only one-tab/stale entries)"
+
+
+def jump_to_waiting(profile=None):
+    """Switch tmux to the most recent multi-tab window waiting for attention.
+
+    Returns a (ok, message) tuple. Used by both the :waiting colon command
+    and the M-, run-shell keybinding (clauthing --waiting), so the binding
+    doesn't have to round-trip through claude's input.
+    """
     from clauthing.hooks import _load_attention, clear_attention
     from datetime import datetime
 
-    data = _load_attention(ctx.profile)
+    data = _load_attention(profile)
     if not data:
-        return ctx.stop("✓ Nothing waiting")
+        return True, "✓ Nothing waiting"
 
-    # Sort by ts desc, prefer multi-tab (default-socket) entries
     items = sorted(data.items(), key=lambda kv: kv[1].get('ts', 0), reverse=True)
     multi = [(sid, info) for sid, info in items
              if info.get('socket') and not info.get('socket', '').startswith('cl1-')]
 
     if not multi:
-        # Show what's waiting even if we can't switch
         lines = ["Waiting (one-tab — switch manually):"]
         for sid, info in items[:5]:
             ts = datetime.fromtimestamp(info.get('ts', 0)).strftime('%H:%M:%S')
             lines.append(f"  [{ts}] {info.get('title') or sid[:8]} — {info.get('path') or '?'}")
-        return ctx.stop("\n".join(lines))
+        return False, "\n".join(lines)
 
     target_sid, target_info = multi[0]
     target_socket = target_info.get('socket') or 'default'
 
-    # Find window_id by querying tmux user-option @session_id on each window
     try:
         result = subprocess.run(
             ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
             capture_output=True, text=True, timeout=5
         )
     except Exception as e:
-        return ctx.stop(f"❌ tmux query failed: {e}")
+        return False, f"❌ tmux query failed: {e}"
 
     target_wid = None
     for line in result.stdout.strip().splitlines():
@@ -358,18 +551,27 @@ def cmd_waiting(ctx):
             break
 
     if not target_wid:
-        clear_attention(target_sid, ctx.profile)
-        return ctx.stop(f"❌ Window for {target_sid[:8]} not found — cleared")
+        clear_attention(target_sid, profile)
+        return False, f"❌ Window for {target_sid[:8]} not found — cleared"
 
     try:
         subprocess.run(["tmux", "-L", target_socket, "select-window", "-t", target_wid],
                        check=True, timeout=5)
     except subprocess.CalledProcessError:
-        return ctx.stop(f"❌ Could not switch to {target_wid}")
+        return False, f"❌ Could not switch to {target_wid}"
 
     title = target_info.get('title') or target_sid[:8]
-    ctx.message(f"→ {title}")
-    return ctx.stop(f"→ Switched to {title} ({target_wid})")
+    return True, f"→ Switched to {title} ({target_wid})"
+
+
+@command(':waiting')
+def cmd_waiting(ctx):
+    """Switch to the most recent multi-tab window that's waiting for attention."""
+    ok, msg = jump_to_waiting(ctx.profile)
+    if ok and msg.startswith("→"):
+        # Extract title for the tmux popup message (best-effort).
+        ctx.message(msg.split(" (")[0])
+    return ctx.stop(msg)
 
 
 @command(':spawn')
@@ -605,31 +807,110 @@ def cmd_msgs(ctx):
         if not messages:
             return ctx.stop("📭 No messages in inbox")
 
-        lines = []
-        for msg in messages:
-            ts = msg.get("ts", 0)
-            time_str = time.strftime("%H:%M", time.localtime(ts))
-            from_title = msg.get("from", "unknown")
-            text = msg.get("message", "")
-            read_mark = "" if msg.get("read") else "●"
-            lines.append(f"{read_mark} [{time_str}] {from_title}: {text}")
+        # Show the oldest unread message, mark it read. Each :msg call
+        # progresses to the next. Falls back to the most recent message if
+        # everything is already read.
+        unread = [m for m in messages if not m.get("read")]
+        if unread:
+            msg = min(unread, key=lambda m: m.get("ts", 0))
+            for m in messages:
+                if m.get("ts") == msg.get("ts") and m.get("from_session") == msg.get("from_session"):
+                    m["read"] = True
+                    break
+            with open(inbox_file, "w") as f:
+                for m in messages:
+                    f.write(json.dumps(m) + "\n")
+            remaining = sum(1 for m in messages if not m.get("read"))
+            time_str = time.strftime("%H:%M", time.localtime(msg.get("ts", 0)))
+            tail = f" — {remaining} more, :msg for next" if remaining else ""
+            return ctx.stop(f"📬 [{time_str}] {msg.get('from','unknown')}: {msg.get('message','')}{tail}")
 
-        # Mark all as read
-        with open(inbox_file, "w") as f:
-            for msg in messages:
-                msg["read"] = True
-                f.write(json.dumps(msg) + "\n")
-
-        # Show in popup
-        uid = os.getuid()
-        tmp_msgs = Path(f"/tmp/cl-msgs-{uid}.txt")
-        tmp_msgs.write_text("\n".join(lines))
-        subprocess.run([
-            "tmux", "-L", ctx.socket,
-            "display-popup", "-E", "-w", "80%", "-h", "60%",
-            f"cat {tmp_msgs}; read -n1"
-        ])
-        tmp_msgs.unlink(missing_ok=True)
-        return ctx.stop(f"📬 {len(messages)} message(s)")
+        # Nothing unread — show the most recent read message as a fallback.
+        msg = max(messages, key=lambda m: m.get("ts", 0))
+        time_str = time.strftime("%H:%M", time.localtime(msg.get("ts", 0)))
+        return ctx.stop(f"📭 (all read) [{time_str}] {msg.get('from','unknown')}: {msg.get('message','')}")
     except Exception as e:
         return ctx.stop(f"❌ Error: {str(e)}")
+
+
+def _resolve_session_by_window_name(socket, name):
+    """Return the @session_id of the window named `name` on `socket`, or None."""
+    try:
+        result = run(
+            ["tmux", "-L", socket, "list-windows", "-F",
+             "#{window_name}\t#{window_id}\t#{@session_id}"],
+            capture_output=True, text=True, check=True,
+        )
+    except Exception:
+        return None
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        win_name, win_id, sess_id = parts[0], parts[1], parts[2]
+        if win_name == name:
+            return {"session_id": sess_id, "window_id": win_id}
+    return None
+
+
+def _cmd_message_impl(ctx):
+    """Shared impl for :message and :msg.
+
+    No args  → read inbox (same as :msgs).
+    args     → first whitespace-delimited token is target window name,
+               remainder is the body.
+    """
+    args = ctx.args.strip()
+    if not args:
+        return cmd_msgs(ctx)
+
+    parts = args.split(None, 1)
+    target_name = parts[0]
+    body = parts[1] if len(parts) > 1 else ""
+    if not body:
+        return ctx.stop("❌ Usage: :message <window-name> <body>")
+
+    socket = ctx.socket
+    target = _resolve_session_by_window_name(socket, target_name)
+    if not target or not target["session_id"]:
+        return ctx.stop(f"❌ No window named '{target_name}' on socket {socket}")
+
+    target_session_id = target["session_id"]
+    target_window_id = target["window_id"]
+
+    from clauthing.events import get_runtime_dir, get_all_windows
+    my_session_id = ctx.session_id
+    my_info = get_all_windows().get(my_session_id, {}) if my_session_id else {}
+
+    msgs_dir = get_runtime_dir() / "messages"
+    msgs_dir.mkdir(exist_ok=True)
+    inbox_file = msgs_dir / f"{target_session_id}.jsonl"
+    msg_entry = {
+        "from": my_info.get("title", "unknown"),
+        "from_session": my_session_id or "",
+        "message": body,
+        "ts": time.time(),
+        "read": False,
+    }
+    with open(inbox_file, "a") as f:
+        f.write(json.dumps(msg_entry) + "\n")
+
+    # Also drop the message text into the receiver's pane so it's visible
+    # immediately in scrollback even before they run :msg.
+    try:
+        run(["tmux", "-L", socket, "send-keys", "-t", target_window_id, "-l", body])
+        run(["tmux", "-L", socket, "send-keys", "-t", target_window_id, "Enter"])
+    except Exception:
+        pass
+
+    return ctx.stop(f"✓ Message sent to {target_name}")
+
+
+@command(':message', independent=True)
+def cmd_message(ctx):
+    return _cmd_message_impl(ctx)
+
+
+@command(':msg', independent=True)
+def cmd_msg(ctx):
+    return _cmd_message_impl(ctx)

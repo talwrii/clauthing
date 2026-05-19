@@ -40,6 +40,62 @@ def deep_merge(base, override):
     return result
 
 
+def refresh_session_creds(session_id, profile=None):
+    """Pull the freshest credentials into this session's local file.
+
+    Sequence:
+      1. propagate_credentials() — scan all sessions, copy newest into the
+         shared `claude-data/.credentials.json`.
+      2. If the shared file is newer than this session's local file (or the
+         session has no local file yet), overwrite local with shared.
+
+    This is the cheap hook we run on UserPromptSubmit so a session that
+    started before another window logged in can still pick up fresh OAuth
+    tokens before its next API call.
+    """
+    if not session_id:
+        return
+    try:
+        propagate_credentials(profile)
+    except Exception as e:
+        log(f"refresh_session_creds: propagate failed: {e}", profile)
+        return
+
+    if profile:
+        base_config = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
+    else:
+        base_config = Path.home() / ".config" / "clauthing"
+
+    shared = base_config / "claude-data" / ".credentials.json"
+    local = base_config / "session-configs" / session_id / ".credentials.json"
+    if not shared.exists():
+        return
+
+    try:
+        shared_expiry = json.loads(shared.read_text()).get("claudeAiOauth", {}).get("expiresAt", 0)
+    except Exception:
+        return
+
+    local_expiry = 0
+    if local.exists() and not local.is_symlink():
+        try:
+            local_expiry = json.loads(local.read_text()).get("claudeAiOauth", {}).get("expiresAt", 0)
+        except Exception:
+            pass
+    # Symlinks already resolve to shared, no need to overwrite.
+    elif local.is_symlink():
+        return
+
+    if shared_expiry > local_expiry:
+        try:
+            if local.exists() or local.is_symlink():
+                local.unlink()
+            local.write_text(shared.read_text())
+            log(f"refresh_session_creds: replaced local with shared (expires {shared_expiry})", profile)
+        except Exception as e:
+            log(f"refresh_session_creds: write failed: {e}", profile)
+
+
 def propagate_credentials(profile=None):
     """Copy fresh credentials from any running session back to the shared claude-data dir.
 
@@ -963,6 +1019,9 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
         # Use run() wrapper and override CLAUDE_CONFIG_DIR for this session
         env = os.environ.copy()
         env['CLAUDE_CONFIG_DIR'] = str(session_config_dir)
+        # Make claude clone the plugins repo over HTTPS instead of SSH, so
+        # session startup doesn't prompt for ssh keys we don't have.
+        env.setdefault('CLAUDE_CODE_PLUGIN_PREFER_HTTPS', '1')
         result = run(cmd, stderr=subprocess.PIPE, text=True, env=env, profile=profile)
         
         # Log the exit
