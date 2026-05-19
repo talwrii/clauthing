@@ -163,9 +163,15 @@ def cmd_resume(ctx):
         tmp_in = Path(tempfile.mktemp())
         tmp_out = Path(tempfile.mktemp())
         tmp_in.write_text("\n".join(fzf_lines))
+        clauthing_path = shutil.which("clauthing") or "clauthing"
+        profile_arg = f"--profile {ctx.profile} " if ctx.profile else ""
+        preview_cmd = (
+            f"{clauthing_path} {profile_arg}--session-preview {{1}} --preview-cwd {{3}}"
+        )
         subprocess.run([
-            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "80%", "-h", "60%",
+            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "90%", "-h", "85%",
             f"cat {tmp_in} | fzf --delimiter='\\t' --with-nth=2,3,4,5,6 "
+            f"--preview=\"{preview_cmd}\" --preview-window=right:50%:wrap "
             f"--header='Select session to resume' > {tmp_out}"
         ])
         sel = tmp_out.read_text().strip() if tmp_out.exists() else ""
@@ -251,6 +257,145 @@ def cmd_resume(ctx):
 
     ctx.message(f"✓ Resuming {session_name}")
     return ctx.stop(f"✓ Opening session {target_session_id[:8]}... in new window")
+
+
+def _resume_picker(ctx):
+    """Show the fzf picker used by :resume / :resume-here.
+
+    Returns the chosen session_id or None on cancel.
+    """
+    from clauthing.claude import get_recent_sessions
+    from datetime import datetime
+    from clauthing.claude_utils import encode_project_path
+    import tempfile
+
+    sessions = get_recent_sessions(ctx.profile, limit=200)
+    if not sessions:
+        return None
+
+    if ctx.profile:
+        projects_root = (Path.home() / ".config" / "clauthing"
+                         / "other-profiles" / ctx.profile / "claude-data" / "projects")
+    else:
+        projects_root = Path.home() / ".config" / "clauthing" / "claude-data" / "projects"
+
+    def count_user_messages(sid, cwd):
+        if not cwd:
+            return 0
+        sf = projects_root / encode_project_path(cwd) / f"{sid}.jsonl"
+        if not sf.exists():
+            return 0
+        try:
+            text = sf.read_text(errors="ignore")
+            return text.count('"type":"user"') + text.count('"type": "user"')
+        except Exception:
+            return 0
+
+    fzf_lines = []
+    for sess in sessions:
+        sid = sess['session_id']
+        title = sess.get('title') or sid[:8]
+        cwd = sess.get('cwd') or '?'
+        mtime = datetime.fromtimestamp(sess['last_modified']).strftime('%Y-%m-%d %H:%M')
+        last_msg = (sess.get('last_message') or '').replace('\n', ' ').strip()
+        if len(last_msg) > 60:
+            last_msg = last_msg[:60] + '...'
+        n_msgs = count_user_messages(sid, sess.get('cwd'))
+        fzf_lines.append(f"{sid}\t{title}\t{cwd}\t{mtime}\t{n_msgs}msg\t{last_msg}")
+
+    tmp_in = Path(tempfile.mktemp())
+    tmp_out = Path(tempfile.mktemp())
+    tmp_in.write_text("\n".join(fzf_lines))
+    clauthing_path = shutil.which("clauthing") or "clauthing"
+    profile_arg = f"--profile {ctx.profile} " if ctx.profile else ""
+    preview_cmd = (
+        f"{clauthing_path} {profile_arg}--session-preview {{1}} --preview-cwd {{3}}"
+    )
+    subprocess.run([
+        "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "90%", "-h", "85%",
+        f"cat {tmp_in} | fzf --delimiter='\\t' --with-nth=2,3,4,5,6 "
+        f"--preview=\"{preview_cmd}\" --preview-window=right:50%:wrap "
+        f"--header='Select session to resume' > {tmp_out}"
+    ])
+    sel = tmp_out.read_text().strip() if tmp_out.exists() else ""
+    tmp_in.unlink(missing_ok=True)
+    tmp_out.unlink(missing_ok=True)
+    if not sel:
+        return None
+    return sel.split('\t')[0]
+
+
+@command(':resume-here')
+def cmd_resume_here(ctx):
+    """Resume a session IN THE CURRENT WINDOW (respawn-pane boomerang).
+
+    Same picker / preview as :resume, but instead of spawning a new tmux
+    window, swaps the resumed claude into the existing pane via the
+    `@startup_command` + `respawn-pane -k` flow (matches :reload / :login).
+    """
+    arg = ctx.args.strip()
+    target_session_id = None
+
+    if not arg:
+        target_session_id = _resume_picker(ctx)
+        if not target_session_id:
+            return ctx.stop("Cancelled")
+    elif arg.isdigit():
+        from clauthing.claude import get_recent_sessions
+        sessions = get_recent_sessions(ctx.profile, limit=10)
+        index = int(arg) - 1
+        if 0 <= index < len(sessions):
+            target_session_id = sessions[index]['session_id']
+        else:
+            return ctx.stop(f"❌ Session number {arg} not found")
+    else:
+        target_session_id = arg
+
+    # Look up session metadata for cwd + name.
+    state_dir = get_state_dir()
+    meta_file = state_dir / "sessions" / f"{target_session_id}.json"
+    session_path = ctx.cwd
+    session_name = target_session_id[:8]
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text())
+            session_path = meta.get("path", session_path)
+            if meta.get("name"):
+                session_name = meta["name"]
+        except Exception:
+            pass
+
+    socket = ctx.socket
+    # Boomerang: rename the current window, set @startup_command so the
+    # respawned --new-claude resumes the chosen session, then respawn-pane.
+    startup_cmd = (
+        f'tmux -L {socket} rename-window "{session_name}" 2>/dev/null; '
+        f'SESSION_ID="{target_session_id}"; cd "{session_path}"'
+    )
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "set-option", "-w",
+             "@startup_command", startup_cmd],
+            check=True, timeout=5,
+        )
+        r = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pane_id = r.stdout.strip()
+        target_arg = f"-t {pane_id}" if pane_id else ""
+        subprocess.Popen(
+            ["sh", "-c",
+             f"sleep 0.5 && tmux -L {socket} respawn-pane -k {target_arg} 2>/dev/null"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        log(f":resume-here boomerang failed: {e}", ctx.profile)
+        return ctx.stop(f"❌ Resume failed: {e}")
+
+    ctx.message(f"✓ Resuming {session_name} in place")
+    return ctx.stop(f"✓ Resuming {target_session_id[:8]}... in current window")
 
 
 @command(':resume-new')

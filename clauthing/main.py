@@ -1646,6 +1646,8 @@ def main():
         parser.add_argument("--attention", action="store_true", help="DWIM version of --waiting: picks the most-recent signal across BOTH claude-attention AND unread inter-window messages, switching to whichever's freshest. Used by the M-, keybinding.")
         parser.add_argument("--dry-run", "-n", action="store_true", help="With --attention: show which window WOULD be chosen, without switching.")
         parser.add_argument("--run-independent", type=str, metavar="CMD", help="Run a colon command marked independent=True directly (no claude hook round-trip). Used by the M-; popup.")
+        parser.add_argument("--session-preview", type=str, metavar="SID", help="Print the last few messages of a session, formatted for fzf preview. Pair with --preview-cwd to disambiguate.")
+        parser.add_argument("--preview-cwd", type=str, metavar="PATH", help="Working directory hint for --session-preview (limits the project dir scan).")
         parser.add_argument("--resume-session", type=str, metavar="SESSION_ID", help="Resume specific session in new window (internal use)")
         parser.add_argument("--cwd", type=str, metavar="PATH", help="Working directory for resumed session (internal use)")
         parser.add_argument("--name", type=str, metavar="NAME", help="Initial window name for --new-claude. Calls `tmux rename-window` so the standard window-renamed hook fires (same path as M-n).")
@@ -1979,6 +1981,64 @@ def main():
             ok, msg = jump_to_waiting(profile)
             print(msg)
             sys.exit(0 if ok else 1)
+
+        if args.session_preview:
+            # Resolve the session jsonl, then print the last few user /
+            # assistant exchanges. Designed to be piped to fzf's --preview.
+            from clauthing.claude_utils import encode_project_path
+            if profile:
+                projects_root = (Path.home() / ".config" / "clauthing"
+                                 / "other-profiles" / profile / "claude-data" / "projects")
+            else:
+                projects_root = Path.home() / ".config" / "clauthing" / "claude-data" / "projects"
+            sid = args.session_preview
+            session_file = None
+            if args.preview_cwd:
+                candidate = projects_root / encode_project_path(args.preview_cwd) / f"{sid}.jsonl"
+                if candidate.exists():
+                    session_file = candidate
+            if session_file is None:
+                # Fallback: scan all project dirs for <sid>.jsonl.
+                for proj_dir in projects_root.glob("*"):
+                    candidate = proj_dir / f"{sid}.jsonl"
+                    if candidate.exists():
+                        session_file = candidate
+                        break
+            if session_file is None:
+                print(f"(no session file found for {sid[:8]})")
+                sys.exit(0)
+            try:
+                entries = []
+                for line in session_file.read_text(errors="ignore").splitlines():
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        continue
+                    t = e.get("type")
+                    if t == "user":
+                        content = e.get("message", {}).get("content", "")
+                        if isinstance(content, str):
+                            entries.append(("user", content))
+                    elif t == "assistant":
+                        content = e.get("message", {}).get("content", [])
+                        if isinstance(content, list):
+                            text = "".join(
+                                block.get("text", "")
+                                for block in content
+                                if isinstance(block, dict) and block.get("type") == "text"
+                            )
+                            if text.strip():
+                                entries.append(("assistant", text))
+                for role, text in entries[-6:]:
+                    text = text.strip().replace("\r", "")
+                    print(f"━━ {role} ━━")
+                    print(text[:1500] + ("…" if len(text) > 1500 else ""))
+                    print()
+            except Exception as e:
+                print(f"(error reading session: {e})")
+            sys.exit(0)
 
         if args.run_independent is not None:
             # Make sure colon commands are loaded (their @command decorators
