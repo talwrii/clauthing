@@ -13,9 +13,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from clauthing.mcp_lazy import get_mcp
 
 
 def get_kc_skills_dir() -> Path:
@@ -39,9 +37,10 @@ def validate_skill_name(name: str) -> str | None:
 
 async def run_skills_mcp_server():
     """Run the skills MCP server."""
-    server = Server("clauthing-skills")
+    mcp = get_mcp()
+    server = mcp.Server("clauthing-skills")
 
-    create_skill_tool = Tool(
+    create_skill_tool = mcp.Tool(
         name="create_skill",
         description=(
             "Create a cl-skill (clauthing skill, invoked with ::name). "
@@ -65,7 +64,7 @@ async def run_skills_mcp_server():
         },
     )
 
-    update_skill_tool = Tool(
+    update_skill_tool = mcp.Tool(
         name="update_skill",
         description=(
             "Update an existing cl-skill (clauthing skill). "
@@ -88,7 +87,7 @@ async def run_skills_mcp_server():
         },
     )
 
-    read_skill_tool = Tool(
+    read_skill_tool = mcp.Tool(
         name="read_skill",
         description="Read the content of a cl-skill (clauthing skill, ::name).",
         inputSchema={
@@ -103,7 +102,7 @@ async def run_skills_mcp_server():
         },
     )
 
-    list_skills_tool = Tool(
+    list_skills_tool = mcp.Tool(
         name="list_skills",
         description="List all cl-skills (clauthing skills, ::name) with descriptions.",
         inputSchema={
@@ -112,7 +111,7 @@ async def run_skills_mcp_server():
         },
     )
 
-    patch_skill_tool = Tool(
+    patch_skill_tool = mcp.Tool(
         name="patch_skill",
         description=(
             "Apply a unified diff patch to a cl-skill (clauthing skill). "
@@ -135,7 +134,7 @@ async def run_skills_mcp_server():
         },
     )
 
-    delete_skill_tool = Tool(
+    delete_skill_tool = mcp.Tool(
         name="delete_skill",
         description="Delete a cl-skill (clauthing skill file).",
         inputSchema={
@@ -163,49 +162,49 @@ async def run_skills_mcp_server():
             content = arguments.get("content", "")
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skills_dir.mkdir(parents=True, exist_ok=True)
             skill_file = skills_dir / f"{skill_name}.md"
 
             if skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' already exists. Use update_skill to modify.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' already exists. Use update_skill to modify.")]
 
             skill_file.write_text(content)
-            return [TextContent(type="text", text=f"Created skill '{skill_name}'. Use ::{skill_name} to invoke.")]
+            return [mcp.TextContent(type="text", text=f"Created skill '{skill_name}'. Use ::{skill_name} to invoke.")]
 
         elif name == "update_skill":
             skill_name = arguments.get("name", "").strip()
             content = arguments.get("content", "")
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / f"{skill_name}.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist. Use create_skill first.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist. Use create_skill first.")]
 
             skill_file.write_text(content)
-            return [TextContent(type="text", text=f"Updated skill '{skill_name}'.")]
+            return [mcp.TextContent(type="text", text=f"Updated skill '{skill_name}'.")]
 
         elif name == "read_skill":
             skill_name = arguments.get("name", "").strip()
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / f"{skill_name}.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
 
             content = skill_file.read_text()
-            return [TextContent(type="text", text=content)]
+            return [mcp.TextContent(type="text", text=content)]
 
         elif name == "list_skills":
             if not skills_dir.exists():
-                return [TextContent(type="text", text="No cl-skills directory found.")]
+                return [mcp.TextContent(type="text", text="No cl-skills directory found.")]
 
             skills = []
             for f in sorted(skills_dir.glob("*.md")):
@@ -213,9 +212,9 @@ async def run_skills_mcp_server():
                 skills.append(f"{f.stem}: {first_line}")
 
             if not skills:
-                return [TextContent(type="text", text="No cl-skills found.")]
+                return [mcp.TextContent(type="text", text="No cl-skills found.")]
 
-            return [TextContent(type="text", text="\n".join(skills))]
+            return [mcp.TextContent(type="text", text="\n".join(skills))]
 
         elif name == "patch_skill":
             import subprocess
@@ -223,12 +222,12 @@ async def run_skills_mcp_server():
             patch_content = arguments.get("patch", "")
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / f"{skill_name}.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
 
             # Apply patch using subprocess
             try:
@@ -239,30 +238,30 @@ async def run_skills_mcp_server():
                     text=True
                 )
                 if result.returncode != 0:
-                    return [TextContent(type="text", text=f"Patch failed:\n{result.stderr}\n{result.stdout}")]
-                return [TextContent(type="text", text=f"Patched skill '{skill_name}'.\n{result.stdout}")]
+                    return [mcp.TextContent(type="text", text=f"Patch failed:\n{result.stderr}\n{result.stdout}")]
+                return [mcp.TextContent(type="text", text=f"Patched skill '{skill_name}'.\n{result.stdout}")]
             except FileNotFoundError:
-                return [TextContent(type="text", text="Error: 'patch' command not found. Install with: sudo apt install patch")]
+                return [mcp.TextContent(type="text", text="Error: 'patch' command not found. Install with: sudo apt install patch")]
             except Exception as e:
-                return [TextContent(type="text", text=f"Error applying patch: {e}")]
+                return [mcp.TextContent(type="text", text=f"Error applying patch: {e}")]
 
         elif name == "delete_skill":
             skill_name = arguments.get("name", "").strip()
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / f"{skill_name}.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
 
             skill_file.unlink()
-            return [TextContent(type="text", text=f"Deleted skill '{skill_name}'.")]
+            return [mcp.TextContent(type="text", text=f"Deleted skill '{skill_name}'.")]
 
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
 
-    async with stdio_server() as (read_stream, write_stream):
+    async with mcp.stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 

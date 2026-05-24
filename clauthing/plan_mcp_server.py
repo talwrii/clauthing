@@ -14,9 +14,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from clauthing.mcp_lazy import get_mcp
 
 
 def get_config_dir(profile: Optional[str] = None) -> Path:
@@ -146,10 +144,11 @@ def get_window_status_info(profile: Optional[str] = None) -> dict:
 
 async def run_plan_mcp_server(profile: Optional[str] = None):
     """Run the planning MCP server."""
-    server = Server("clauthing-planning")
+    mcp = get_mcp()
+    server = mcp.Server("clauthing-planning")
 
     # Define tools
-    list_sessions_tool = Tool(
+    list_sessions_tool = mcp.Tool(
         name="list_sessions",
         description="List all clauthing sessions with metadata (name, path, notes status, last modified)",
         inputSchema={
@@ -159,7 +158,7 @@ async def run_plan_mcp_server(profile: Optional[str] = None):
         },
     )
 
-    get_session_notes_tool = Tool(
+    get_session_notes_tool = mcp.Tool(
         name="get_session_notes",
         description="Get the notes content for a specific session by session_id",
         inputSchema={
@@ -174,7 +173,7 @@ async def run_plan_mcp_server(profile: Optional[str] = None):
         },
     )
 
-    get_window_status_tool = Tool(
+    get_window_status_tool = mcp.Tool(
         name="get_window_status",
         description="Get status of all open clauthing windows (session IDs, working directories, session names)",
         inputSchema={
@@ -192,7 +191,7 @@ async def run_plan_mcp_server(profile: Optional[str] = None):
     async def call_tool(name: str, arguments: dict):
         if name == "list_sessions":
             sessions = list_all_sessions(profile)
-            return [TextContent(
+            return [mcp.TextContent(
                 type="text",
                 text=json.dumps(sessions, indent=2)
             )]
@@ -200,25 +199,25 @@ async def run_plan_mcp_server(profile: Optional[str] = None):
         elif name == "get_session_notes":
             session_id = arguments.get("session_id")
             if not session_id:
-                return [TextContent(type="text", text="Error: session_id required")]
+                return [mcp.TextContent(type="text", text="Error: session_id required")]
 
             notes = get_session_notes_content(session_id, profile)
             if notes is None:
-                return [TextContent(type="text", text=f"No notes found for session {session_id}")]
+                return [mcp.TextContent(type="text", text=f"No notes found for session {session_id}")]
 
-            return [TextContent(type="text", text=notes)]
+            return [mcp.TextContent(type="text", text=notes)]
 
         elif name == "get_window_status":
             status = get_window_status_info(profile)
-            return [TextContent(
+            return [mcp.TextContent(
                 type="text",
                 text=json.dumps(status, indent=2)
             )]
 
         else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
 
-    async with stdio_server() as (read_stream, write_stream):
+    async with mcp.stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 

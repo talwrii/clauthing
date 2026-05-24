@@ -14,11 +14,8 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-
 from clauthing.tmux import focus_mcp_origin
+from clauthing.mcp_lazy import get_mcp
 
 
 def get_tmux_socket():
@@ -45,7 +42,7 @@ def get_state_dir():
 def confirm_popup(message):
     """Show a tmux confirmation popup. Returns True if confirmed."""
     socket = get_tmux_socket()
-    focus_mcp_origin(socket)
+    prev_window = focus_mcp_origin(socket)
     # Use a temp file for the message body so we don't have to worry about
     # quoting (the message contains arbitrary user-controlled text including
     # colons, dashes, paths).
@@ -78,6 +75,14 @@ exit 0
         return False
     finally:
         msg_file.unlink(missing_ok=True)
+        if prev_window:
+            try:
+                subprocess.run(
+                    ["tmux", "-L", socket, "select-window", "-t", prev_window],
+                    capture_output=True, timeout=2,
+                )
+            except Exception:
+                pass
 
 
 def read_linked_window_id():
@@ -196,7 +201,8 @@ def run_command(command):
 
 async def run_command_mcp_server(enable_commands=False):
     """Run the command MCP server."""
-    server = Server(
+    mcp = get_mcp()
+    server = mcp.Server(
         "clauthing-commands",
         instructions=(
             "Tools for interacting with the user's tmux setup.\n"
@@ -215,7 +221,7 @@ async def run_command_mcp_server(enable_commands=False):
         ),
     )
 
-    read_tmux_tool = Tool(
+    read_tmux_tool = mcp.Tool(
         name="read_tmux",
         description=(
             "Read the contents of the linked tmux pane (the user's terminal). "
@@ -224,7 +230,7 @@ async def run_command_mcp_server(enable_commands=False):
         inputSchema={"type": "object", "properties": {}, "required": []},
     )
 
-    focus_tmux_tool = Tool(
+    focus_tmux_tool = mcp.Tool(
         name="focus_tmux",
         description=(
             "Switch the user's default tmux server to the linked window. "
@@ -234,7 +240,7 @@ async def run_command_mcp_server(enable_commands=False):
         inputSchema={"type": "object", "properties": {}, "required": []},
     )
 
-    kill_tmux_tool = Tool(
+    kill_tmux_tool = mcp.Tool(
         name="kill_tmux",
         description=(
             "Kill the linked tmux window in the user's default tmux server and "
@@ -244,7 +250,7 @@ async def run_command_mcp_server(enable_commands=False):
         inputSchema={"type": "object", "properties": {}, "required": []},
     )
 
-    kitty_command_tool = Tool(
+    kitty_command_tool = mcp.Tool(
         name="kitty_command",
         description=(
             "Run a clauthing colon command. The user will be asked to confirm via popup. "
@@ -274,20 +280,20 @@ async def run_command_mcp_server(enable_commands=False):
     async def call_tool(name, arguments):
         if name == "read_tmux":
             result = read_linked_tmux()
-            return [TextContent(type="text", text=result)]
+            return [mcp.TextContent(type="text", text=result)]
 
         if name == "focus_tmux":
             linked_window = read_linked_window_id()
             if not linked_window:
-                return [TextContent(type="text", text="No tmux window linked.")]
+                return [mcp.TextContent(type="text", text="No tmux window linked.")]
             try:
                 subprocess.run(
                     ["tmux", "-L", "default", "select-window", "-t", linked_window],
                     check=True, capture_output=True, text=True, timeout=5,
                 )
-                return [TextContent(type="text", text=f"Focused {linked_window}")]
+                return [mcp.TextContent(type="text", text=f"Focused {linked_window}")]
             except subprocess.CalledProcessError as e:
-                return [TextContent(
+                return [mcp.TextContent(
                     type="text",
                     text=f"Failed to focus {linked_window}: {e.stderr or e}"
                 )]
@@ -295,7 +301,7 @@ async def run_command_mcp_server(enable_commands=False):
         if name == "kill_tmux":
             linked_window = read_linked_window_id()
             if not linked_window:
-                return [TextContent(type="text", text="No tmux window linked.")]
+                return [mcp.TextContent(type="text", text="No tmux window linked.")]
             session_id = get_session_id()
             try:
                 subprocess.run(
@@ -314,18 +320,18 @@ async def run_command_mcp_server(enable_commands=False):
                         mf.write_text(json.dumps(meta, indent=2))
                     except Exception:
                         pass
-            return [TextContent(type="text", text=f"Killed and unlinked {linked_window}")]
+            return [mcp.TextContent(type="text", text=f"Killed and unlinked {linked_window}")]
 
         if name == "kitty_command" and enable_commands:
             command = arguments.get("command", "")
             if not command.startswith(':'):
                 command = ':' + command
             result = run_command(command)
-            return [TextContent(type="text", text=result)]
+            return [mcp.TextContent(type="text", text=result)]
 
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
 
-    async with stdio_server() as (read_stream, write_stream):
+    async with mcp.stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 

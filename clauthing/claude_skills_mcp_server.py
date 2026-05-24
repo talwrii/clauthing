@@ -16,9 +16,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from clauthing.mcp_lazy import get_mcp
 
 
 def get_claude_skills_dir() -> Path:
@@ -42,9 +40,10 @@ def validate_skill_name(name: str) -> str | None:
 
 async def run_claude_skills_mcp_server():
     """Run the Claude skills MCP server."""
-    server = Server("claude-skills")
+    mcp = get_mcp()
+    server = mcp.Server("claude-skills")
 
-    create_skill_tool = Tool(
+    create_skill_tool = mcp.Tool(
         name="create_claude_skill",
         description=(
             "Create a Claude Code skill (Anthropic's official CLI). "
@@ -69,7 +68,7 @@ async def run_claude_skills_mcp_server():
         },
     )
 
-    update_skill_tool = Tool(
+    update_skill_tool = mcp.Tool(
         name="update_claude_skill",
         description=(
             "Update an existing Claude Code skill (slash command). "
@@ -92,7 +91,7 @@ async def run_claude_skills_mcp_server():
         },
     )
 
-    read_skill_tool = Tool(
+    read_skill_tool = mcp.Tool(
         name="read_claude_skill",
         description="Read the SKILL.md content of a Claude Code skill (slash command).",
         inputSchema={
@@ -107,7 +106,7 @@ async def run_claude_skills_mcp_server():
         },
     )
 
-    list_skills_tool = Tool(
+    list_skills_tool = mcp.Tool(
         name="list_claude_skills",
         description="List all Claude Code skills (slash commands) with their descriptions.",
         inputSchema={
@@ -116,7 +115,7 @@ async def run_claude_skills_mcp_server():
         },
     )
 
-    patch_skill_tool = Tool(
+    patch_skill_tool = mcp.Tool(
         name="patch_claude_skill",
         description=(
             "Apply a unified diff patch to a Claude Code skill (slash command). "
@@ -139,7 +138,7 @@ async def run_claude_skills_mcp_server():
         },
     )
 
-    delete_skill_tool = Tool(
+    delete_skill_tool = mcp.Tool(
         name="delete_claude_skill",
         description="Delete a Claude Code skill (removes the entire skill directory).",
         inputSchema={
@@ -167,50 +166,50 @@ async def run_claude_skills_mcp_server():
             content = arguments.get("content", "")
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_dir = skills_dir / skill_name
             skill_file = skill_dir / "SKILL.md"
 
             if skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' already exists. Use update_claude_skill to modify.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' already exists. Use update_claude_skill to modify.")]
 
             skill_dir.mkdir(parents=True, exist_ok=True)
             skill_file.write_text(content)
-            return [TextContent(type="text", text=f"Created skill '{skill_name}'. Use /{skill_name} to invoke. Reload to pick up changes.")]
+            return [mcp.TextContent(type="text", text=f"Created skill '{skill_name}'. Use /{skill_name} to invoke. Reload to pick up changes.")]
 
         elif name == "update_claude_skill":
             skill_name = arguments.get("name", "").strip()
             content = arguments.get("content", "")
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / skill_name / "SKILL.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist. Use create_claude_skill first.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist. Use create_claude_skill first.")]
 
             skill_file.write_text(content)
-            return [TextContent(type="text", text=f"Updated skill '{skill_name}'. Reload to pick up changes.")]
+            return [mcp.TextContent(type="text", text=f"Updated skill '{skill_name}'. Reload to pick up changes.")]
 
         elif name == "read_claude_skill":
             skill_name = arguments.get("name", "").strip()
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / skill_name / "SKILL.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
 
             content = skill_file.read_text()
-            return [TextContent(type="text", text=content)]
+            return [mcp.TextContent(type="text", text=content)]
 
         elif name == "list_claude_skills":
             if not skills_dir.exists():
-                return [TextContent(type="text", text="No Claude skills directory found.")]
+                return [mcp.TextContent(type="text", text="No Claude skills directory found.")]
 
             skills = []
             for skill_dir in sorted(skills_dir.iterdir()):
@@ -227,9 +226,9 @@ async def run_claude_skills_mcp_server():
                         skills.append(f"/{skill_dir.name}: {desc}")
 
             if not skills:
-                return [TextContent(type="text", text="No Claude skills found.")]
+                return [mcp.TextContent(type="text", text="No Claude skills found.")]
 
-            return [TextContent(type="text", text="\n".join(skills))]
+            return [mcp.TextContent(type="text", text="\n".join(skills))]
 
         elif name == "patch_claude_skill":
             import subprocess
@@ -237,12 +236,12 @@ async def run_claude_skills_mcp_server():
             patch_content = arguments.get("patch", "")
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_file = skills_dir / skill_name / "SKILL.md"
 
             if not skill_file.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
 
             # Apply patch using subprocess
             try:
@@ -253,31 +252,31 @@ async def run_claude_skills_mcp_server():
                     text=True
                 )
                 if result.returncode != 0:
-                    return [TextContent(type="text", text=f"Patch failed:\n{result.stderr}\n{result.stdout}")]
-                return [TextContent(type="text", text=f"Patched skill '{skill_name}'. Reload to pick up changes.\n{result.stdout}")]
+                    return [mcp.TextContent(type="text", text=f"Patch failed:\n{result.stderr}\n{result.stdout}")]
+                return [mcp.TextContent(type="text", text=f"Patched skill '{skill_name}'. Reload to pick up changes.\n{result.stdout}")]
             except FileNotFoundError:
-                return [TextContent(type="text", text="Error: 'patch' command not found. Install with: sudo apt install patch")]
+                return [mcp.TextContent(type="text", text="Error: 'patch' command not found. Install with: sudo apt install patch")]
             except Exception as e:
-                return [TextContent(type="text", text=f"Error applying patch: {e}")]
+                return [mcp.TextContent(type="text", text=f"Error applying patch: {e}")]
 
         elif name == "delete_claude_skill":
             import shutil
             skill_name = arguments.get("name", "").strip()
 
             if err := validate_skill_name(skill_name):
-                return [TextContent(type="text", text=err)]
+                return [mcp.TextContent(type="text", text=err)]
 
             skill_dir = skills_dir / skill_name
 
             if not skill_dir.exists():
-                return [TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
+                return [mcp.TextContent(type="text", text=f"Error: skill '{skill_name}' does not exist.")]
 
             shutil.rmtree(skill_dir)
-            return [TextContent(type="text", text=f"Deleted skill '{skill_name}'. Reload to pick up changes.")]
+            return [mcp.TextContent(type="text", text=f"Deleted skill '{skill_name}'. Reload to pick up changes.")]
 
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
 
-    async with stdio_server() as (read_stream, write_stream):
+    async with mcp.stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 

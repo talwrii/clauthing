@@ -18,9 +18,7 @@ import asyncio
 import subprocess
 import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from clauthing.mcp_lazy import get_mcp
 
 
 def parse_spaced(val: str) -> tuple[str, str]:
@@ -215,7 +213,7 @@ def build_command(base_command: str, tool: dict, params: dict, extra_args: list 
     return cmd
 
 
-def build_mcp_tool(tool: dict) -> Tool:
+def build_mcp_tool(tool: dict):
     """Build MCP Tool from tool definition."""
     properties = {}
     required = []
@@ -252,7 +250,7 @@ def build_mcp_tool(tool: dict) -> Tool:
                 "description": flag["description"],
             }
     
-    return Tool(
+    return get_mcp().Tool(
         name=tool["name"],
         description=tool["description"],
         inputSchema={
@@ -265,7 +263,8 @@ def build_mcp_tool(tool: dict) -> Tool:
 
 async def run_server(base_command: str, tools: list, extra_args: list = None):
     """Run the MCP server."""
-    server = Server("mcp-exec")
+    mcp = get_mcp()
+    server = mcp.Server("mcp-exec")
     
     mcp_tools = [build_mcp_tool(t) for t in tools]
     tool_map = {t["name"]: t for t in tools}
@@ -277,7 +276,7 @@ async def run_server(base_command: str, tools: list, extra_args: list = None):
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         if name not in tool_map:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
         
         tool = tool_map[name]
         cmd = build_command(base_command, tool, arguments, extra_args)
@@ -294,13 +293,13 @@ async def run_server(base_command: str, tools: list, extra_args: list = None):
                 output += f"\nSTDERR:\n{result.stderr}"
             if result.returncode != 0:
                 output += f"\nExit code: {result.returncode}"
-            return [TextContent(type="text", text=output or "(no output)")]
+            return [mcp.TextContent(type="text", text=output or "(no output)")]
         except subprocess.TimeoutExpired:
-            return [TextContent(type="text", text="Command timed out")]
+            return [mcp.TextContent(type="text", text="Command timed out")]
         except Exception as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
+            return [mcp.TextContent(type="text", text=f"Error: {e}")]
     
-    async with stdio_server() as (read_stream, write_stream):
+    async with mcp.stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 

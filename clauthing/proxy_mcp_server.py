@@ -15,19 +15,14 @@ import os
 import subprocess
 import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.client.stdio import stdio_client, StdioServerParameters
-from mcp import ClientSession
-from mcp.types import TextContent
-
 from clauthing.tmux import focus_mcp_origin
+from clauthing.mcp_lazy import get_mcp
 
 
 def confirm_popup(tool_name, arguments):
     """Show a tmux popup to approve a tool call. Returns True if approved."""
     socket = os.environ.get('CLAUTHING_TMUX_SOCKET', 'clauthing')
-    focus_mcp_origin(socket)
+    prev_window = focus_mcp_origin(socket)
 
     # Format for display
     args_summary = json.dumps(arguments, indent=2)
@@ -54,10 +49,20 @@ exit 0
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         return False
+    finally:
+        if prev_window:
+            try:
+                subprocess.run(
+                    ["tmux", "-L", socket, "select-window", "-t", prev_window],
+                    capture_output=True, timeout=2,
+                )
+            except Exception:
+                pass
 
 
 async def run_proxy(mcpdef_json):
     """Run the MCP proxy server."""
+    mcp = get_mcp()
     mcpdef = json.loads(mcpdef_json)
     command = mcpdef["command"]
     args = mcpdef.get("args", [])
@@ -68,16 +73,16 @@ async def run_proxy(mcpdef_json):
     if env_overrides:
         real_env.update(env_overrides)
 
-    server_params = StdioServerParameters(
+    server_params = mcp.StdioServerParameters(
         command=command,
         args=args,
         env=real_env,
     )
 
-    proxy = Server("mcp-proxy")
+    proxy = mcp.Server("mcp-proxy")
 
-    async with stdio_client(server_params) as (client_read, client_write):
-        async with ClientSession(client_read, client_write) as client:
+    async with mcp.stdio_client(server_params) as (client_read, client_write):
+        async with mcp.ClientSession(client_read, client_write) as client:
             await client.initialize()
 
             # Get tools from real server
@@ -90,12 +95,12 @@ async def run_proxy(mcpdef_json):
             @proxy.call_tool()
             async def call_tool(name, arguments):
                 if not confirm_popup(name, arguments):
-                    return [TextContent(type="text", text=f"User denied: {name}")]
+                    return [mcp.TextContent(type="text", text=f"User denied: {name}")]
 
                 result = await client.call_tool(name, arguments)
                 return result.content
 
-            async with stdio_server() as (read_stream, write_stream):
+            async with mcp.stdio_server() as (read_stream, write_stream):
                 await proxy.run(read_stream, write_stream, proxy.create_initialization_options())
 
 

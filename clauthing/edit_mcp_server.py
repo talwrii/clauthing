@@ -15,9 +15,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from clauthing.mcp_lazy import get_mcp
 
 
 def get_tmux_socket() -> str:
@@ -39,9 +37,10 @@ def _file_summary(path: Path, max_head_lines: int = 10) -> str:
 
 
 async def run_edit_mcp_server():
-    server = Server("clauthing-edit")
+    mcp = get_mcp()
+    server = mcp.Server("clauthing-edit")
 
-    edit_tool = Tool(
+    edit_tool = mcp.Tool(
         name="edit_file",
         description=(
             "Open the given file in vim inside a tmux popup so the user can edit "
@@ -69,11 +68,11 @@ async def run_edit_mcp_server():
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         if name != "edit_file":
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
 
         raw_path = arguments.get("path", "").strip()
         if not raw_path:
-            return [TextContent(type="text", text="Error: path is required")]
+            return [mcp.TextContent(type="text", text="Error: path is required")]
 
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
@@ -94,23 +93,23 @@ async def run_edit_mcp_server():
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         except subprocess.TimeoutExpired:
-            return [TextContent(type="text", text="Error: edit timed out (1h)")]
+            return [mcp.TextContent(type="text", text="Error: edit timed out (1h)")]
         except FileNotFoundError as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
+            return [mcp.TextContent(type="text", text=f"Error: {e}")]
 
         if proc.returncode != 0:
-            return [TextContent(
+            return [mcp.TextContent(
                 type="text",
                 text=f"vim/tmux exited with code {proc.returncode}\n"
                      f"stderr: {proc.stderr.strip()[:500]}"
             )]
 
-        return [TextContent(
+        return [mcp.TextContent(
             type="text",
             text=f"Edit done: {path}\n{_file_summary(path)}"
         )]
 
-    async with stdio_server() as (read_stream, write_stream):
+    async with mcp.stdio_server() as (read_stream, write_stream):
         init_options = server.create_initialization_options()
         await server.run(read_stream, write_stream, init_options)
 

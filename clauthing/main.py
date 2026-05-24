@@ -2078,19 +2078,20 @@ def main():
                 print(err, file=sys.stderr)
                 sys.exit(1)
             print(msg)
-            # Also flash the result in the tmux status bar — M-, redirects
-            # stdout to /dev/null, so this is how the user actually sees it
-            # (especially the "already on the window with messages" case).
+            # Flash a status-bar message only on failure — on success the
+            # window switch itself is the feedback, and display-message blocks
+            # the status-bar redraw for its duration. CLI callers get stdout.
             sock = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
-            try:
-                subprocess.run(
-                    ["tmux", "-L", sock, "display-message", "-d", "3000", msg],
-                    capture_output=True, timeout=2,
-                )
-            except Exception as e:
-                err = f"--attention display-message failed: {e}"
-                log(err, profile)
-                print(err, file=sys.stderr)
+            if not ok:
+                try:
+                    subprocess.run(
+                        ["tmux", "-L", sock, "display-message", "-d", "2000", msg],
+                        capture_output=True, timeout=2,
+                    )
+                except Exception as e:
+                    err = f"--attention display-message failed: {e}"
+                    log(err, profile)
+                    print(err, file=sys.stderr)
             sys.exit(0 if ok else 1)
 
         if args.new_window:

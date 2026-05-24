@@ -44,30 +44,31 @@ def get_window_display(line_num, socket="clauthing", profile=None):
         profile: clauthing profile (for messages dir lookup)
     """
     try:
-        # Get terminal width
-        result = subprocess.run(
-            ["tmux", "-L", socket, "display-message", "-p", "#{client_width}"],
-            capture_output=True,
-            text=True
-        )
-        width = int(result.stdout.strip())
-
-        # Get current window
-        result = subprocess.run(
-            ["tmux", "-L", socket, "display-message", "-p", "#{window_index}"],
-            capture_output=True,
-            text=True
-        )
-        current = result.stdout.strip()
-
-        # Get all windows (with session id, so we can mark inbox status)
+        # Single tmux call: active flag, client width, index, name, session id.
+        # client_width is a client property but tmux expands it per-window too.
         result = subprocess.run(
             ["tmux", "-L", socket, "list-windows", "-F",
-             "#{window_index}\t#{window_name}\t#{@session_id}"],
+             "#{window_active}\t#{client_width}\t#{window_index}\t#{window_name}\t#{@session_id}"],
             capture_output=True,
             text=True
         )
-        windows = result.stdout.strip().split('\n')
+        raw_windows = result.stdout.strip().split('\n')
+
+        width = 80
+        current = None
+        windows = []
+        for line in raw_windows:
+            parts = line.split('\t', 4)
+            if len(parts) < 5:
+                continue
+            active, w, idx, name, sid = parts
+            if active == '1':
+                current = idx
+                try:
+                    width = int(w)
+                except ValueError:
+                    pass
+            windows.append(f"{idx}\t{name}\t{sid}")
 
         unread = _unread_counts(profile)
 

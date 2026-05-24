@@ -28,12 +28,26 @@ def focus_mcp_origin(socket):
     The MCP server inherits $TMUX_PANE from claude (which tmux sets to the
     pane id where claude is running). No-op if $TMUX_PANE is unset.
 
+    Returns the window ID that was active before the switch, so callers can
+    restore it after the popup closes.
+
     TODO: drop this once we move off tmux (see todos.md — Zellij has
     window-attached floating panes that don't need this dance).
     """
+    # Record the currently active window so callers can switch back after.
+    prev_window = None
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        prev_window = r.stdout.strip() or None
+    except Exception:
+        pass
+
     pane = os.environ.get("TMUX_PANE")
     if not pane:
-        return
+        return prev_window
     try:
         subprocess.run(
             ["tmux", "-L", socket, "select-window", "-t", pane],
@@ -41,6 +55,7 @@ def focus_mcp_origin(socket):
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+    return prev_window
 
 def get_runtime_tmux_state_file(profile=None):
     """Get the runtime tmux state file path (for window restoration)."""

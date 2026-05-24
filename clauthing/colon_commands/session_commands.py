@@ -560,6 +560,11 @@ def _try_switch_to(session_id, socket, dry_run=False):
                        check=True, timeout=5)
     except subprocess.CalledProcessError:
         return None
+    try:
+        subprocess.run(["tmux", "-L", socket, "refresh-client", "-S"],
+                       capture_output=True, timeout=2)
+    except Exception:
+        pass
     return wid
 
 
@@ -704,6 +709,12 @@ def jump_to_waiting(profile=None):
                        check=True, timeout=5)
     except subprocess.CalledProcessError:
         return False, f"❌ Could not switch to {target_wid}"
+
+    try:
+        subprocess.run(["tmux", "-L", target_socket, "refresh-client", "-S"],
+                       capture_output=True, timeout=2)
+    except Exception:
+        pass
 
     title = target_info.get('title') or target_sid[:8]
     return True, f"→ Switched to {title} ({target_wid})"
@@ -1039,6 +1050,14 @@ def _cmd_message_impl(ctx):
     }
     with open(inbox_file, "a") as f:
         f.write(json.dumps(msg_entry) + "\n")
+
+    # Force immediate status-bar redraw so the (N) badge appears right away.
+    try:
+        import subprocess as _sp
+        _sp.run(["tmux", "-L", socket, "refresh-client", "-S"],
+                capture_output=True, timeout=2)
+    except Exception:
+        pass
 
     # Also drop the message text into the receiver's pane so it's visible
     # immediately in scrollback even before they run :msg.
