@@ -39,13 +39,16 @@ def get_state_dir():
     return Path.home() / ".local" / "state" / "clauthing"
 
 
-def confirm_popup(message):
-    """Show a tmux confirmation popup. Returns True if confirmed."""
+def confirm_popup(message, restore=True):
+    """Show a tmux confirmation popup. Returns True if confirmed.
+
+    restore=False: skip switching back to the previous window after the popup,
+    so the caller can run commands on the origin window before restoring.
+    Returns (approved, prev_window) when restore=False so the caller can
+    restore later.
+    """
     socket = get_tmux_socket()
     prev_window = focus_mcp_origin(socket)
-    # Use a temp file for the message body so we don't have to worry about
-    # quoting (the message contains arbitrary user-controlled text including
-    # colons, dashes, paths).
     import tempfile
     msg_file = Path(tempfile.mktemp(prefix="cl-confirm-", suffix=".txt"))
     msg_file.write_text(message + "\n")
@@ -70,19 +73,27 @@ exit 0
              "bash", "-c", confirm_script],
             capture_output=True, text=True, timeout=30,
         )
-        return result.returncode == 0
+        approved = result.returncode == 0
     except subprocess.TimeoutExpired:
-        return False
+        approved = False
     finally:
         msg_file.unlink(missing_ok=True)
-        if prev_window:
-            try:
-                subprocess.run(
-                    ["tmux", "-L", socket, "select-window", "-t", prev_window],
-                    capture_output=True, timeout=2,
-                )
-            except Exception:
-                pass
+
+    if restore:
+        _restore_window(socket, prev_window)
+        return approved
+    return approved, prev_window
+
+
+def _restore_window(socket, prev_window):
+    if prev_window:
+        try:
+            subprocess.run(
+                ["tmux", "-L", socket, "select-window", "-t", prev_window],
+                capture_output=True, timeout=2,
+            )
+        except Exception:
+            pass
 
 
 def read_linked_window_id():
@@ -177,13 +188,21 @@ def is_command_allowed(command):
 def run_command(command):
     """Run a colon command, after user confirms via tmux popup unless the
     command is in the auto-allow list."""
+    socket = get_tmux_socket()
+    prev_window = None
+
     if not is_command_allowed(command):
-        if not confirm_popup(f"{command}"):
+        approved, prev_window = confirm_popup(f"{command}", restore=False)
+        if not approved:
+            _restore_window(socket, prev_window)
             return f"Cancelled: {command}"
+    # else: auto-allowed, no popup — no window switch happened
 
-    # User confirmed — call the colon command handler
+    # Restore user's window immediately — the command looks up its own
+    # window/pane via session_id, so it no longer needs to be focused.
+    _restore_window(socket, prev_window)
+
     clauthing_path = shutil.which("clauthing") or "clauthing"
-
     try:
         result = subprocess.run(
             [clauthing_path, "--run-command", command],

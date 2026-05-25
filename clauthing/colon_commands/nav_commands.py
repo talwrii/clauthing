@@ -18,6 +18,7 @@ from clauthing.claude_utils import encode_project_path
 from clauthing.logging import log, run
 from clauthing.session import get_session_name, save_session_metadata, mark_session_has_messages
 from clauthing.session_utils import session_has_messages
+from clauthing.tmux import get_window_and_pane_for_session
 from clauthing.rules import build_claude_md
 
 
@@ -236,7 +237,16 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
                 carry_over_session_state(old_session_id, new_session_id)
                 break
 
-    current_window_id = get_current_window_id(socket)
+    # Look up our own window/pane by session_id so this works even when the
+    # focused tmux window has already been restored to the user's window after
+    # an MCP popup confirmation.
+    window_id = None
+    pane_id = None
+    if ctx.session_id:
+        window_id, pane_id = get_window_and_pane_for_session(socket, ctx.session_id)
+    if not window_id:
+        window_id = get_current_window_id(socket)
+    current_window_id = window_id
 
     # Boomerang: set @startup_command, then respawn-pane to kill the running
     # claude. ctx.stop() alone returns to the prompt — it doesn't exit claude
@@ -249,20 +259,22 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
         # Fresh start in target dir — no session to resume.
         startup_cmd = f'SESSION_ID=""; cd "{target_dir}"'
     try:
-        subprocess.run(
-            ["tmux", "-L", socket, "set-option", "-w", "@startup_command", startup_cmd],
-            check=True, timeout=5
-        )
+        set_opt_cmd = ["tmux", "-L", socket, "set-option", "-w"]
+        if window_id:
+            set_opt_cmd += ["-t", window_id]
+        set_opt_cmd += ["@startup_command", startup_cmd]
+        subprocess.run(set_opt_cmd, check=True, timeout=5)
         log(f":cd set @startup_command for session {new_session_id} in {target_dir}")
-        # Capture pane id explicitly since the scheduler subprocess runs detached.
-        try:
-            r = subprocess.run(
-                ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
-                capture_output=True, text=True, timeout=5
-            )
-            pane_id = r.stdout.strip()
-        except Exception:
-            pane_id = ""
+        # If we didn't get pane_id from session lookup, fall back to querying focused pane.
+        if not pane_id:
+            try:
+                r = subprocess.run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                pane_id = r.stdout.strip()
+            except Exception:
+                pane_id = ""
         target_arg = f"-t {pane_id}" if pane_id else ""
         # start_new_session=True detaches from the pane's process group so that
         # respawn-pane killing the pane doesn't also kill this scheduler.

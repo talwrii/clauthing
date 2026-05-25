@@ -57,6 +57,26 @@ def focus_mcp_origin(socket):
         pass
     return prev_window
 
+def get_window_and_pane_for_session(socket, session_id):
+    """Look up (window_id, pane_id) for the tmux window running session_id.
+
+    Returns (window_id, pane_id) or (None, None) if not found.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", socket, "list-windows", "-F",
+             "#{window_id}\t#{pane_id}\t#{@session_id}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines():
+            parts = line.split('\t', 2)
+            if len(parts) == 3 and parts[2] == session_id:
+                return parts[0], parts[1]
+    except Exception:
+        pass
+    return None, None
+
+
 def get_runtime_tmux_state_file(profile=None):
     """Get the runtime tmux state file path (for window restoration)."""
     uid = os.getuid()
