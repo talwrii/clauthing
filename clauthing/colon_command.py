@@ -30,6 +30,7 @@ from clauthing.session_utils import session_has_messages
 from clauthing.window_utils import open_session_notes
 from clauthing.tmux import get_runtime_tmux_state_file
 from clauthing.rules import build_claude_md
+from clauthing import linked_tmux
 
 import time
 
@@ -266,22 +267,25 @@ def run_independent(prompt):
 
     socket = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
     session_id = None
+    clauthing_window = None
     cwd = os.getcwd()
     try:
         r = _sp.run(
             ["tmux", "-L", socket, "display-message", "-p",
-             "#{@session_id}\t#{pane_current_path}"],
+             "#{@session_id}\t#{@clauthing_window}\t#{pane_current_path}"],
             capture_output=True, text=True, timeout=2,
         )
-        parts = r.stdout.strip().split("\t", 1)
-        if parts and parts[0]:
+        parts = r.stdout.strip().split("\t", 2)
+        if len(parts) > 0 and parts[0]:
             session_id = parts[0]
         if len(parts) > 1 and parts[1]:
-            cwd = parts[1]
+            clauthing_window = parts[1]
+        if len(parts) > 2 and parts[2]:
+            cwd = parts[2]
     except Exception:
         pass
 
-    input_data = {"session_id": session_id, "cwd": cwd}
+    input_data = {"session_id": session_id, "clauthing_window": clauthing_window, "cwd": cwd}
     claude_data_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
     ctx = CommandContext(prompt, input_data, socket, claude_data_dir)
     try:
@@ -305,6 +309,40 @@ class CommandContext:
     @property
     def session_id(self):
         return self.input_data.get('session_id')
+
+    @property
+    def clauthing_window(self):
+        """The stable window id (survives :cd, unlike session_id).
+
+        The WINDOW owns the id, so the live tmux @clauthing_window option is
+        authoritative — it's what the status bar / inbox keys use. Resolution:
+        input_data (already read off the pane) → live tmux option → session
+        metadata (last resort, e.g. if the option can't be read).
+        """
+        cw = self.input_data.get('clauthing_window')
+        if cw:
+            return cw
+        cw = self._read_tmux_clauthing_window()
+        if cw:
+            return cw
+        sid = self.session_id
+        if sid:
+            from clauthing.session import get_clauthing_window
+            return get_clauthing_window(sid)
+        return None
+
+    def _read_tmux_clauthing_window(self):
+        pane = os.environ.get('TMUX_PANE')
+        target = ['-t', pane] if pane else []
+        try:
+            r = subprocess.run(
+                ['tmux', '-L', self.socket, 'display-message', '-p',
+                 *target, '#{@clauthing_window}'],
+                capture_output=True, text=True, timeout=2,
+            )
+            return r.stdout.strip() or None
+        except Exception:
+            return None
 
     @property
     def cwd(self):
@@ -620,114 +658,33 @@ def cmd_done(ctx):
 
 @command(':tmux-unlink')
 def cmd_tmux_unlink(ctx):
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    if mf.exists():
-        meta = json.loads(mf.read_text())
-        if "linked_tmux_window" in meta:
-            del meta["linked_tmux_window"]
-            mf.write_text(json.dumps(meta, indent=2))
-            return ctx.stop("✓ Unlinked tmux window")
-    return ctx.stop("No tmux window linked")
+    return ctx.stop(linked_tmux.unlink(ctx.clauthing_window, ctx.profile)[1])
 
 
 @command(':tmuxpath-current')
 def cmd_tmuxpath_current(ctx):
-    """Get the cwd of the current (focused) window in the user's default tmux
-    server. Independent of any linked-window state."""
-    try:
-        result = run(
-            ["tmux", "-L", "default", "display-message", "-p",
-             "#{pane_current_path}"],
-            capture_output=True, text=True, check=True,
-        )
-        path = result.stdout.strip()
-        if not path:
-            return ctx.stop("❌ No path returned (no current window?)")
-        return ctx.stop(f"Current default-tmux window cwd: {path}")
-    except subprocess.CalledProcessError as e:
-        return ctx.stop(f"❌ Could not get current path: {e.stderr or e}")
+    """cwd of the focused window on the user's default tmux server."""
+    return ctx.stop(linked_tmux.current_default_path()[1])
 
 
 @command(':tmuxpath')
 def cmd_tmuxpath(ctx):
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    meta = json.loads(mf.read_text()) if mf.exists() else {}
-    linked = meta.get("linked_tmux_window")
-    if not linked:
-        return ctx.stop("No tmux window linked. Use :tmux to link a window first.")
-    try:
-        result = run(["tmux", "-L", "default", "display-message", "-p", "-t", linked, "#{pane_current_path}"],
-                     capture_output=True, text=True, check=True)
-        path = result.stdout.strip()
-        return ctx.stop(f"The linked tmux window ({linked}) is at: {path}" if path else "❌ Could not get path")
-    except subprocess.CalledProcessError:
-        return ctx.stop(f"❌ Linked window {linked} not found - use :tmux-unlink to reset")
+    return ctx.stop(linked_tmux.linked_path(ctx.clauthing_window, ctx.profile)[1])
 
 
 @command(':tmuxscreen')
 def cmd_tmuxscreen(ctx):
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    meta = json.loads(mf.read_text()) if mf.exists() else {}
-    linked = meta.get("linked_tmux_window")
-    if not linked:
-        return ctx.stop("No tmux window linked. Use :tmux to link a window first.")
-    try:
-        result = run(["tmux", "-L", "default", "capture-pane", "-p", "-t", linked],
-                     capture_output=True, text=True, check=True)
-        content = result.stdout.rstrip()
-        lines = content.split('\n')
-        while lines and not lines[0].strip():
-            lines.pop(0)
-        content = '\n'.join(lines)
-        if content:
-            ctx.message(f"✓ Captured {len(lines)} lines from window {linked}")
-            return ctx.stop(f"Content of linked tmux window ({linked}):\n\n```\n{content}\n```")
-        return ctx.stop(f"Linked tmux window ({linked}) is empty.")
-    except subprocess.CalledProcessError:
-        return ctx.stop(f"❌ Linked window {linked} not found - use :tmux-unlink to reset")
+    return ctx.stop(linked_tmux.linked_screen(ctx.clauthing_window, ctx.profile)[1])
 
 
 @command(':tmuxs-link')
 def cmd_tmuxs_link(ctx):
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    try:
-        result = run(["tmux", "-L", "default", "display-message", "-p", "#{window_id}:#{window_name}"],
-                     capture_output=True, text=True, check=True)
-        parts = result.stdout.strip().split(":", 1)
-        wid, wname = parts[0], parts[1] if len(parts) > 1 else parts[0]
-        state_dir = get_state_dir()
-        mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-        meta = json.loads(mf.read_text()) if mf.exists() else {}
-        linked = meta.get("linked_tmux_windows", [])
-        if not any(w["id"] == wid for w in linked):
-            linked.append({"id": wid, "name": wname})
-            meta["linked_tmux_windows"] = linked
-            mf.parent.mkdir(parents=True, exist_ok=True)
-            mf.write_text(json.dumps(meta, indent=2))
-            return ctx.stop(f"✓ Added tmux window '{wname}' ({wid})")
-        return ctx.stop(f"Already linked: '{wname}' ({wid})")
-    except subprocess.CalledProcessError:
-        return ctx.stop("❌ Could not access default tmux server")
+    return ctx.stop(linked_tmux.list_add(ctx.clauthing_window, ctx.profile)[1])
 
 
 @command(':tmuxs')
 def cmd_tmuxs(ctx):
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    meta = json.loads(mf.read_text()) if mf.exists() else {}
-    linked = meta.get("linked_tmux_windows", [])
+    linked = linked_tmux.get_linked_list(ctx.clauthing_window, ctx.profile)
     if not linked:
         return ctx.stop("No linked windows. Use :tmuxs-link to add windows.")
 
@@ -746,12 +703,7 @@ def cmd_tmuxs(ctx):
     if not sel:
         return ctx.stop("Cancelled")
 
-    wid = sel.split("\t")[0]
-    try:
-        run(["tmux", "-L", "default", "select-window", "-t", wid], capture_output=True, text=True, check=True)
-        return ctx.stop(f"✓ Switched to {wid}")
-    except subprocess.CalledProcessError:
-        return ctx.stop(f"❌ Window {wid} not found")
+    return ctx.stop(linked_tmux.select_window(sel.split("\t")[0])[1])
 
 
 @command(':pattern-approve')
@@ -789,92 +741,25 @@ def cmd_pattern_approve(ctx):
 
 @command(':tmux-spawn')
 def cmd_tmux_spawn(ctx):
-    """Spawn a fresh tmux window in the user's default tmux server, owned by
-    this clauthing session. Refuses if a window is already linked — clear the
-    link first with :tmux-unlink.
+    """Spawn a fresh tmux window in the user's default server, linked to this
+    clauthing window. Refuses if a window is already linked (use :tmux-unlink).
 
-    Optional argument: a shell command to run in the new window
-    (e.g. `:tmux-spawn vim README.md`). If omitted, the window opens an
-    interactive shell."""
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    meta = json.loads(mf.read_text()) if mf.exists() else {}
-    if meta.get("linked_tmux_window"):
-        return ctx.stop(
-            f"❌ Already linked to {meta['linked_tmux_window']}. "
-            "Use :tmux-unlink first."
-        )
-    sess_name = get_session_name(ctx.session_id) or ctx.session_id[:8]
-    win_name = f"cl-{sess_name}"
-    shell_cmd = ctx.args.strip()
-    cmd = ["tmux", "-L", "default", "new-window", "-d", "-n", win_name,
-           "-P", "-F", "#{window_id}"]
-    if shell_cmd:
-        cmd.append(shell_cmd)
-    try:
-        result = run(cmd, capture_output=True, text=True, check=True)
-        wid = result.stdout.strip()
-        meta["linked_tmux_window"] = wid
-        mf.parent.mkdir(parents=True, exist_ok=True)
-        mf.write_text(json.dumps(meta, indent=2))
-        ran = f" running `{shell_cmd}`" if shell_cmd else ""
-        return ctx.stop(f"✓ Spawned and linked tmux window '{win_name}' ({wid}){ran}")
-    except subprocess.CalledProcessError as e:
-        return ctx.stop(f"❌ Could not spawn window: {e.stderr or e}")
+    Optional arg: a shell command to run (e.g. `:tmux-spawn vim README.md`)."""
+    name_hint = (get_session_name(ctx.session_id) if ctx.session_id else "") \
+        or (ctx.session_id[:8] if ctx.session_id else "")
+    return ctx.stop(linked_tmux.spawn(
+        ctx.clauthing_window, ctx.profile, name_hint, ctx.args.strip())[1])
 
 
 @command(':tmux-kill')
 def cmd_tmux_kill(ctx):
-    """Kill the linked tmux window in the user's default tmux server and
-    clear the link."""
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    meta = json.loads(mf.read_text()) if mf.exists() else {}
-    linked = meta.get("linked_tmux_window")
-    if not linked:
-        return ctx.stop("No tmux window linked.")
-    try:
-        run(["tmux", "-L", "default", "kill-window", "-t", linked],
-            capture_output=True, text=True, check=True)
-    except subprocess.CalledProcessError as e:
-        # Window may already be gone — still clear the link
-        log(f":tmux-kill: kill-window failed (window may be gone): {e.stderr or e}")
-    del meta["linked_tmux_window"]
-    mf.write_text(json.dumps(meta, indent=2))
-    return ctx.stop(f"✓ Killed and unlinked tmux window {linked}")
+    """Kill the linked default-server window and clear the link."""
+    return ctx.stop(linked_tmux.kill(ctx.clauthing_window, ctx.profile)[1])
 
 
 @command(':tmux')
 def cmd_tmux(ctx):
-    if not ctx.session_id:
-        return ctx.stop("❌ No session ID")
-    state_dir = get_state_dir()
-    mf = state_dir / "sessions" / f"{ctx.session_id}.json"
-    meta = json.loads(mf.read_text()) if mf.exists() else {}
-    linked = meta.get("linked_tmux_window")
-
-    if linked:
-        try:
-            run(["tmux", "-L", "default", "select-window", "-t", linked], capture_output=True, text=True, check=True)
-            return ctx.stop(f"✓ Switched to tmux window {linked}")
-        except subprocess.CalledProcessError:
-            return ctx.stop(f"❌ Linked window {linked} not found - use :tmux-unlink to reset")
-
-    try:
-        result = run(["tmux", "-L", "default", "display-message", "-p", "#{window_id}:#{window_name}"],
-                     capture_output=True, text=True, check=True)
-        parts = result.stdout.strip().split(":", 1)
-        wid, wname = parts[0], parts[1] if len(parts) > 1 else parts[0]
-        meta["linked_tmux_window"] = wid
-        mf.parent.mkdir(parents=True, exist_ok=True)
-        mf.write_text(json.dumps(meta, indent=2))
-        return ctx.stop(f"✓ Linked to tmux window '{wname}' ({wid})")
-    except subprocess.CalledProcessError:
-        return ctx.stop("❌ Could not access default tmux server")
+    return ctx.stop(linked_tmux.toggle(ctx.clauthing_window, ctx.profile)[1])
 
 
 # ── cl-skills (double-colon commands) ────────────────────────────────────────

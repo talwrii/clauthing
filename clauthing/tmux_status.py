@@ -7,7 +7,10 @@ from pathlib import Path
 
 
 def _unread_counts(profile=None):
-    """Return {session_id: unread_count} for sessions with pending messages."""
+    """Return {clauthing_window: unread_count} for windows with pending messages.
+
+    Inboxes are keyed by clauthing_window, so the inbox stem is the window id.
+    """
     try:
         from clauthing.events import get_runtime_dir
         msgs_dir = get_runtime_dir(profile) / "messages"
@@ -48,7 +51,7 @@ def get_window_display(line_num, socket="clauthing", profile=None):
         # client_width is a client property but tmux expands it per-window too.
         result = subprocess.run(
             ["tmux", "-L", socket, "list-windows", "-F",
-             "#{window_active}\t#{client_width}\t#{window_index}\t#{window_name}\t#{@session_id}"],
+             "#{window_active}\t#{client_width}\t#{window_index}\t#{window_name}\t#{@clauthing_window}"],
             capture_output=True,
             text=True
         )
@@ -61,14 +64,14 @@ def get_window_display(line_num, socket="clauthing", profile=None):
             parts = line.split('\t', 4)
             if len(parts) < 5:
                 continue
-            active, w, idx, name, sid = parts
+            active, w, idx, name, cw = parts
             if active == '1':
                 current = idx
                 try:
                     width = int(w)
                 except ValueError:
                     pass
-            windows.append(f"{idx}\t{name}\t{sid}")
+            windows.append(f"{idx}\t{name}\t{cw}")
 
         unread = _unread_counts(profile)
 

@@ -43,14 +43,19 @@ def _tmux(socket, *args, check=True):
     )
 
 
+_WINDOW_FORMAT = ("#{window_index}\t#{window_name}\t#{window_id}\t"
+                  "#{@clauthing_window}\t#{@session_id}\t#{pane_current_path}")
+
+
 def _window_record(parts):
-    """parts: [index, name, window_id, @session_id, pane_current_path]"""
+    """parts: [index, name, window_id, @clauthing_window, @session_id, path]"""
     return {
         "index": int(parts[0]),
         "name": parts[1],
-        "window_id": parts[2],
-        "session_id": parts[3] or None,
-        "path": parts[4],
+        "window_id": parts[2],              # tmux window id (@N) — not stable across restart
+        "clauthing_window": parts[3] or None,   # stable window id — survives :cd; the handle to store
+        "session_id": parts[4] or None,         # current claude conversation (rotates on :cd)
+        "path": parts[5],
     }
 
 
@@ -65,14 +70,11 @@ def cmd_connect(args):
 
 def cmd_list_windows(args):
     socket = _socket_or_die()
-    r = _tmux(
-        socket, "list-windows",
-        "-F", "#{window_index}\t#{window_name}\t#{window_id}\t#{@session_id}\t#{pane_current_path}",
-    )
+    r = _tmux(socket, "list-windows", "-F", _WINDOW_FORMAT)
     windows = []
     for line in r.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) >= 5:
+        if len(parts) >= 6:
             try:
                 windows.append(_window_record(parts))
             except (ValueError, IndexError):
@@ -82,22 +84,23 @@ def cmd_list_windows(args):
 
 def cmd_current_window(args):
     socket = _socket_or_die()
-    r = _tmux(
-        socket, "display-message", "-p",
-        "#{window_index}\t#{window_name}\t#{window_id}\t#{@session_id}\t#{pane_current_path}",
-    )
+    r = _tmux(socket, "display-message", "-p", _WINDOW_FORMAT)
     parts = r.stdout.strip().split("\t")
-    if len(parts) < 5:
+    if len(parts) < 6:
         print(json.dumps(None))
         return
     print(json.dumps(_window_record(parts), indent=2))
 
 
 def _resolve_window(socket, arg):
-    """Return tmux window-id (@N) for arg (index or name). None on miss."""
+    """Return tmux window-id (@N) for arg (clauthing_window, index, or name).
+
+    A clauthing_window id is the stable handle workflow programs should store,
+    so an exact match on it wins over index/name.
+    """
     r = _tmux(
         socket, "list-windows",
-        "-F", "#{window_index}\t#{window_name}\t#{window_id}",
+        "-F", "#{window_index}\t#{window_name}\t#{window_id}\t#{@clauthing_window}",
         check=False,
     )
     if r.returncode != 0:
@@ -108,13 +111,15 @@ def _resolve_window(socket, arg):
     target_idx = int(arg) if is_num else None
     for line in r.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
         try:
             idx = int(parts[0])
         except ValueError:
             continue
-        name, wid = parts[1], parts[2]
+        name, wid, cw = parts[1], parts[2], parts[3]
+        if cw and cw == arg:
+            return wid  # exact stable-id match wins
         if is_num and idx == target_idx:
             by_index = wid
         if name == arg:

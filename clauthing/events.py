@@ -301,6 +301,8 @@ def set_title(session_id, name, profile=None):
     import subprocess
     from clauthing.session import get_state_dir
     from clauthing.tmux import get_runtime_tmux_state_file
+    from clauthing.logging import log
+    log(f"NAME: set_title session={session_id} -> '{name}'", profile)
 
     # Update session metadata
     state_dir = get_state_dir()

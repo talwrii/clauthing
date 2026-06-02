@@ -55,13 +55,16 @@ def _save_attention(data, profile=None):
 def mark_attention(session_id, profile=None):
     if not session_id:
         return
+    from clauthing.session import get_clauthing_window
+    cw = get_clauthing_window(session_id) or session_id
     data = _load_attention(profile)
     win = load_windows(profile).get(session_id, {})
-    data[session_id] = {
+    data[cw] = {
         "ts": time.time(),
         "title": win.get("title"),
-        "socket": win.get("socket"),
+        "socket": win.get("socket") or os.environ.get("CLAUTHING_TMUX_SOCKET"),
         "path": win.get("path"),
+        "session_id": session_id,
     }
     _save_attention(data, profile)
 
@@ -69,9 +72,15 @@ def mark_attention(session_id, profile=None):
 def clear_attention(session_id, profile=None):
     if not session_id:
         return
+    from clauthing.session import get_clauthing_window
+    cw = get_clauthing_window(session_id)
     data = _load_attention(profile)
-    if session_id in data:
-        del data[session_id]
+    changed = False
+    for key in (cw, session_id):
+        if key and key in data:
+            del data[key]
+            changed = True
+    if changed:
         _save_attention(data, profile)
 
 
@@ -101,13 +110,16 @@ def mark_idle(session_id, profile=None):
     """
     if not session_id:
         return
+    from clauthing.session import get_clauthing_window
+    cw = get_clauthing_window(session_id) or session_id
     data = _load_idle(profile)
     win = load_windows(profile).get(session_id, {})
-    data[session_id] = {
+    data[cw] = {
         "ts": time.time(),
         "title": win.get("title"),
-        "socket": win.get("socket"),
+        "socket": win.get("socket") or os.environ.get("CLAUTHING_TMUX_SOCKET"),
         "path": win.get("path"),
+        "session_id": session_id,
     }
     _save_idle(data, profile)
 
@@ -115,9 +127,15 @@ def mark_idle(session_id, profile=None):
 def clear_idle(session_id, profile=None):
     if not session_id:
         return
+    from clauthing.session import get_clauthing_window
+    cw = get_clauthing_window(session_id)
     data = _load_idle(profile)
-    if session_id in data:
-        del data[session_id]
+    changed = False
+    for key in (cw, session_id):
+        if key and key in data:
+            del data[key]
+            changed = True
+    if changed:
         _save_idle(data, profile)
 
 

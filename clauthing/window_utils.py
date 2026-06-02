@@ -33,6 +33,18 @@ def find_and_focus_window():
         return False
 
 
+def _notes_key(session_id):
+    """Notes are keyed by the stable clauthing_window so they survive :cd
+    (which rotates session_id). Falls back to session_id for legacy windows."""
+    if not session_id:
+        return session_id
+    try:
+        from clauthing.session import get_clauthing_window
+        return get_clauthing_window(session_id) or session_id
+    except Exception:
+        return session_id
+
+
 def open_session_notes(get_runtime_tmux_state_file, session_id=None):
     """Open session notes in vim via tmux popup.
 
@@ -53,7 +65,7 @@ def open_session_notes(get_runtime_tmux_state_file, session_id=None):
     if session_id:
         notes_dir = config_dir / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
-        notes_file = notes_dir / f"{session_id}.md"
+        notes_file = notes_dir / f"{_notes_key(session_id)}.md"
 
         # Open vim in tmux popup
         run([
@@ -109,7 +121,7 @@ def open_session_notes(get_runtime_tmux_state_file, session_id=None):
                     session_id = parts[resume_idx + 1]
                     notes_dir = config_dir / "notes"
                     notes_dir.mkdir(parents=True, exist_ok=True)
-                    notes_file = notes_dir / f"{session_id}.md"
+                    notes_file = notes_dir / f"{_notes_key(session_id)}.md"
 
                     run([
                         "tmux", "-L", socket,
@@ -141,7 +153,7 @@ def open_session_notes(get_runtime_tmux_state_file, session_id=None):
                         session_id = parts[resume_idx + 1]
                         notes_dir = config_dir / "notes"
                         notes_dir.mkdir(parents=True, exist_ok=True)
-                        notes_file = notes_dir / f"{session_id}.md"
+                        notes_file = notes_dir / f"{_notes_key(session_id)}.md"
 
                         run([
                             "tmux", "-L", socket,
@@ -181,7 +193,7 @@ def open_session_notes(get_runtime_tmux_state_file, session_id=None):
         # Create notes file path
         notes_dir = config_dir / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
-        notes_file = notes_dir / f"{session_id}.md"
+        notes_file = notes_dir / f"{_notes_key(session_id)}.md"
 
         # Open vim in tmux popup
         run([

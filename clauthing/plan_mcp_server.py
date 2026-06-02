@@ -72,8 +72,9 @@ def list_all_sessions(profile: Optional[str] = None) -> list[dict]:
             except:
                 pass
 
-        # Check notes
-        notes_file = notes_dir / f"{session_id}.md"
+        # Check notes (keyed by the stable clauthing_window; see claudes.md).
+        notes_key = meta.get("clauthing_window") or session_id
+        notes_file = notes_dir / f"{notes_key}.md"
         has_notes = notes_file.exists()
 
         sessions.append({
@@ -90,7 +91,12 @@ def list_all_sessions(profile: Optional[str] = None) -> list[dict]:
 def get_session_notes_content(session_id: str, profile: Optional[str] = None) -> Optional[str]:
     """Get notes content for a specific session."""
     notes_dir = get_config_dir(profile) / "notes"
-    notes_file = notes_dir / f"{session_id}.md"
+    try:
+        from clauthing.session import get_clauthing_window
+        notes_key = get_clauthing_window(session_id) or session_id
+    except Exception:
+        notes_key = session_id
+    notes_file = notes_dir / f"{notes_key}.md"
 
     if not notes_file.exists():
         return None

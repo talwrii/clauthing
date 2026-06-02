@@ -14,7 +14,9 @@ from clauthing.session import (
     get_state_dir,
     save_session_metadata,
     get_open_sessions,
-    remove_open_session
+    remove_open_session,
+    ensure_clauthing_window,
+    set_clauthing_window
 )
 from clauthing.tmux import get_runtime_tmux_state_file
 from clauthing.rules import build_claude_md
@@ -942,6 +944,8 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
         save_session_metadata(session_id, default_name, current_path)
     
     # Set window name to default and store session ID in window option
+    log(f"NAME: new_window naming window '{default_name}' "
+        f"(session={session_id}, resume={resume_session_id})", profile)
     try:
         run(
             ["tmux", "-L", socket, "rename-window", default_name],
@@ -955,7 +959,38 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
         )
     except:
         pass
-    
+
+    # Materialize the stable window identity (@clauthing_window). The WINDOW
+    # owns the id; sessions adopt it. So when the same tmux window is respawned
+    # (:login / :cd / :reload all keep the window via respawn-pane), reuse the
+    # existing @clauthing_window rather than minting a fresh one — otherwise the
+    # window's id would churn on every respawn. Priority:
+    #   existing window option  >  session metadata  >  mint.
+    # (Fresh windows have no option; restore reads it from resumed metadata.)
+    existing_cw = None
+    try:
+        r = run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{@clauthing_window}"],
+            capture_output=True, text=True, profile=profile,
+        )
+        existing_cw = (r.stdout or "").strip() or None
+    except Exception:
+        pass
+
+    if existing_cw:
+        clauthing_window = existing_cw
+        set_clauthing_window(session_id, existing_cw)  # record on the session
+    else:
+        clauthing_window = ensure_clauthing_window(session_id)
+    try:
+        run(
+            ["tmux", "-L", socket, "set-option", "-w", "@clauthing_window", clauthing_window],
+            stderr=subprocess.DEVNULL,
+            profile=profile
+        )
+    except Exception:
+        pass
+
     # Update state file
     try:
         if state_file.exists():

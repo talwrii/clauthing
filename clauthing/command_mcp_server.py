@@ -96,38 +96,31 @@ def _restore_window(socket, prev_window):
             pass
 
 
+def _profile():
+    return os.environ.get("CLAUTHING_PROFILE")
+
+
+def _clauthing_window():
+    """Resolve this MCP session's stable clauthing_window (or None)."""
+    sid = get_session_id()
+    if not sid:
+        return None
+    from clauthing.session import get_clauthing_window
+    return get_clauthing_window(sid)
+
+
 def read_linked_window_id():
-    """Return the linked tmux window id (or None)."""
-    session_id = get_session_id()
-    if not session_id:
+    """Return the linked tmux window id (or None). Keyed by clauthing_window."""
+    cw = _clauthing_window()
+    if not cw:
         return None
-    metadata_file = get_state_dir() / "sessions" / f"{session_id}.json"
-    if not metadata_file.exists():
-        return None
-    try:
-        metadata = json.loads(metadata_file.read_text())
-    except Exception:
-        return None
-    return metadata.get("linked_tmux_window")
+    from clauthing import linked_tmux
+    return linked_tmux.get_linked_window(cw, _profile())
 
 
 def read_linked_tmux():
     """Read the linked tmux pane contents after user confirms."""
-    session_id = get_session_id()
-    if not session_id:
-        return "No session ID available."
-
-    state_dir = get_state_dir()
-    metadata_file = state_dir / "sessions" / f"{session_id}.json"
-    if not metadata_file.exists():
-        return "No session metadata found."
-
-    try:
-        metadata = json.loads(metadata_file.read_text())
-    except:
-        return "Could not read session metadata."
-
-    linked_window = metadata.get("linked_tmux_window")
+    linked_window = read_linked_window_id()
     if not linked_window:
         return "No tmux window linked. User needs to run :tmux first."
 
@@ -321,7 +314,6 @@ async def run_command_mcp_server(enable_commands=False):
             linked_window = read_linked_window_id()
             if not linked_window:
                 return [mcp.TextContent(type="text", text="No tmux window linked.")]
-            session_id = get_session_id()
             try:
                 subprocess.run(
                     ["tmux", "-L", "default", "kill-window", "-t", linked_window],
@@ -329,16 +321,11 @@ async def run_command_mcp_server(enable_commands=False):
                 )
             except Exception:
                 pass  # window may already be gone
-            # Always clear the link
-            if session_id:
-                mf = get_state_dir() / "sessions" / f"{session_id}.json"
-                if mf.exists():
-                    try:
-                        meta = json.loads(mf.read_text())
-                        meta.pop("linked_tmux_window", None)
-                        mf.write_text(json.dumps(meta, indent=2))
-                    except Exception:
-                        pass
+            # Always clear the link (keyed by clauthing_window)
+            cw = _clauthing_window()
+            if cw:
+                from clauthing import linked_tmux
+                linked_tmux.clear_linked_window(cw, _profile())
             return [mcp.TextContent(type="text", text=f"Killed and unlinked {linked_window}")]
 
         if name == "kitty_command" and enable_commands:

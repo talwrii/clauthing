@@ -77,6 +77,48 @@ def get_window_and_pane_for_session(socket, session_id):
     return None, None
 
 
+def backfill_clauthing_windows(socket):
+    """Ensure every live window on `socket` that runs a claude session has an
+    @clauthing_window option set.
+
+    Windows created before clauthing_window existed (or after an in-place
+    upgrade) carry @session_id but no @clauthing_window. This mints/derives the
+    stable id from session metadata and sets the option, so window-scoped state
+    (messages, attention, notes) keys correctly. Idempotent. Returns the number
+    of windows updated.
+    """
+    from clauthing.session import ensure_clauthing_window
+    try:
+        result = subprocess.run(
+            ["tmux", "-L", socket, "list-windows", "-F",
+             "#{window_id}\t#{@session_id}\t#{@clauthing_window}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return 0
+    updated = 0
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        win_id = parts[0]
+        sid = parts[1]
+        cw = parts[2] if len(parts) > 2 else ""
+        if not sid or cw:
+            continue  # no session, or already has a window id
+        new_cw = ensure_clauthing_window(sid)
+        try:
+            subprocess.run(
+                ["tmux", "-L", socket, "set-option", "-w", "-t", win_id,
+                 "@clauthing_window", new_cw],
+                capture_output=True, timeout=5,
+            )
+            updated += 1
+        except Exception:
+            pass
+    return updated
+
+
 def get_runtime_tmux_state_file(profile=None):
     """Get the runtime tmux state file path (for window restoration)."""
     uid = os.getuid()

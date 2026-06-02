@@ -1070,6 +1070,16 @@ def handle_rename(new_name, profile, tmux_socket, window_id=None):
         print(f"Error: Could not read state file: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Audit every name change so we can trace renames (e.g. a window getting
+    # named after a resumed session). Logs old -> new for the resolved session.
+    try:
+        from clauthing.session import get_session_name
+        old_name = get_session_name(session_id)
+    except Exception:
+        old_name = "?"
+    log(f"NAME CHANGE: window={window_id} index={window_index} "
+        f"session={session_id} '{old_name}' -> '{new_name}'", profile)
+
     # Now call the rename logic with the looked-up session ID
     rename_session(session_id, new_name, profile, tmux_socket)
 

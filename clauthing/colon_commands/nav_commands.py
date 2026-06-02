@@ -170,16 +170,26 @@ def carry_over_session_state(old_session_id, new_session_id):
     state_dir = get_state_dir()
     old_meta_file = state_dir / "sessions" / f"{old_session_id}.json"
     new_meta_file = state_dir / "sessions" / f"{new_session_id}.json"
-    if old_meta_file.exists() and new_meta_file.exists():
-        try:
+    if not new_meta_file.exists():
+        return
+    try:
+        new_meta = json.loads(new_meta_file.read_text())
+        # Provenance: record which session this one was cloned from (by :cd),
+        # so things keyed by session_id (e.g. message inboxes) can be traced
+        # back across the clone.
+        new_meta["cloned_from"] = old_session_id
+        if old_meta_file.exists():
             old_meta = json.loads(old_meta_file.read_text())
-            new_meta = json.loads(new_meta_file.read_text())
-            for key in ("dir_stack", "mcpServers", "linked_tmux_window", "linked_tmux_windows"):
+            # clauthing_window is the stable window identity — it must follow the
+            # window across the :cd clone (the new session keeps the same window).
+            # (linked-tmux state lives in the window-state file keyed by
+            # clauthing_window, so it survives :cd without being carried here.)
+            for key in ("dir_stack", "mcpServers", "clauthing_window"):
                 if key in old_meta:
                     new_meta[key] = old_meta[key]
-            new_meta_file.write_text(json.dumps(new_meta, indent=2))
-        except:
-            pass
+        new_meta_file.write_text(json.dumps(new_meta, indent=2))
+    except:
+        pass
 
 
 def open_new_multi_tab_window(socket, profile, target_dir, session_id, current_window_id=None, window_name=None):
