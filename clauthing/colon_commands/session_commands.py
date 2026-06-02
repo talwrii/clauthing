@@ -44,23 +44,25 @@ def cmd_current_sessions(ctx):
             except Exception:
                 continue
 
+    from clauthing.session import get_clauthing_window
     now = time.time()
     lines = ["Currently running sessions:\n"]
     for i, sess in enumerate(sessions, 1):
         cwd = sess.get('cwd', '?')
         session_id = sess['session_id']
+        cw = get_clauthing_window(session_id)
         pid = sess['pid']
         title = (windows.get(session_id) or {}).get("title")
         label = f"[{title}] " if title else ""
 
         tags = []
-        if session_id in attention:
+        if cw and cw in attention:
             tags.append("urgent")
-        n = unread.get(session_id, 0)
+        n = unread.get(cw, 0) if cw else 0
         if n:
             tags.append(f"msgs:{n}")
-        if session_id in idle:
-            secs = int(now - idle[session_id].get("ts", now))
+        if cw and cw in idle:
+            secs = int(now - idle[cw].get("ts", now))
             if secs < 60:
                 tags.append(f"idle {secs}s")
             elif secs < 3600:
@@ -501,9 +503,10 @@ def cmd_resume_new(ctx):
 
 
 def _unread_message_signals(profile=None):
-    """Return [(session_id, ts), ...] for sessions with unread messages.
+    """Return [(clauthing_window, ts), ...] for windows with unread messages.
 
-    `ts` is the timestamp of the newest unread message in that inbox.
+    Inboxes are keyed by clauthing_window (the stable window id), so the stem
+    is the window id. `ts` is the timestamp of the newest unread message.
     """
     from clauthing.events import get_runtime_dir
     msgs_dir = get_runtime_dir(profile) / "messages"
@@ -531,8 +534,8 @@ def _unread_message_signals(profile=None):
     return out
 
 
-def _try_switch_to(session_id, socket, dry_run=False):
-    """Resolve session_id → window on socket and (unless dry_run) select-window.
+def _try_switch_to(clauthing_window, socket, dry_run=False):
+    """Resolve clauthing_window → window on socket and (unless dry_run) select it.
 
     Returns the window_id on success, None on failure.
     """
@@ -540,7 +543,7 @@ def _try_switch_to(session_id, socket, dry_run=False):
         return None
     try:
         result = subprocess.run(
-            ["tmux", "-L", socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+            ["tmux", "-L", socket, "list-windows", "-F", "#{window_id} #{@clauthing_window}"],
             capture_output=True, text=True, timeout=5,
         )
     except Exception:
@@ -548,7 +551,7 @@ def _try_switch_to(session_id, socket, dry_run=False):
     wid = None
     for line in result.stdout.strip().splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[1] == session_id:
+        if len(parts) >= 2 and parts[1] == clauthing_window:
             wid = parts[0]
             break
     if not wid:
@@ -618,7 +621,7 @@ def jump_to_attention(profile=None, dry_run=False):
     current_session = None
     try:
         r = subprocess.run(
-            ["tmux", "-L", fallback_socket, "display-message", "-p", "#{@session_id}"],
+            ["tmux", "-L", fallback_socket, "display-message", "-p", "#{@clauthing_window}"],
             capture_output=True, text=True, timeout=2,
         )
         current_session = r.stdout.strip() or None
@@ -687,7 +690,7 @@ def jump_to_waiting(profile=None):
 
     try:
         result = subprocess.run(
-            ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
+            ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@clauthing_window}"],
             capture_output=True, text=True, timeout=5
         )
     except Exception as e:
@@ -857,18 +860,22 @@ def cmd_send(ctx):
 
     socket = ctx.socket
     try:
-        from clauthing.events import get_all_windows, get_runtime_dir
-        windows = get_all_windows()
-        my_session_id = ctx.session_id
+        from clauthing.events import get_runtime_dir
+        my_window = ctx.clauthing_window
 
+        # Build the target list from live tmux windows (name + clauthing_window),
+        # so picking a target and routing the message both key on the stable id.
+        result = run(
+            ["tmux", "-L", socket, "list-windows", "-F",
+             "#{@clauthing_window}\t#{window_name}\t#{pane_current_path}"],
+            capture_output=True, text=True, check=True,
+        )
         fzf_lines = []
-        for session_id, info in windows.items():
-            if session_id == my_session_id:
+        for line in result.stdout.strip().splitlines():
+            cw, name, path = (line.split("\t") + ["", "", ""])[:3]
+            if not cw or cw == my_window:
                 continue
-            title = info.get("title", session_id[:8])
-            win_socket = info.get("socket", "")
-            path = info.get("path", "")
-            fzf_lines.append(f"{session_id}\t{title}\t{win_socket}\t{path}")
+            fzf_lines.append(f"{cw}\t{name}\t{path}")
 
         if not fzf_lines:
             return ctx.stop("No other windows to send to")
@@ -882,7 +889,7 @@ def cmd_send(ctx):
         subprocess.run([
             "tmux", "-L", socket,
             "display-popup", "-E", "-w", "70%", "-h", "40%",
-            f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=2,4 --header='Send to:' > {tmp_output}"
+            f"cat {tmp_input} | fzf --delimiter='\\t' --with-nth=2,3 --header='Send to:' > {tmp_output}"
         ])
 
         selected = tmp_output.read_text().strip() if tmp_output.exists() else ""
@@ -893,61 +900,44 @@ def cmd_send(ctx):
             return ctx.stop("Cancelled")
 
         parts = selected.split("\t")
-        target_session_id = parts[0]
-        target_title = parts[1] if len(parts) > 1 else target_session_id[:8]
-        target_socket = parts[2] if len(parts) > 2 else socket
+        target_window = parts[0]
+        target_title = parts[1] if len(parts) > 1 and parts[1] else target_window[:8]
 
-        if target_socket.startswith("cl1-"):
-            target_pane = "%0"
-        else:
-            result = run(
-                ["tmux", "-L", target_socket, "list-windows", "-F", "#{window_id} #{@session_id}"],
-                capture_output=True, text=True, check=True
-            )
-            target_pane = None
-            for line in result.stdout.strip().split("\n"):
-                line_parts = line.split()
-                if len(line_parts) >= 2 and line_parts[1] == target_session_id:
-                    target_pane = line_parts[0]
-                    break
+        # Deliver to the recipient's inbox only — no pane injection (use :type).
+        msgs_dir = get_runtime_dir() / "messages"
+        msgs_dir.mkdir(exist_ok=True)
+        inbox_file = msgs_dir / f"{target_window}.jsonl"
+        msg_entry = {
+            "from": _window_name_for(socket, my_window),
+            "from_window": my_window or "",
+            "message": message,
+            "ts": time.time(),
+            "read": False,
+        }
+        with open(inbox_file, "a") as f:
+            f.write(json.dumps(msg_entry) + "\n")
 
-        if target_pane:
-            run(["tmux", "-L", target_socket, "send-keys", "-t", target_pane, "-l", message])
-            run(["tmux", "-L", target_socket, "send-keys", "-t", target_pane, "Enter"])
+        try:
+            subprocess.run(["tmux", "-L", socket, "refresh-client", "-S"],
+                           capture_output=True, timeout=2)
+        except Exception:
+            pass
 
-            # Store in inbox
-            msgs_dir = get_runtime_dir() / "messages"
-            msgs_dir.mkdir(exist_ok=True)
-            inbox_file = msgs_dir / f"{target_session_id}.jsonl"
-            my_windows = get_all_windows()
-            my_info = my_windows.get(my_session_id, {})
-            msg_entry = {
-                "from": my_info.get("title", "unknown"),
-                "from_session": my_session_id,
-                "message": message,
-                "ts": time.time(),
-                "read": False
-            }
-            with open(inbox_file, "a") as f:
-                f.write(json.dumps(msg_entry) + "\n")
-
-            ctx.message(f"✓ Sent to {target_title}")
-            return ctx.stop(f"✓ Message sent to {target_title}")
-        else:
-            return ctx.stop("❌ Could not find target window")
+        ctx.message(f"✓ Sent to {target_title}")
+        return ctx.stop(f"✓ Message sent to {target_title}")
     except Exception as e:
         return ctx.stop(f"❌ Error: {str(e)}")
 
 
 @command(':msgs')
 def cmd_msgs(ctx):
-    if not ctx.session_id:
-        return ctx.stop("No session ID")
+    if not ctx.clauthing_window:
+        return ctx.stop("No window id")
 
     try:
         from clauthing.events import get_runtime_dir
         msgs_dir = get_runtime_dir() / "messages"
-        inbox_file = msgs_dir / f"{ctx.session_id}.jsonl"
+        inbox_file = msgs_dir / f"{ctx.clauthing_window}.jsonl"
 
         if not inbox_file.exists():
             return ctx.stop("📭 No messages in inbox")
@@ -968,9 +958,9 @@ def cmd_msgs(ctx):
         # everything is already read.
         unread = [m for m in messages if not m.get("read")]
         if unread:
-            msg = min(unread, key=lambda m: m.get("ts", 0))
+            msg = min(unread, key=lambda m: (m.get("priority", 9999), m.get("ts", 0)))
             for m in messages:
-                if m.get("ts") == msg.get("ts") and m.get("from_session") == msg.get("from_session"):
+                if m.get("ts") == msg.get("ts") and m.get("from_window") == msg.get("from_window"):
                     m["read"] = True
                     break
             with open(inbox_file, "w") as f:
@@ -990,11 +980,14 @@ def cmd_msgs(ctx):
 
 
 def _resolve_session_by_window_name(socket, name):
-    """Return the @session_id of the window named `name` on `socket`, or None."""
+    """Resolve the window named `name` on `socket`.
+
+    Returns {session_id, window_id, clauthing_window, name} or None.
+    """
     try:
         result = run(
             ["tmux", "-L", socket, "list-windows", "-F",
-             "#{window_name}\t#{window_id}\t#{@session_id}"],
+             "#{window_name}\t#{window_id}\t#{@session_id}\t#{@clauthing_window}"],
             capture_output=True, text=True, check=True,
         )
     except Exception:
@@ -1004,8 +997,10 @@ def _resolve_session_by_window_name(socket, name):
         if len(parts) < 3:
             continue
         win_name, win_id, sess_id = parts[0], parts[1], parts[2]
+        cw = parts[3] if len(parts) > 3 else ""
         if win_name == name:
-            return {"session_id": sess_id, "window_id": win_id}
+            return {"session_id": sess_id, "window_id": win_id,
+                    "clauthing_window": cw, "name": win_name}
     return None
 
 
@@ -1027,23 +1022,29 @@ def _cmd_message_impl(ctx):
         return ctx.stop("❌ Usage: :message <window-name> <body>")
 
     socket = ctx.socket
-    target = _resolve_session_by_window_name(socket, target_name)
-    if not target or not target["session_id"]:
-        return ctx.stop(f"❌ No window named '{target_name}' on socket {socket}")
+    # "." targets the current window — send a note to yourself.
+    if target_name == ".":
+        target_window = ctx.clauthing_window
+        if not target_window:
+            return ctx.stop("❌ No window id for the current window")
+        target_name = "."
+    else:
+        target = _resolve_session_by_window_name(socket, target_name)
+        if not target or not target.get("clauthing_window"):
+            return ctx.stop(f"❌ No window named '{target_name}' on socket {socket}")
+        target_window = target["clauthing_window"]
 
-    target_session_id = target["session_id"]
-    target_window_id = target["window_id"]
-
-    from clauthing.events import get_runtime_dir, get_all_windows
-    my_session_id = ctx.session_id
-    my_info = get_all_windows().get(my_session_id, {}) if my_session_id else {}
+    from clauthing.events import get_runtime_dir
+    my_window = ctx.clauthing_window
 
     msgs_dir = get_runtime_dir() / "messages"
     msgs_dir.mkdir(exist_ok=True)
-    inbox_file = msgs_dir / f"{target_session_id}.jsonl"
+    # Inbox is keyed by the recipient's stable clauthing_window, so the message
+    # survives the recipient running :cd (which rotates their session_id).
+    inbox_file = msgs_dir / f"{target_window}.jsonl"
     msg_entry = {
-        "from": my_info.get("title", "unknown"),
-        "from_session": my_session_id or "",
+        "from": _window_name_for(socket, my_window),
+        "from_window": my_window or "",
         "message": body,
         "ts": time.time(),
         "read": False,
@@ -1052,6 +1053,8 @@ def _cmd_message_impl(ctx):
         f.write(json.dumps(msg_entry) + "\n")
 
     # Force immediate status-bar redraw so the (N) badge appears right away.
+    # The message is delivered to the inbox only — the recipient pulls it with
+    # :msg. Use :type to inject keystrokes into a window's pane.
     try:
         import subprocess as _sp
         _sp.run(["tmux", "-L", socket, "refresh-client", "-S"],
@@ -1059,15 +1062,27 @@ def _cmd_message_impl(ctx):
     except Exception:
         pass
 
-    # Also drop the message text into the receiver's pane so it's visible
-    # immediately in scrollback even before they run :msg.
+    where = "yourself" if target_name == "." else target_name
+    return ctx.stop(f"✓ Message sent to {where}")
+
+
+def _window_name_for(socket, clauthing_window):
+    """Best-effort current window name for a clauthing_window (for `from`)."""
+    if not clauthing_window:
+        return "unknown"
     try:
-        run(["tmux", "-L", socket, "send-keys", "-t", target_window_id, "-l", body])
-        run(["tmux", "-L", socket, "send-keys", "-t", target_window_id, "Enter"])
+        result = run(
+            ["tmux", "-L", socket, "list-windows", "-F",
+             "#{@clauthing_window}\t#{window_name}"],
+            capture_output=True, text=True, check=True,
+        )
+        for line in result.stdout.strip().splitlines():
+            cw, _, wname = line.partition("\t")
+            if cw == clauthing_window:
+                return wname or "unknown"
     except Exception:
         pass
-
-    return ctx.stop(f"✓ Message sent to {target_name}")
+    return "unknown"
 
 
 @command(':message', independent=True)
@@ -1078,3 +1093,291 @@ def cmd_message(ctx):
 @command(':msg', independent=True)
 def cmd_msg(ctx):
     return _cmd_message_impl(ctx)
+
+
+def _session_transcript_file(ctx):
+    """Path to the current window's claude transcript jsonl, or None."""
+    if not ctx.session_id:
+        return None
+    from clauthing.claude_utils import encode_project_path
+    if ctx.profile:
+        projects_root = (Path.home() / ".config" / "clauthing" / "other-profiles"
+                         / ctx.profile / "claude-data" / "projects")
+    else:
+        projects_root = Path.home() / ".config" / "clauthing" / "claude-data" / "projects"
+    return projects_root / encode_project_path(ctx.cwd) / f"{ctx.session_id}.jsonl"
+
+
+def _entry_user_text(entry):
+    content = entry.get("message", {}).get("content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [b.get("text", "") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        return "\n".join(p for p in parts if p).strip()
+    return ""
+
+
+def _entry_assistant_text(entry):
+    content = entry.get("message", {}).get("content", [])
+    if isinstance(content, str):
+        return content.strip()
+    parts = [b.get("text", "") for b in content
+             if isinstance(b, dict) and b.get("type") == "text"]
+    return "\n".join(p for p in parts if p).strip()
+
+
+def build_transcript_pairs(messages):
+    """Collapse a list of user/assistant entries into (prompt, reply) pairs,
+    oldest first. Skips the automatic Warmup prompt; joins multiple assistant
+    text blocks under one prompt."""
+    pairs = []
+    cur_user, cur_reply = None, []
+    for m in messages:
+        if m.get("type") == "user":
+            text = _entry_user_text(m)
+            if not text or text == "Warmup":
+                continue
+            if cur_user is not None:
+                pairs.append((cur_user, "\n".join(cur_reply).strip()))
+            cur_user, cur_reply = text, []
+        elif m.get("type") == "assistant":
+            t = _entry_assistant_text(m)
+            if t:
+                cur_reply.append(t)
+    if cur_user is not None:
+        pairs.append((cur_user, "\n".join(cur_reply).strip()))
+    return pairs
+
+
+@command(':history')
+def cmd_history(ctx):
+    """Browse this window's conversation as prompt/reply pairs in a pager.
+
+    Opens the custom pager at the most recent pair. j/k step between message
+    pairs, Ctrl-D/Ctrl-U scroll within a long pair, ? searches backward
+    (n repeats), / forward, q quits.
+    """
+    sf = _session_transcript_file(ctx)
+    if not sf or not sf.exists():
+        return ctx.stop("No transcript for this window yet")
+
+    from clauthing.session_utils import get_session_messages
+    pairs = build_transcript_pairs(get_session_messages(sf))
+    if not pairs:
+        return ctx.stop("No messages to show")
+
+    import sys as _sys
+    import shlex as _shlex
+    uid = os.getuid()
+    tmp = Path(f"/tmp/cl-history-{uid}.json")
+    tmp.write_text(json.dumps(pairs))
+    pager = (f"{_shlex.quote(_sys.executable)} -m clauthing.history_pager "
+             f"{_shlex.quote(str(tmp))}")
+    try:
+        subprocess.run(["tmux", "-L", ctx.socket, "display-popup", "-E",
+                        "-w", "90%", "-h", "85%", pager])
+    finally:
+        tmp.unlink(missing_ok=True)
+    return ctx.stop("")
+
+
+def launch_text_pager(socket, text, title="pager"):
+    """Show `text` in `less`, full-screen in a tmux popup (overlays the window).
+
+    less opens at the top (the beginning of the message): j/k scroll, / and ?
+    search, n repeats, g/G top/bottom, q quits.
+    """
+    import shlex as _shlex
+    uid = os.getuid()
+    tmp = Path(f"/tmp/cl-pager-{uid}.txt")
+    tmp.write_text(text)
+    cmd = f"less -i {_shlex.quote(str(tmp))}"
+    try:
+        subprocess.run(["tmux", "-L", socket, "display-popup", "-E",
+                        "-w", "90%", "-h", "90%", cmd])
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@command(':pager')
+def cmd_pager(ctx):
+    """Show the last claude reply full-screen (scrollable, searchable) so long
+    output never gets cut off."""
+    sf = _session_transcript_file(ctx)
+    if not sf or not sf.exists():
+        return ctx.stop("No transcript for this window yet")
+    from clauthing.session_utils import get_last_assistant_message
+    reply = get_last_assistant_message(sf)
+    if not reply:
+        return ctx.stop("No reply to show")
+    launch_text_pager(ctx.socket, reply, "last reply")
+    return ctx.stop("")
+
+
+def _last_inbox_message(clauthing_window):
+    """Return the most recent message in a window's inbox, or None.
+
+    Non-destructive — does not touch read state.
+    """
+    if not clauthing_window:
+        return None
+    from clauthing.events import get_runtime_dir
+    inbox = get_runtime_dir() / "messages" / f"{clauthing_window}.jsonl"
+    if not inbox.exists():
+        return None
+    msgs = []
+    for line in inbox.read_text().splitlines():
+        if line:
+            try:
+                msgs.append(json.loads(line))
+            except Exception:
+                pass
+    if not msgs:
+        return None
+    return max(msgs, key=lambda m: m.get("ts", 0))
+
+
+def push_back_last_read(messages):
+    """Mark the most-recently-read message unread (push it back onto the stack).
+
+    "Most recently read" = the read message with the latest ts (reading
+    progresses oldest→newest, so that's the one :msg last showed). Mutates the
+    matching dict in `messages`; returns it, or None if nothing was read.
+    """
+    read_msgs = [m for m in messages if m.get("read")]
+    if not read_msgs:
+        return None
+    target = max(read_msgs, key=lambda m: m.get("ts", 0))
+    target["read"] = False
+    return target
+
+
+@command(':push', independent=True)
+def cmd_push(ctx):
+    """Push the last-read message back onto this window's stack (undo :msg)."""
+    cw = ctx.clauthing_window
+    if not cw:
+        return ctx.stop("No window id")
+    from clauthing.events import get_runtime_dir
+    inbox = get_runtime_dir() / "messages" / f"{cw}.jsonl"
+    if not inbox.exists():
+        return ctx.stop("📭 No messages")
+    msgs = [json.loads(l) for l in inbox.read_text().splitlines() if l]
+    pushed = push_back_last_read(msgs)
+    if pushed is None:
+        return ctx.stop("Nothing to push back (no read messages)")
+    inbox.write_text("\n".join(json.dumps(m) for m in msgs) + "\n")
+    body = (pushed.get("message", "") or "")[:50]
+    return ctx.stop(f"↩ Pushed back: {pushed.get('from', '?')}: {body}")
+
+
+@command(':peek', independent=True)
+def cmd_peek(ctx):
+    """Show this window's most recent message without marking it read."""
+    cw = ctx.clauthing_window
+    if not cw:
+        return ctx.stop("No window id")
+    msg = _last_inbox_message(cw)
+    if not msg:
+        return ctx.stop("📭 No messages")
+    t = time.strftime("%H:%M", time.localtime(msg.get("ts", 0)))
+    return ctx.stop(f"👁 [{t}] {msg.get('from', 'unknown')}: {msg.get('message', '')}")
+
+
+@command(':save', independent=True)
+def cmd_save(ctx):
+    """Bookmark this window's most recent message into its per-window state."""
+    cw = ctx.clauthing_window
+    if not cw:
+        return ctx.stop("No window id")
+    msg = _last_inbox_message(cw)
+    if not msg:
+        return ctx.stop("📭 No message to save")
+    from clauthing.session import load_window_state, save_window_state
+    state = load_window_state(cw, ctx.profile)
+    bookmarks = state.setdefault("bookmarks", [])
+    bookmarks.append(msg)
+    save_window_state(cw, state, ctx.profile)
+    return ctx.stop(f"🔖 Saved ({len(bookmarks)} bookmark(s))")
+
+
+@command(':log', independent=True)
+def cmd_log(ctx):
+    """Drop a debug marker into the clauthing log with a snapshot of window
+    state — your note plus the current window, attention, and idle maps. Use it
+    the moment something looks wrong (e.g. M-, picking the wrong window) so we
+    can correlate. Find them with:  grep 'LOG-MARKER' <instance>/combined.log
+    """
+    from clauthing.hooks import _load_attention, _load_idle
+    note = ctx.args.strip() or "(no note)"
+    socket = ctx.socket
+    profile = ctx.profile
+
+    def _tmux(fmt):
+        try:
+            return run(["tmux", "-L", socket, "display-message", "-p", fmt],
+                       capture_output=True, text=True).stdout.strip()
+        except Exception:
+            return "?"
+
+    cur = _tmux("#{window_index}\t#{window_name}\t#{@session_id}\t#{@clauthing_window}")
+    try:
+        wins = run(["tmux", "-L", socket, "list-windows", "-F",
+                    "#{window_index}:#{window_name} sid=#{@session_id} cw=#{@clauthing_window}"],
+                   capture_output=True, text=True).stdout.strip()
+    except Exception:
+        wins = "?"
+    att = _load_attention(profile) or {}
+    idle = _load_idle(profile) or {}
+
+    log(f"LOG-MARKER: {note}", profile)
+    log(f"LOG-MARKER:   current(index\\tname\\tsid\\tcw)= {cur}", profile)
+    log(f"LOG-MARKER:   ctx session={ctx.session_id} clauthing_window={ctx.clauthing_window}", profile)
+    log(f"LOG-MARKER:   attention({len(att)})= {json.dumps(att, sort_keys=True)}", profile)
+    log(f"LOG-MARKER:   idle({len(idle)})= {json.dumps(idle, sort_keys=True)}", profile)
+    log("LOG-MARKER:   windows=\n    " + wins.replace("\n", "\n    "), profile)
+    return ctx.stop(f"📝 Logged marker: {note}")
+
+
+@command(':backfill-window-ids', independent=True)
+def cmd_backfill_window_ids(ctx):
+    """Set @clauthing_window on any live window that's missing one.
+
+    Needed once after an in-place upgrade for windows that predate
+    clauthing_window. (A full restart heals automatically.)
+    """
+    from clauthing.tmux import backfill_clauthing_windows
+    n = backfill_clauthing_windows(ctx.socket)
+    return ctx.stop(f"✓ Backfilled {n} window id(s)")
+
+
+@command(':type', independent=True)
+def cmd_type(ctx):
+    """Type text directly into another window's pane.
+
+    Usage: :type <window-name> <text>
+
+    This is the keystroke-injection :msg used to do. :msg now only records a
+    pullable inbox message; :type is the explicit "send keys to that window".
+    """
+    args = ctx.args.strip()
+    parts = args.split(None, 1)
+    target_name = parts[0] if parts else ""
+    text = parts[1] if len(parts) > 1 else ""
+    if not target_name or not text:
+        return ctx.stop("❌ Usage: :type <window-name> <text>")
+
+    socket = ctx.socket
+    target = _resolve_session_by_window_name(socket, target_name)
+    if not target or not target.get("window_id"):
+        return ctx.stop(f"❌ No window named '{target_name}' on socket {socket}")
+
+    try:
+        run(["tmux", "-L", socket, "send-keys", "-t", target["window_id"], "-l", text])
+        run(["tmux", "-L", socket, "send-keys", "-t", target["window_id"], "Enter"])
+    except Exception as e:
+        return ctx.stop(f"❌ Error: {e}")
+
+    return ctx.stop(f"✓ Typed into {target_name}")
