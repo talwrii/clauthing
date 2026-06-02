@@ -578,7 +578,96 @@ sleep 0.5
                 if script_path.exists():
                     script_path.unlink()
     runner.run_test("tmux_respawn_pane_works", test_tmux_respawn_pane_works)
-    
+
+    def test_cd_targets_claude_window_not_focused_window():
+        """:cd must set @startup_command on the claude window, not the currently
+        focused window.
+
+        Regression test for the MCP popup-restore flow: after the user confirms
+        a popup, command_mcp_server restores focus to the user's window BEFORE
+        running --run-command. Without a fix, :cd queries the focused window and
+        sets @startup_command on the user's window instead of claude's.
+
+        Setup:
+          - window 1 (user): focused, no @session_id
+          - window 2 (claude): has @session_id and a pane that TMUX_PANE points to
+
+        After :cd, @startup_command must appear on window 2, not window 1.
+        """
+        with CdTestHarness(one_tab_mode=True) as h:
+            target = tempfile.mkdtemp(prefix="cd-twowin-target-")
+            try:
+                # Create a second window to act as the "user" window, then
+                # switch focus there so window 1 (claude) is NOT focused.
+                subprocess.run(
+                    ["tmux", "-L", h.socket_name, "new-window"],
+                    check=True, capture_output=True, timeout=5,
+                )
+                # Now window 2 is focused. Window 1 is the "claude" window.
+
+                # Get pane id of window 1 (the claude pane).
+                pane_result = subprocess.run(
+                    ["tmux", "-L", h.socket_name, "list-panes", "-t", "test:1",
+                     "-F", "#{pane_id}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                claude_pane_id = pane_result.stdout.strip()
+                assert_true(bool(claude_pane_id),
+                            f"Should get claude pane id, got: {claude_pane_id!r}")
+
+                # Tag window 1 with a session_id (as the launcher would).
+                session_id = "cd-twowin-session"
+                subprocess.run(
+                    ["tmux", "-L", h.socket_name, "set-option", "-w",
+                     "-t", "test:1", "@session_id", session_id],
+                    check=True, capture_output=True, timeout=5,
+                )
+
+                h.create_mock_session("/tmp", session_id)
+
+                env = os.environ.copy()
+                env['CLAUDE_CONFIG_DIR'] = str(h.claude_data_dir)
+                env['CLAUTHING_TMUX_SOCKET'] = h.socket_name
+                env['TMUX_PANE'] = claude_pane_id  # as if inherited from claude
+
+                clauthing_bin = shutil.which("clauthing") or "clauthing"
+                input_data = json.dumps({
+                    "prompt": f":cd {target}",
+                    "cwd": "/tmp",
+                    "session_id": session_id,
+                })
+                result = subprocess.run(
+                    [clauthing_bin, "--user-prompt-submit"],
+                    input=input_data,
+                    capture_output=True, text=True, timeout=10, env=env,
+                )
+
+                time.sleep(0.2)
+
+                # @startup_command must be on window 1 (claude), not window 2.
+                opt1 = subprocess.run(
+                    ["tmux", "-L", h.socket_name, "show-option", "-wv",
+                     "-t", "test:1", "@startup_command"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                opt2 = subprocess.run(
+                    ["tmux", "-L", h.socket_name, "show-option", "-wv",
+                     "-t", "test:2", "@startup_command"],
+                    capture_output=True, text=True, timeout=5,
+                )
+
+                assert_true(target in opt1.stdout,
+                            f"@startup_command should be on claude window (win 1). "
+                            f"win1={opt1.stdout!r} win2={opt2.stdout!r}\n"
+                            f"stdout={result.stdout} stderr={result.stderr}")
+                assert_true(target not in opt2.stdout,
+                            f"@startup_command must NOT be on user window (win 2). "
+                            f"win2={opt2.stdout!r}")
+            finally:
+                shutil.rmtree(target, ignore_errors=True)
+    runner.run_test("cd_targets_claude_window_not_focused_window",
+                    test_cd_targets_claude_window_not_focused_window)
+
     return runner.summary()
 
 

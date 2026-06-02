@@ -1,2 +1,3 @@
 - kitty-claude: handle C-d (and other ungraceful window closes) gracefully — see state.md.
+- M-, (`--attention` → `jump_to_attention`) jumps to windows that are still working rather than ones waiting for input — the attention/idle window state looks wrong (stale or mislabelled entries). Use `:log <note>` to capture a `LOG-MARKER` snapshot (current window + attention/idle maps + window list) when it misfires, then fix the marking logic from that evidence.
 - Switch from tmux to Zellij. tmux `display-popup` is client-relative, not window-relative — there is no way to render a permission popup on a specific window without `select-window`-switching the client's view. Zellij supports floating panes anchored to a tab, which is what we actually need for MCP permission prompts.

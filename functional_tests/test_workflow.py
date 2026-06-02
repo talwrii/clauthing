@@ -104,6 +104,9 @@ def run_test():
             assert_true(len(windows) == 1, f"expected 1 window. got {windows}")
             assert_true(windows[0]["name"] == "main",
                        f"expected window 'main'. got {windows[0]}")
+            # The stable clauthing_window handle must be reported.
+            assert_true(windows[0].get("clauthing_window"),
+                       f"window should report clauthing_window. got {windows[0]}")
 
             # ── clauthing --launch-workflow opens a new window ───────────────
             # Use 'sleep 60' as a stub workflow program — it just keeps the
@@ -131,6 +134,20 @@ def run_test():
             assert_true(r.returncode == 0, f"select-window failed: {r.stderr}")
             active = tmux(socket, "display-message", "-p", "#{window_name}")
             assert_true(active == "goals", f"active should be 'goals'. got {active!r}")
+
+            # ── select-window by the stable clauthing_window handle ─────────
+            # 'main' is a real claude window so it has a clauthing_window;
+            # 'goals' is a stub `sleep` program and won't. We're currently on
+            # 'goals' — addressing 'main' by its stable id should jump back.
+            main_cw = next(w["clauthing_window"] for w in windows if w["name"] == "main")
+            r = subprocess.run([wf_bin, "select-window", main_cw],
+                               capture_output=True, text=True, env=env, timeout=10)
+            assert_true(r.returncode == 0, f"select by clauthing_window failed: {r.stderr}")
+            active = tmux(socket, "display-message", "-p", "#{window_name}")
+            assert_true(active == "main",
+                       f"select by clauthing_window should focus main. got {active!r}")
+            # restore focus to goals for the subsequent steps
+            tmux(socket, "select-window", "-t", "goals")
 
             # ── current-window returns the just-selected window ─────────────
             r = subprocess.run([wf_bin, "current-window"],
