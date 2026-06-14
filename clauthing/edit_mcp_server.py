@@ -36,6 +36,45 @@ def _file_summary(path: Path, max_head_lines: int = 10) -> str:
         return f"(could not read file: {e})"
 
 
+def edit_file_in_popup(raw_path, socket=None, cwd=None):
+    """Open `raw_path` in vim in a tmux popup; block until the user closes it.
+
+    Reusable by both the edit_file MCP tool and the :edit colon command. Path
+    may be absolute or relative to `cwd` (defaults to the process cwd). Returns
+    (ok: bool, message: str) — message is a post-edit summary on success.
+    """
+    raw_path = (raw_path or "").strip()
+    if not raw_path:
+        return False, "Error: path is required"
+
+    base = Path(cwd) if cwd else Path.cwd()
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = base / path
+
+    socket = socket or get_tmux_socket()
+    # tmux display-popup -E waits for the command to exit before closing.
+    # The final positional arg is a shell command, so quote the path.
+    shell_cmd = f"vim {shlex.quote(str(path))}"
+    cmd = [
+        "tmux", "-L", socket, "display-popup",
+        "-E", "-w", "90%", "-h", "90%",
+        "-d", str(path.parent if path.parent.exists() else base),
+        shell_cmd,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return False, "Error: edit timed out (1h)"
+    except FileNotFoundError as e:
+        return False, f"Error: {e}"
+
+    if proc.returncode != 0:
+        return False, (f"vim/tmux exited with code {proc.returncode}\n"
+                       f"stderr: {proc.stderr.strip()[:500]}")
+    return True, f"Edit done: {path}\n{_file_summary(path)}"
+
+
 async def run_edit_mcp_server():
     mcp = get_mcp()
     server = mcp.Server("clauthing-edit")
@@ -70,44 +109,8 @@ async def run_edit_mcp_server():
         if name != "edit_file":
             return [mcp.TextContent(type="text", text=f"Unknown tool: {name}")]
 
-        raw_path = arguments.get("path", "").strip()
-        if not raw_path:
-            return [mcp.TextContent(type="text", text="Error: path is required")]
-
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-
-        socket = get_tmux_socket()
-        # tmux display-popup -E waits for the command to exit before closing.
-        # -w / -h are popup size; vim wants room.
-        # The final positional arg is interpreted by tmux as a shell command,
-        # so quote the path properly to handle spaces / special chars.
-        shell_cmd = f"vim {shlex.quote(str(path))}"
-        cmd = [
-            "tmux", "-L", socket, "display-popup",
-            "-E", "-w", "90%", "-h", "90%",
-            "-d", str(path.parent if path.parent.exists() else Path.cwd()),
-            shell_cmd,
-        ]
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-        except subprocess.TimeoutExpired:
-            return [mcp.TextContent(type="text", text="Error: edit timed out (1h)")]
-        except FileNotFoundError as e:
-            return [mcp.TextContent(type="text", text=f"Error: {e}")]
-
-        if proc.returncode != 0:
-            return [mcp.TextContent(
-                type="text",
-                text=f"vim/tmux exited with code {proc.returncode}\n"
-                     f"stderr: {proc.stderr.strip()[:500]}"
-            )]
-
-        return [mcp.TextContent(
-            type="text",
-            text=f"Edit done: {path}\n{_file_summary(path)}"
-        )]
+        _ok, msg = edit_file_in_popup(arguments.get("path", ""), socket=get_tmux_socket())
+        return [mcp.TextContent(type="text", text=msg)]
 
     async with mcp.stdio_server() as (read_stream, write_stream):
         init_options = server.create_initialization_options()

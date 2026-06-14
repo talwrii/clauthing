@@ -119,14 +119,15 @@ def read_linked_window_id():
 
 
 def read_linked_tmux():
-    """Read the linked tmux pane contents after user confirms."""
+    """Read the linked tmux pane contents.
+
+    No confirmation: explicitly pairing a window with :tmux IS the consent to
+    *read* it — that's the whole point of pairing. (Destructive ops like
+    kill_tmux still confirm.)
+    """
     linked_window = read_linked_window_id()
     if not linked_window:
         return "No tmux window linked. User needs to run :tmux first."
-
-    # Ask for confirmation
-    if not confirm_popup(f"Let Claude read linked tmux pane ({linked_window})?"):
-        return "User denied access to tmux pane."
 
     # Capture the pane contents
     try:
@@ -219,17 +220,16 @@ async def run_command_mcp_server(enable_commands=False):
         instructions=(
             "Tools for interacting with the user's tmux setup.\n"
             "\n"
-            "DESIGN: clauthing exposes a paired tmux window that the USER drives, "
-            "not claude. claude can read its contents (read_tmux), focus it "
-            "(focus_tmux), or trigger a colon command (kitty_command) — but "
-            "intentionally CANNOT send keystrokes / write into it. The window "
-            "exists so the user can run things directly without claude in the "
-            "loop.\n"
+            "DESIGN: clauthing exposes a paired tmux window that the USER drives. "
+            "claude can read its contents (read_tmux — no popup, pairing is the "
+            "consent to read), focus it (focus_tmux), send a command into it "
+            "(send_tmux — ALWAYS asks the user to confirm first), or trigger a "
+            "colon command (kitty_command).\n"
             "\n"
             "Use :tmux-spawn (via kitty_command) to create + link a fresh window "
             "in the user's default tmux server. Use :tmux to link an existing one. "
-            "Once linked, focus_tmux is auto-approved (no popup); read_tmux and "
-            "kitty_command will pop up a confirmation."
+            "Once linked: focus_tmux and read_tmux are auto-approved (no popup); "
+            "send_tmux and kitty_command always pop up a confirmation."
         ),
     )
 
@@ -262,6 +262,26 @@ async def run_command_mcp_server(enable_commands=False):
         inputSchema={"type": "object", "properties": {}, "required": []},
     )
 
+    send_tmux_tool = mcp.Tool(
+        name="send_tmux",
+        description=(
+            "Send a command to the linked tmux window (types the text, then "
+            "presses Enter). The user is ALWAYS asked to confirm via popup before "
+            "anything is typed — use this to run something in the user's paired "
+            "terminal on their behalf."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The command/text to type into the linked window.",
+                },
+            },
+            "required": ["command"],
+        },
+    )
+
     kitty_command_tool = mcp.Tool(
         name="kitty_command",
         description=(
@@ -280,7 +300,7 @@ async def run_command_mcp_server(enable_commands=False):
         },
     )
 
-    tools = [read_tmux_tool, focus_tmux_tool, kill_tmux_tool]
+    tools = [read_tmux_tool, focus_tmux_tool, kill_tmux_tool, send_tmux_tool]
     if enable_commands:
         tools.append(kitty_command_tool)
 
@@ -290,6 +310,29 @@ async def run_command_mcp_server(enable_commands=False):
 
     @server.call_tool()
     async def call_tool(name, arguments):
+        if name == "send_tmux":
+            linked_window = read_linked_window_id()
+            if not linked_window:
+                return [mcp.TextContent(type="text", text="No tmux window linked.")]
+            command = arguments.get("command", "")
+            if not command:
+                return [mcp.TextContent(type="text", text="Error: command is required")]
+            # ALWAYS confirm before typing into the user's terminal.
+            if not confirm_popup(f"Send to linked tmux window ({linked_window}):\n  {command}"):
+                return [mcp.TextContent(type="text", text="User denied sending the command.")]
+            try:
+                subprocess.run(
+                    ["tmux", "-L", "default", "send-keys", "-t", linked_window, "-l", command],
+                    check=True, capture_output=True, text=True, timeout=5,
+                )
+                subprocess.run(
+                    ["tmux", "-L", "default", "send-keys", "-t", linked_window, "Enter"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return [mcp.TextContent(type="text", text=f"Sent to {linked_window}: {command}")]
+            except subprocess.CalledProcessError as e:
+                return [mcp.TextContent(type="text", text=f"Failed to send: {e.stderr or e}")]
+
         if name == "read_tmux":
             result = read_linked_tmux()
             return [mcp.TextContent(type="text", text=result)]

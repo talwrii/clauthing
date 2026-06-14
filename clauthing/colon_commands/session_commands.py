@@ -1201,7 +1201,7 @@ def launch_text_pager(socket, text, title="pager"):
         tmp.unlink(missing_ok=True)
 
 
-@command(':pager')
+@command(':pager', independent=True)
 def cmd_pager(ctx):
     """Show the last claude reply full-screen (scrollable, searchable) so long
     output never gets cut off."""
