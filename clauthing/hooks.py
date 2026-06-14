@@ -238,21 +238,21 @@ def handle_user_prompt_submit(claude_data_dir=None):
             cmd_args = parts[1] if len(parts) > 1 else ""
             plugin_bin = shutil.which(f"clauthing-{cmd_name}")
             if plugin_bin:
-                import tempfile
-                env_exports = []
+                import shlex as _shlex
+                # Run the plugin directly and capture its stdout (no popup) — a
+                # plain plugin just prints text. A plugin that needs interactivity
+                # (fzf/vim) opens its own tmux popup; it has CLAUTHING_SOCKET.
+                env = {**os.environ,
+                       "CLAUTHING_SOCKET": socket,
+                       "CLAUTHING_CWD": input_data.get('cwd', os.getcwd())}
                 if session_id:
-                    env_exports.append(f"CLAUTHING_SESSION_ID={session_id}")
-                env_exports.append(f"CLAUTHING_SOCKET={socket}")
-                env_exports.append(f"CLAUTHING_CWD={input_data.get('cwd', os.getcwd())}")
-                env_str = " ".join(env_exports)
-                tmp_output = Path(tempfile.mktemp())
-                plugin_cmd = f"{plugin_bin}"
-                if cmd_args:
-                    plugin_cmd += f" {cmd_args}"
-                subprocess.run(["tmux", "-L", socket, "display-popup", "-E", "-w", "60%", "-h", "50%",
-                                f"{env_str} {plugin_cmd} > {tmp_output}"])
-                output = tmp_output.read_text().strip() if tmp_output.exists() else ""
-                tmp_output.unlink(missing_ok=True)
+                    env["CLAUTHING_SESSION_ID"] = session_id
+                cmd = [plugin_bin] + (_shlex.split(cmd_args) if cmd_args else [])
+                try:
+                    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+                    output = (r.stdout or r.stderr or "").strip()
+                except Exception as e:
+                    output = f"❌ {cmd_name} failed: {e}"
                 if output.startswith(':'):
                     print(output)
                 elif output:
