@@ -224,39 +224,86 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
     socket = ctx.socket
     claude_data_dir = ctx.claude_data_dir
 
+    from clauthing.tmux import log_window_snapshot
+    log(f":cd START target={target_dir!r} current={current_dir!r} "
+        f"session={ctx.session_id} cwd={ctx.cwd!r} "
+        f"TMUX_PANE={os.environ.get('TMUX_PANE')!r} "
+        f"CLAUDE_CONFIG_DIR={os.environ.get('CLAUDE_CONFIG_DIR')!r}")
+    log_window_snapshot(socket, "before :cd")
+
+    # The window's CURRENT name — preserve it across :cd regardless of which
+    # session ends up cloned (a fallback clone must not rename the window after
+    # some unrelated session).
+    cur_window_name = None
+    _pane = os.environ.get("TMUX_PANE")
+    if _pane:
+        try:
+            _r = subprocess.run(
+                ["tmux", "-L", socket, "display-message", "-p", "-t", _pane, "#{window_name}"],
+                capture_output=True, text=True, timeout=5)
+            cur_window_name = _r.stdout.strip() or None
+        except Exception:
+            cur_window_name = None
+
     encoded_current = encode_project_path(current_dir)
     encoded_target = encode_project_path(target_dir)
 
-    # Find the most recent session file with messages. If there isn't one
-    # (fresh window, no messages sent yet), skip cloning and just respawn fresh
-    # in the target dir — there's nothing useful to preserve.
+    # Pick the session to clone. Prefer THIS window's own session
+    # (ctx.session_id); only fall back to the most-recent transcript in the dir
+    # if ours has none. Otherwise :cd can clone a *different* window's session
+    # that happens to be newer in the same directory — cloning the wrong history
+    # and renaming this window after that session.
     new_session_id = None
     projects_dir = claude_data_dir / "projects" / encoded_current
-    if projects_dir.exists():
-        session_files = sorted(projects_dir.glob("*.jsonl"),
-                               key=lambda p: p.stat().st_mtime, reverse=True)
-        for sf in session_files:
+    source_sf = None
+    if ctx.session_id:
+        own = projects_dir / f"{ctx.session_id}.jsonl"
+        if own.exists() and session_has_messages(own):
+            source_sf = own
+    if source_sf is None and projects_dir.exists():
+        for sf in sorted(projects_dir.glob("*.jsonl"),
+                         key=lambda p: p.stat().st_mtime, reverse=True):
             if session_has_messages(sf):
-                old_session_id = sf.stem
-                new_session_id = str(uuid.uuid4())
-                target_projects_dir = claude_data_dir / "projects" / encoded_target
-                target_projects_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sf, target_projects_dir / f"{new_session_id}.jsonl")
-                save_session_metadata(new_session_id, get_session_name(old_session_id), target_dir)
-                mark_session_has_messages(new_session_id)
-                carry_over_session_state(old_session_id, new_session_id)
+                source_sf = sf
                 break
+    if source_sf is not None:
+        old_session_id = source_sf.stem
+        new_session_id = str(uuid.uuid4())
+        keep_name = cur_window_name or get_session_name(old_session_id)
+        log(f":cd cloning session {old_session_id} (own={old_session_id == ctx.session_id}) "
+            f"keep_name={keep_name!r}")
+        target_projects_dir = claude_data_dir / "projects" / encoded_target
+        target_projects_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_sf, target_projects_dir / f"{new_session_id}.jsonl")
+        save_session_metadata(new_session_id, keep_name, target_dir)
+        mark_session_has_messages(new_session_id)
+        carry_over_session_state(old_session_id, new_session_id)
 
     # Look up our own window/pane by session_id so this works even when the
     # focused tmux window has already been restored to the user's window after
     # an MCP popup confirmation.
     window_id = None
-    pane_id = None
-    if ctx.session_id:
+    # The pane this command actually runs in — tmux sets $TMUX_PANE on the
+    # claude/hook process. It's unambiguous even when two windows share a
+    # session_id, or when focus has moved (e.g. after an MCP popup), so prefer
+    # it over resolving by session_id (which returns the *first* match and can
+    # land on the wrong window).
+    pane_id = os.environ.get("TMUX_PANE") or None
+    if pane_id:
+        try:
+            r = subprocess.run(
+                ["tmux", "-L", socket, "display-message", "-p", "-t", pane_id, "#{window_id}"],
+                capture_output=True, text=True, timeout=5)
+            window_id = r.stdout.strip() or None
+        except Exception:
+            window_id = None
+    if not pane_id and ctx.session_id:
         window_id, pane_id = get_window_and_pane_for_session(socket, ctx.session_id)
     if not window_id:
         window_id = get_current_window_id(socket)
     current_window_id = window_id
+    log(f":cd resolved target window={window_id} pane={pane_id} "
+        f"(TMUX_PANE={os.environ.get('TMUX_PANE')!r}, session={ctx.session_id})")
 
     # Boomerang: set @startup_command, then respawn-pane to kill the running
     # claude. ctx.stop() alone returns to the prompt — it doesn't exit claude
@@ -286,6 +333,9 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
             except Exception:
                 pane_id = ""
         target_arg = f"-t {pane_id}" if pane_id else ""
+        log(f":cd RESPAWN pane={pane_id!r} window={window_id!r} "
+            f"new_session={new_session_id} startup={startup_cmd!r}"
+            + ("" if pane_id else "  ⚠ no pane_id — respawning FOCUSED pane"))
         # start_new_session=True detaches from the pane's process group so that
         # respawn-pane killing the pane doesn't also kill this scheduler.
         subprocess.Popen([

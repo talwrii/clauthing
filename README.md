@@ -18,6 +18,7 @@ Only tested on Linux.
 * `:reload` to restart claude at the same point with new features
 * `::skill new` to define a template to be *deterministally added to the context at this point* using ::new
 * Various other features
+* Some experimental plugin features
 
 Planned features: Use any terminal, rather than just kitty.
 
@@ -104,7 +105,7 @@ resulting tokens — so live tests never touch your main claude config.
 ## Contributing
 I'm vibe coding. You're vibe coding. I suggest you create a fork named clauthing-whatever and try to get people to use it. Send me your fork in a PR, describing what it does in as much detail as you can muster and I will have an LLM tell me what is going on and reimplement your idea.
 
-The generated LLMs actions are constrained by [CLAUDE.md](CLAUDE.md) and the files it links to.
+The generated LLMs code is constrained by [CLAUDE.md](CLAUDE.md) and the various markdown files it links to.
 
 # About
 I am @readwith. As part of my work i make a stream of tools related to AI-coding and useing a computer in general. If this is interesting I suggest following me on github. If I am interesting, follow me on X.

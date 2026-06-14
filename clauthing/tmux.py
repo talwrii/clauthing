@@ -77,6 +77,25 @@ def get_window_and_pane_for_session(socket, session_id):
     return None, None
 
 
+def log_window_snapshot(socket, label, profile=None):
+    """Log every window's index/name/window_id/pane/@session_id/@clauthing_window.
+
+    A point-in-time picture of the tmux layout for debugging window/pane
+    targeting (e.g. when :cd lands on the wrong window). Greppable as WINSNAP.
+    """
+    from clauthing.logging import log
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", socket, "list-windows", "-F",
+             "  #{window_index} #{window_name} win=#{window_id} pane=#{pane_id} "
+             "sid=#{@session_id} cw=#{@clauthing_window}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        log(f"WINSNAP [{label}]:\n{r.stdout.rstrip() or '  (none)'}", profile)
+    except Exception as e:
+        log(f"WINSNAP [{label}] failed: {e}", profile)
+
+
 def backfill_clauthing_windows(socket):
     """Ensure every live window on `socket` that runs a claude session has an
     @clauthing_window option set.
