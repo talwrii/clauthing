@@ -124,6 +124,9 @@ bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_inde
 # M-,: jump to the window currently waiting for attention (:waiting)
 bind -n M-, run-shell "clauthing {f'--profile {profile} ' if profile else ''}--attention > /dev/null 2>&1"
 
+# M-p: open the current window's last reply in the pager (:pager)
+bind -n M-p run-shell "clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':pager' > /dev/null 2>&1"
+
 # M-;: prompt for an "independent" colon command (one that doesn't touch
 # the current claude). Uses tmux's native command-prompt which is more
 # reliable for input than display-popup + read.
@@ -837,6 +840,9 @@ bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_inde
 # M-,: jump to the window currently waiting for attention (:waiting)
 bind -n M-, run-shell "clauthing {f'--profile {profile} ' if profile else ''}--attention > /dev/null 2>&1"
 
+# M-p: open the current window's last reply in the pager (:pager)
+bind -n M-p run-shell "clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':pager' > /dev/null 2>&1"
+
 # M-;: prompt for an "independent" colon command (one that doesn't touch
 # the current claude). Uses tmux's native command-prompt which is more
 # reliable for input than display-popup + read.
@@ -1242,6 +1248,9 @@ bind -n M-w display-popup -E -w 60% -h 60% "tmux list-windows -F '#{{window_inde
 
 # M-,: jump to the window currently waiting for attention (:waiting)
 bind -n M-, run-shell "clauthing {f'--profile {profile} ' if profile else ''}--attention > /dev/null 2>&1"
+
+# M-p: open the current window's last reply in the pager (:pager)
+bind -n M-p run-shell "clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':pager' > /dev/null 2>&1"
 
 # M-;: prompt for an "independent" colon command (one that doesn't touch
 # the current claude). Uses tmux's native command-prompt which is more
@@ -1652,6 +1661,7 @@ def main():
         parser.add_argument("--notification", action="store_true", help="Handle Notification hook (internal use)")
         parser.add_argument("--new-claude", action="store_true", help="In-window startup: register session, restore state, exec claude. Used as the tmux default-command of a freshly-spawned window. Does NOT create a window itself.")
         parser.add_argument("--new-window", action="store_true", help="Spawn a new clauthing window in the current tmux server (the one named by $CLAUTHING_TMUX_SOCKET). Pairs with --name and --cwd.")
+        parser.add_argument("--no-focus", action="store_true", help="With --new-window: create the window detached (tmux new-window -d), without switching focus to it.")
         parser.add_argument("--waiting", action="store_true", help="Jump to the most recent window flagged by Claude's Notification hook (i.e. claude is blocked waiting on user input).")
         parser.add_argument("--attention", action="store_true", help="DWIM version of --waiting: picks the most-recent signal across BOTH claude-attention AND unread inter-window messages, switching to whichever's freshest. Used by the M-, keybinding.")
         parser.add_argument("--dry-run", "-n", action="store_true", help="With --attention: show which window WOULD be chosen, without switching.")
@@ -2118,6 +2128,8 @@ def main():
                 inner_cmd_parts.extend(["--name", args.name])
             inner_cmd = " ".join(shlex.quote(p) for p in inner_cmd_parts)
             new_window_cmd = ["tmux", "-L", socket, "new-window"]
+            if args.no_focus:
+                new_window_cmd.append("-d")   # create without switching to it
             if args.cwd:
                 new_window_cmd.extend(["-c", args.cwd])
             if args.name:

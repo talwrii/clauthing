@@ -237,6 +237,36 @@ def dispatch(prompt, ctx):
     return None
 
 
+def _run_shell_independent(shell_cmd):
+    """Run a shell command (from `!cmd` in the M-; popup) in the focused window's
+    directory, in a tmux popup so the user sees the output. Lets you run things
+    while claude is blocked."""
+    import subprocess as _sp
+    shell_cmd = (shell_cmd or "").strip()
+    if not shell_cmd:
+        return False, "Empty command"
+    socket = os.environ.get("CLAUTHING_TMUX_SOCKET", "clauthing")
+    cwd = None
+    try:
+        r = _sp.run(["tmux", "-L", socket, "display-message", "-p", "#{pane_current_path}"],
+                    capture_output=True, text=True, timeout=2)
+        cwd = r.stdout.strip() or None
+    except Exception:
+        pass
+    # Run via bash so the `read -n 1` pause works regardless of the user's login
+    # shell (zsh's `read` has no -n; the popup would close instantly otherwise).
+    script = f"{shell_cmd}\necho\necho '── done (press any key) ──'\nread -n 1"
+    popup = ["tmux", "-L", socket, "display-popup", "-E", "-w", "80%", "-h", "80%"]
+    if cwd:
+        popup += ["-d", cwd]
+    popup.append(f"bash -c {shlex.quote(script)}")
+    try:
+        _sp.run(popup, timeout=3600)
+    except Exception as e:
+        return False, f"❌ {e}"
+    return True, ""
+
+
 def run_independent(prompt):
     """Run an independent colon command outside the hook pipeline.
 
@@ -253,6 +283,9 @@ def run_independent(prompt):
     prompt = ":" + prompt.lstrip(":").strip()
     if prompt == ":":
         return False, "Empty command"
+    # `!cmd` -> run a shell command in the current dir (claude not in the loop).
+    if prompt.startswith(":!"):
+        return _run_shell_independent(prompt[2:])
 
     matched = None
     for prefix in sorted(COMMANDS.keys(), key=len, reverse=True):
@@ -370,7 +403,7 @@ class CommandContext:
 
 # ── Remaining commands (not big enough for their own module) ─────────────────
 
-@command(':help')
+@command(':help', independent=True)
 def cmd_help(ctx):
     help_text = """clauthing colon commands:
 :help                Show this help message
@@ -439,13 +472,212 @@ def cmd_help(ctx):
                     plugins.add(entry.name[len("clauthing-"):])
         except (OSError, PermissionError):
             pass
-    if plugins:
-        help_text += "\nPlugins (from PATH):\n"
-        for name in sorted(plugins):
-            help_text += f"  :{name:<20s} (clauthing-{name})\n"
+    plugin_lines = [f":{name:<20s} (clauthing-{name})" for name in sorted(plugins)]
 
-    ctx.message("📖 See console for help")
-    return ctx.stop(help_text)
+    # Filterable command list: one line per command (reuse the help text), shown
+    # in an fzf popup. Enter returns the selected line; Esc cancels.
+    cmd_lines = [l for l in help_text.splitlines()
+                 if l.strip() and not l.startswith("clauthing colon")]
+    lines = cmd_lines + plugin_lines
+
+    if not ctx.socket:
+        return ctx.stop("\n".join(lines))
+
+    uid = os.getuid()
+    tmp_in = Path(f"/tmp/cl-help-{uid}.txt")
+    tmp_out = Path(f"/tmp/cl-help-{uid}-out.txt")
+    tmp_in.write_text("\n".join(lines))
+    tmp_out.unlink(missing_ok=True)
+    # -m + enter:select-all+accept => Enter outputs EVERY line matching the
+    # current filter (not just the highlighted one). Esc cancels.
+    subprocess.run([
+        "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "80%", "-h", "80%",
+        f"cat {tmp_in} | fzf -m --bind 'enter:select-all+accept' "
+        f"--header='clauthing commands — type to filter, Enter outputs all matches' > {tmp_out}"
+    ])
+    sel = tmp_out.read_text().strip() if tmp_out.exists() else ""
+    tmp_in.unlink(missing_ok=True)
+    tmp_out.unlink(missing_ok=True)
+    if not sel:
+        return ctx.stop("Cancelled")
+    return ctx.stop(sel)
+
+
+@command(':edit', independent=True)
+def cmd_edit(ctx):
+    """Open a file in vim in a popup (path relative to the window's cwd).
+
+    Reuses the edit_file MCP server's code path.
+    """
+    raw = ctx.args.strip()
+    if not raw:
+        return ctx.stop("❌ Usage: :edit <path>")
+    from clauthing.edit_mcp_server import edit_file_in_popup
+    ok, msg = edit_file_in_popup(raw, socket=ctx.socket, cwd=ctx.cwd)
+    return ctx.stop(msg)
+
+
+def _move_window(socket, direction):
+    """Swap the current window with its left/right neighbour. Returns a message."""
+    try:
+        cur = int(run(["tmux", "-L", socket, "display-message", "-p", "#{window_index}"],
+                      capture_output=True, text=True, check=True).stdout.strip())
+        idxs = sorted(int(i) for i in run(
+            ["tmux", "-L", socket, "list-windows", "-F", "#{window_index}"],
+            capture_output=True, text=True, check=True).stdout.split())
+    except Exception as e:
+        return f"❌ Could not read windows: {e}"
+    pos = idxs.index(cur)
+    if direction in ("left", "l"):
+        if pos == 0:
+            return "Already leftmost"
+        target = idxs[pos - 1]
+    else:
+        if pos == len(idxs) - 1:
+            return "Already rightmost"
+        target = idxs[pos + 1]
+    try:
+        run(["tmux", "-L", socket, "swap-window", "-s", f":{cur}", "-t", f":{target}"],
+            capture_output=True, text=True, check=True)
+        run(["tmux", "-L", socket, "select-window", "-t", f":{target}"],
+            capture_output=True, text=True)
+    except Exception as e:
+        return f"❌ Move failed: {e}"
+    return f"✓ Moved {direction}"
+
+
+def _move_to_position(socket, n):
+    """Move the current window to position `n` (1-based) by bubbling it via
+    neighbour swaps, so the other windows keep their relative order."""
+    last = None
+    for _ in range(64):   # safety bound
+        try:
+            cur = int(run(["tmux", "-L", socket, "display-message", "-p", "#{window_index}"],
+                          capture_output=True, text=True, check=True).stdout.strip())
+            idxs = sorted(int(i) for i in run(
+                ["tmux", "-L", socket, "list-windows", "-F", "#{window_index}"],
+                capture_output=True, text=True, check=True).stdout.split())
+        except Exception as e:
+            return f"❌ Could not read windows: {e}"
+        tpos = max(0, min(n - 1, len(idxs) - 1))
+        pos = idxs.index(cur)
+        if pos == tpos:
+            return last or f"Already at position {tpos + 1}"
+        msg = _move_window(socket, "left" if tpos < pos else "right")
+        if not msg.startswith("✓"):
+            return msg
+        last = f"✓ Moved to position {tpos + 1}"
+    return last or "❌ move did not converge"
+
+
+@command(':plugin-info', independent=True)
+def cmd_plugin_info(ctx):
+    """Show installed plugins: the commands they register + their permissions.
+
+    Permissions are the *approved* set (from the plugin directory) if the plugin
+    has been approved, otherwise the set its manifest *requests*.
+    """
+    from clauthing.plugins_store import load_plugin
+    builtins = {"api", "workflow"}   # clauthing's own tools, not plugins
+
+    # Discover clauthing-* executables and group them by the plugin name they
+    # report via --manifest (so e.g. clauthing-juggle + clauthing-jlist collapse
+    # into the one "jugglarm" plugin). Executables without a manifest stand
+    # alone under their own name.
+    plugins = {}   # key -> {"manifest": dict|None, "execs": {suffix: path}}
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        p = Path(d)
+        if not p.is_dir():
+            continue
+        try:
+            entries = list(p.iterdir())
+        except (OSError, PermissionError):
+            continue
+        for e in entries:
+            if not (e.name.startswith("clauthing-") and e.is_file() and os.access(e, os.X_OK)):
+                continue
+            suffix = e.name[len("clauthing-"):]
+            if suffix in builtins:
+                continue
+            manifest = None
+            try:
+                r = run([str(e), "--manifest"], capture_output=True, text=True, timeout=5)
+                manifest = json.loads(r.stdout)
+            except Exception:
+                manifest = None
+            key = (manifest.get("name") if manifest and manifest.get("name") else suffix)
+            entry = plugins.setdefault(key, {"manifest": None, "execs": {}})
+            entry["execs"].setdefault(suffix, str(e))
+            if manifest:
+                entry["manifest"] = manifest
+
+    if not plugins:
+        return ctx.stop("No plugins found")
+
+    arg = ctx.args.strip()
+    if arg:
+        def _matches(key, entry):
+            if arg == key or arg in entry["execs"]:
+                return True
+            m = entry["manifest"]
+            return bool(m and any(c.get("name") == arg for c in m.get("commands", [])))
+        plugins = {k: v for k, v in plugins.items() if _matches(k, v)}
+        if not plugins:
+            return ctx.stop(f"No plugin matching {arg!r}")
+
+    lines = []
+    for key in sorted(plugins):
+        entry = plugins[key]
+        manifest = entry["manifest"]
+        approved = load_plugin(key, ctx.profile)
+        if approved:
+            status = "approved [" + (", ".join(approved.get("permissions", [])) or "none") + "]"
+        else:
+            status = "not approved"
+        lines.append(f"● {key}  — {status}")
+
+        cmds = (manifest or {}).get("commands")
+        if cmds:
+            for c in cmds:
+                perms = ", ".join(c.get("permissions", []))
+                perms = f"  ({perms})" if perms else ""
+                lines.append(f"    :{c['name']} — {c.get('description', '')}{perms}")
+        else:
+            for suffix in sorted(entry["execs"]):
+                lines.append(f"    :{suffix}  (no manifest)")
+    return ctx.stop("\n".join(lines))
+
+
+@command(':new', independent=True)
+def cmd_new(ctx):
+    """Create a new window running a fresh claude, named <name>.
+
+    Usage: :new <name>
+    """
+    name = ctx.args.strip()
+    if not name:
+        return ctx.stop("❌ Usage: :new <name>")
+    clauthing = shutil.which("clauthing") or "clauthing"
+    cmd = [clauthing]
+    if ctx.profile:
+        cmd += ["--profile", ctx.profile]
+    cmd += ["--new-window", "--no-focus", "--name", name]
+    env = {**os.environ, "CLAUTHING_TMUX_SOCKET": ctx.socket}
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        return ctx.stop(f"❌ Could not create window: {r.stderr.strip() or r.returncode}")
+    return ctx.stop(f"✓ New window '{name}'")
+
+
+@command(':move', independent=True)
+def cmd_move(ctx):
+    """Move the current window. Usage: :move left|right|<position>"""
+    arg = ctx.args.strip().lower()
+    if arg in ("left", "right", "l", "r"):
+        return ctx.stop(_move_window(ctx.socket, arg))
+    if arg.isdigit():
+        return ctx.stop(_move_to_position(ctx.socket, int(arg)))
+    return ctx.stop("❌ Usage: :move left|right|<position>")
 
 
 @command(':time')
