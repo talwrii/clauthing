@@ -888,7 +888,31 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
     # Get current path before any changes
     original_cwd = os.getcwd()
     log(f"Original working directory: {original_cwd}", profile)
-    
+
+    # Defensive: a respawn must keep the window's session. If we're not
+    # explicitly resuming but this window already OWNS a session (its
+    # @session_id option is set), adopt it instead of minting a fresh empty
+    # one. This is the case when a respawn happens without the @startup_command
+    # boomerang carrying SESSION_ID — a full restart, a restore, or a
+    # mistargeted/global respawn-pane. Minting fresh here would overwrite
+    # @session_id and orphan the window's conversation (history "cleared").
+    # A genuinely new window (M-n / :clear) is made with `tmux new-window` and
+    # has no @session_id, so it still mints below.
+    if not resume_session_id:
+        pane = os.environ.get("TMUX_PANE")
+        target = ["-t", pane] if pane else []
+        try:
+            r = run(["tmux", "-L", socket, "display-message", *target, "-p",
+                     "#{@session_id}"], capture_output=True, text=True, profile=profile)
+            existing_sid = (r.stdout or "").strip() or None
+        except Exception:
+            existing_sid = None
+        if existing_sid:
+            log(f"new_window: window already owns session {existing_sid}; "
+                f"resuming it instead of minting fresh (respawn without "
+                f"@startup_command)", profile)
+            resume_session_id = existing_sid
+
     # If resuming, change to the session's original directory
     if resume_session_id:
         session_id = resume_session_id
@@ -982,6 +1006,32 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
         set_clauthing_window(session_id, existing_cw)  # record on the session
     else:
         clauthing_window = ensure_clauthing_window(session_id)
+
+    # Uniqueness guard: a clauthing_window must be unique per window. If this id
+    # is already live on a DIFFERENT window (e.g. it got carried across a :cd
+    # clone that landed in another window), mint a fresh one for this window.
+    cur_win = None
+    try:
+        cur_win = (run(["tmux", "-L", socket, "display-message", "-p", "#{window_id}"],
+                       capture_output=True, text=True, profile=profile).stdout.strip() or None)
+    except Exception:
+        pass
+    try:
+        lw = run(["tmux", "-L", socket, "list-windows", "-F",
+                  "#{window_id}\t#{@clauthing_window}"],
+                 capture_output=True, text=True, profile=profile).stdout
+        for line in lw.splitlines():
+            p = line.split("\t")
+            if len(p) == 2 and p[1] == clauthing_window and p[0] != cur_win:
+                import uuid as _uuid
+                clauthing_window = str(_uuid.uuid4())
+                set_clauthing_window(session_id, clauthing_window)
+                log(f"clauthing_window collision with {p[0]} — minted fresh "
+                    f"{clauthing_window} for {cur_win}", profile)
+                break
+    except Exception:
+        pass
+
     try:
         run(
             ["tmux", "-L", socket, "set-option", "-w", "@clauthing_window", clauthing_window],

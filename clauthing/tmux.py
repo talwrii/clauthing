@@ -106,7 +106,8 @@ def backfill_clauthing_windows(socket):
     (messages, attention, notes) keys correctly. Idempotent. Returns the number
     of windows updated.
     """
-    from clauthing.session import ensure_clauthing_window
+    import uuid
+    from clauthing.session import ensure_clauthing_window, set_clauthing_window
     try:
         result = subprocess.run(
             ["tmux", "-L", socket, "list-windows", "-F",
@@ -116,6 +117,7 @@ def backfill_clauthing_windows(socket):
     except Exception:
         return 0
     updated = 0
+    seen = set()   # clauthing_windows already claimed by an earlier window
     for line in result.stdout.strip().splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
@@ -123,18 +125,28 @@ def backfill_clauthing_windows(socket):
         win_id = parts[0]
         sid = parts[1]
         cw = parts[2] if len(parts) > 2 else ""
-        if not sid or cw:
-            continue  # no session, or already has a window id
-        new_cw = ensure_clauthing_window(sid)
-        try:
-            subprocess.run(
-                ["tmux", "-L", socket, "set-option", "-w", "-t", win_id,
-                 "@clauthing_window", new_cw],
-                capture_output=True, timeout=5,
-            )
-            updated += 1
-        except Exception:
-            pass
+        if not sid:
+            continue
+        new_cw = None
+        if not cw:
+            new_cw = ensure_clauthing_window(sid)            # missing → derive/mint
+        elif cw in seen:
+            new_cw = str(uuid.uuid4())                       # duplicate → re-mint
+            set_clauthing_window(sid, new_cw)
+        else:
+            seen.add(cw)
+            continue                                         # already unique
+        if new_cw:
+            try:
+                subprocess.run(
+                    ["tmux", "-L", socket, "set-option", "-w", "-t", win_id,
+                     "@clauthing_window", new_cw],
+                    capture_output=True, timeout=5,
+                )
+                seen.add(new_cw)
+                updated += 1
+            except Exception:
+                pass
     return updated
 
 
