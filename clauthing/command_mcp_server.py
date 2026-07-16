@@ -39,7 +39,7 @@ def get_state_dir():
     return Path.home() / ".local" / "state" / "clauthing"
 
 
-def confirm_popup(message, restore=True):
+def confirm_popup(message, restore=True, width="80%", height="60%"):
     """Show a tmux confirmation popup. Returns True if confirmed.
 
     restore=False: skip switching back to the previous window after the popup,
@@ -69,7 +69,7 @@ exit 0
     try:
         result = subprocess.run(
             ["tmux", "-L", socket, "display-popup", "-E",
-             "-w", "70%", "-h", "40%",
+             "-w", width, "-h", height,
              "bash", "-c", confirm_script],
             capture_output=True, text=True, timeout=30,
         )

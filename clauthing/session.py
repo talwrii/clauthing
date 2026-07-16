@@ -241,6 +241,24 @@ def session_metadata_has_messages(session_id):
     return False
 
 
+def resolve_session_prefix(prefix):
+    """Resolve a (possibly partial) session id to full ids by prefix match.
+
+    Returns the sorted list of session ids whose id starts with `prefix`,
+    drawn from the session metadata dir. Callers treat exactly one match as a
+    hit, zero as not-found, and more than one as ambiguous. Guards against a
+    dropped/typo'd character in a pasted id (a unique prefix still resolves).
+    """
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return []
+    sessions_dir = get_state_dir() / "sessions"
+    try:
+        return sorted(p.stem for p in sessions_dir.glob(f"{prefix}*.json"))
+    except Exception:
+        return []
+
+
 def get_open_sessions(profile=None):
     """Get list of open sessions."""
     sessions_file = get_open_sessions_file(profile)

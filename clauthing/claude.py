@@ -322,6 +322,15 @@ def setup_session_config(session_id, profile=None):
             "args": ["--command-mcp", "--with-commands"],
         }
 
+    # Include the batch-run MCP server (labelled shell commands behind one
+    # tmux confirmation popup). Off by default (opt-in via
+    # `clauthing config run_mcp true`); CLAUTHING_RUN_MCP is set at launch.
+    if os.environ.get("CLAUTHING_RUN_MCP", "0") == "1" and "clauthing-run" not in mcp_servers:
+        mcp_servers["clauthing-run"] = {
+            "command": clauthing_path,
+            "args": ["--run-mcp-server"],
+        }
+
     # Include Claude Code skills MCP server (for managing /skills)
     # NOTE: This is dangerous and should NOT be auto-approved
     if "claude-skills" not in mcp_servers:
@@ -600,6 +609,26 @@ def get_session_cwd_from_projects(session_id, base_config):
                         return candidate
                 # Fallback: simple conversion
                 return '/' + '/'.join(parts)
+    return None
+
+
+def resolve_session_by_name(name, profile=None, limit=200):
+    """Return the most-recent session_id whose stored name matches `name`.
+
+    Case-insensitive: exact name match first, then prefix. None if no match.
+    Lets `:resume <name>` reopen a closed session by its window name (e.g.
+    `:resume pain`) rather than only by session-id prefix.
+    """
+    if not name or not name.strip():
+        return None
+    low = name.strip().lower()
+    sessions = get_recent_sessions(profile, limit=limit)  # most-recent-first
+    for s in sessions:  # exact name
+        if (s.get("title") or "").lower() == low:
+            return s["session_id"]
+    for s in sessions:  # then prefix
+        if (s.get("title") or "").lower().startswith(low):
+            return s["session_id"]
     return None
 
 

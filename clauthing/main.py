@@ -70,6 +70,7 @@ set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 set-environment -g CLAUTHING_PROFILE "{profile or ''}"
 set-environment -g CLAUTHING_EDIT_MCP "{os.environ.get('CLAUTHING_EDIT_MCP', '1')}"
+set-environment -g CLAUTHING_RUN_MCP "{os.environ.get('CLAUTHING_RUN_MCP', '0')}"
 set-environment -g CLAUTHING_ALLOWED_COMMANDS "{os.environ.get('CLAUTHING_ALLOWED_COMMANDS', '')}"
 
 # Default command is claude wrapper for session tracking
@@ -105,7 +106,7 @@ bind -n C-p display-popup -E -w 80% -h 60% "clauthing {profile_arg}--picker"
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
+bind -n M-k run-shell "clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':shortcuts' > /dev/null 2>&1"
 
 # Some sensible defaults
 set -g mouse on
@@ -311,6 +312,94 @@ def get_edit_mcp_enabled(profile=None):
     """Whether the edit-mcp server should be auto-included in sessions.
     Defaults to True. Can be overridden by config.edit_mcp."""
     return bool(get_config(profile).get("edit_mcp", True))
+
+
+def get_run_mcp_enabled(profile=None):
+    """Whether the batch-run MCP server (labelled commands + one popup) is
+    auto-included in sessions. Defaults to FALSE (opt-in) — enable with
+    `clauthing config run_mcp true`."""
+    return bool(get_config(profile).get("run_mcp", False))
+
+
+def _config_file(profile=None):
+    if profile:
+        config_dir = Path.home() / ".config" / "clauthing" / "other-profiles" / profile
+    else:
+        config_dir = Path.home() / ".config" / "clauthing"
+    return config_dir / "config.json"
+
+
+def _coerce_config_value(raw):
+    """Parse a CLI string into a JSON scalar (git-config-ish)."""
+    low = raw.strip().lower()
+    if low in ("true", "yes", "on"):
+        return True
+    if low in ("false", "no", "off"):
+        return False
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+def set_config_value(key, value, profile=None):
+    """Set a key in config.json, creating the file/dir as needed."""
+    cf = _config_file(profile)
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    config = {}
+    if cf.exists():
+        try:
+            config = json.loads(cf.read_text())
+        except Exception:
+            config = {}
+    config[key] = value
+    cf.write_text(json.dumps(config, indent=2))
+
+
+def unset_config_value(key, profile=None):
+    """Remove a key from config.json. Returns True if it was present."""
+    cf = _config_file(profile)
+    if not cf.exists():
+        return False
+    try:
+        config = json.loads(cf.read_text())
+    except Exception:
+        return False
+    if key in config:
+        del config[key]
+        cf.write_text(json.dumps(config, indent=2))
+        return True
+    return False
+
+
+def handle_config_cli(argv, profile=None):
+    """git-config-style config editor. Returns an exit code.
+
+        clauthing config                 -> list all key=value
+        clauthing config --list          -> list all key=value
+        clauthing config <key>           -> print value (exit 1 if unset)
+        clauthing config <key> <value>   -> set value (bool/int coerced)
+        clauthing config --unset <key>   -> remove key
+    """
+    if not argv or argv[0] in ("--list", "-l"):
+        for k, v in sorted(get_config(profile).items()):
+            print(f"{k}={v if isinstance(v, str) else json.dumps(v)}")
+        return 0
+    if argv[0] == "--unset":
+        if len(argv) < 2:
+            print("usage: clauthing config --unset <key>", file=sys.stderr)
+            return 2
+        return 0 if unset_config_value(argv[1], profile) else 1
+    key = argv[0]
+    if len(argv) == 1:
+        cfg = get_config(profile)
+        if key not in cfg:
+            return 1
+        v = cfg[key]
+        print(v if isinstance(v, str) else json.dumps(v))
+        return 0
+    set_config_value(key, _coerce_config_value(argv[1]), profile)
+    return 0
 
 
 def get_allowed_commands(profile=None):
@@ -810,6 +899,7 @@ set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 set-environment -g CLAUTHING_PROFILE "{profile or ''}"
 set-environment -g CLAUTHING_EDIT_MCP "{os.environ.get('CLAUTHING_EDIT_MCP', '1')}"
+set-environment -g CLAUTHING_RUN_MCP "{os.environ.get('CLAUTHING_RUN_MCP', '0')}"
 set-environment -g CLAUTHING_ALLOWED_COMMANDS "{os.environ.get('CLAUTHING_ALLOWED_COMMANDS', '')}"
 
 # Default command is claude
@@ -852,7 +942,7 @@ bind -n M-\\; command-prompt -p ":" "run-shell \\"clauthing {f'--profile {profil
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
+bind -n M-k run-shell "clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':shortcuts' > /dev/null 2>&1"
 
 # Some sensible defaults
 set -g mouse on
@@ -1227,6 +1317,7 @@ set-environment -g CLAUTHING_TMUX_SOCKET "{tmux_socket}"
 set-environment -g CLAUTHING_INSTANCE_UUID "{instance_uuid}"
 set-environment -g CLAUTHING_PROFILE "{profile or ''}"
 set-environment -g CLAUTHING_EDIT_MCP "{os.environ.get('CLAUTHING_EDIT_MCP', '1')}"
+set-environment -g CLAUTHING_RUN_MCP "{os.environ.get('CLAUTHING_RUN_MCP', '0')}"
 set-environment -g CLAUTHING_ALLOWED_COMMANDS "{os.environ.get('CLAUTHING_ALLOWED_COMMANDS', '')}"
 
 # Default command is claude wrapper for session tracking
@@ -1267,7 +1358,7 @@ setw -g pane-base-index 1
 bind -n C-q display-popup -E -w 60% -h 20% "printf 'Queue command (runs when Claude finishes):\\n'; read cmd; echo \\"$cmd\\" >> /run/user/$(id -u)/cl-queue-{tmux_socket}.txt; printf \\"Queued: $cmd\\n\\"; sleep 0.5"
 
 # M-k: show keybindings help
-bind -n M-k display-popup -E -w 50% -h 70% "clauthing --show-help"
+bind -n M-k run-shell "clauthing {f'--profile {profile} ' if profile else ''}--run-independent ':shortcuts' > /dev/null 2>&1"
 
 # Bind M-n to prompt for window name and update session metadata
 bind -n M-n command-prompt -I "#W" -p "Session name:" "rename-window '%%'"
@@ -1288,12 +1379,15 @@ KEYBINDINGS_HELP = """\
   M-w    Pick window by name (fzf)
   C-p    Session picker
   C-q    Queue command
-  M-k    This help
+  M-,    Jump to window needing attention
+  M-k    List keybindings (fzf)
 
-  M-r    Reload (:reload)
-  M-R    Restart claude
+  M-;    Colon command prompt
+  M-p    Pager (:pager)
   M-e    Session notes
   M-n    Rename window
+  M-r    Reload (:reload)
+  M-R    Restart claude
 """
 
 
@@ -1652,6 +1746,16 @@ def _inject_credentials_from_snapshot(snapshot_path, config_dir, claude_data_dir
 
 def main():
     try:
+        # git-style config subcommand: `clauthing [--profile X] config ...`.
+        # Handled before argparse so `config <key> <value>` reads naturally.
+        argv = sys.argv[1:]
+        cfg_profile = os.environ.get("CLAUTHING_PROFILE")
+        if argv and argv[0] == "--profile" and len(argv) > 1:
+            cfg_profile = argv[1]
+            argv = argv[2:]
+        if argv and argv[0] == "config":
+            sys.exit(handle_config_cli(argv[1:], cfg_profile))
+
         parser = argparse.ArgumentParser(description="Launch Claude Code in isolated kitty+tmux environment")
         parser.add_argument("--reinstall", action="store_true", help="Remove all config except credentials and exit")
         parser.add_argument("--session-start", action="store_true", help="Handle SessionStart hook (internal use)")
@@ -1703,6 +1807,7 @@ def main():
         parser.add_argument("--mcp-exec", nargs=argparse.REMAINDER, help="Run mcp-exec with given arguments (internal use)")
         parser.add_argument("--plan-mcp", action="store_true", help="Run planning MCP server (provides session/notes overview)")
         parser.add_argument("--command-mcp", action="store_true", help="Run command MCP server (exposes colon commands to Claude)")
+        parser.add_argument("--run-mcp-server", action="store_true", help="Run the batch-run MCP server (labelled shell commands behind one confirmation popup) — internal subprocess flag")
         parser.add_argument("--skills-mcp", action="store_true", help="Run skills MCP server (lets Claude create cl-skills)")
         parser.add_argument("--claude-skills-mcp", action="store_true", help="Run Claude Code skills MCP server (lets Claude manage /skills)")
         parser.add_argument("--edit-mcp-server", action="store_true", help="Run edit MCP server (vim in tmux popup) — internal subprocess flag")
@@ -1767,6 +1872,10 @@ def main():
         else:
             edit_mcp_enabled = args.edit_mcp
         os.environ['CLAUTHING_EDIT_MCP'] = '1' if edit_mcp_enabled else '0'
+
+        # Resolve run-mcp setting (default False / opt-in) and stash in env so
+        # children + tmux-spawned instances see the same value.
+        os.environ['CLAUTHING_RUN_MCP'] = '1' if get_run_mcp_enabled(profile) else '0'
 
         # Resolve auto-allow list of colon commands and propagate via env.
         allowed_cmds = get_allowed_commands(profile) + list(args.allow_command or [])
@@ -1914,6 +2023,12 @@ def main():
             # Run command MCP server
             from clauthing.command_mcp_server import main as command_mcp_main
             command_mcp_main(enable_commands=args.with_commands)
+            sys.exit(0)
+
+        if args.run_mcp_server:
+            # Run the batch-run MCP server (labelled commands + one popup).
+            from clauthing.run_mcp_server import main as run_mcp_main
+            run_mcp_main()
             sys.exit(0)
 
         if args.skills_mcp:

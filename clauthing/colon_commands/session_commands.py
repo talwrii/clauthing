@@ -191,6 +191,25 @@ def cmd_resume(ctx):
             return ctx.stop(f"❌ Session number {arg} not found")
     else:
         target_session_id = arg
+        # Resolve arg → session id: exact id, else unique id-prefix (also
+        # recovers a dropped char in a pasted id), else the most recent
+        # session whose NAME matches (e.g. :resume pain).
+        if not (get_state_dir() / "sessions" / f"{arg}.json").exists():
+            from clauthing.session import resolve_session_prefix
+            from clauthing.claude import resolve_session_by_name
+            matches = resolve_session_prefix(arg)
+            if len(matches) == 1:
+                target_session_id = matches[0]
+            elif len(matches) > 1:
+                return ctx.stop(
+                    f"❌ Ambiguous prefix '{arg}' — {len(matches)} sessions match")
+            else:
+                by_name = resolve_session_by_name(arg, ctx.profile)
+                if by_name:
+                    target_session_id = by_name
+                else:
+                    return ctx.stop(
+                        f"❌ No session matching '{arg}' (by id or name)")
 
     # Look up the session's stored path / name from metadata so the new
     # window opens in the right cwd with the right title.
@@ -352,6 +371,25 @@ def cmd_resume_here(ctx):
             return ctx.stop(f"❌ Session number {arg} not found")
     else:
         target_session_id = arg
+        # Resolve arg → session id: exact id, else unique id-prefix (also
+        # recovers a dropped char in a pasted id), else the most recent
+        # session whose NAME matches (e.g. :resume pain).
+        if not (get_state_dir() / "sessions" / f"{arg}.json").exists():
+            from clauthing.session import resolve_session_prefix
+            from clauthing.claude import resolve_session_by_name
+            matches = resolve_session_prefix(arg)
+            if len(matches) == 1:
+                target_session_id = matches[0]
+            elif len(matches) > 1:
+                return ctx.stop(
+                    f"❌ Ambiguous prefix '{arg}' — {len(matches)} sessions match")
+            else:
+                by_name = resolve_session_by_name(arg, ctx.profile)
+                if by_name:
+                    target_session_id = by_name
+                else:
+                    return ctx.stop(
+                        f"❌ No session matching '{arg}' (by id or name)")
 
     # Look up session metadata for cwd + name.
     state_dir = get_state_dir()
@@ -1203,16 +1241,157 @@ def launch_text_pager(socket, text, title="pager"):
 
 @command(':pager', independent=True)
 def cmd_pager(ctx):
-    """Show the last claude reply full-screen (scrollable, searchable) so long
-    output never gets cut off."""
+    """Show a claude reply full-screen (scrollable, searchable) so long output
+    never gets cut off.
+
+    :pager      show the last reply
+    :pager N    show the Nth-from-last reply (:pager 2 = penultimate)
+    """
     sf = _session_transcript_file(ctx)
     if not sf or not sf.exists():
         return ctx.stop("No transcript for this window yet")
-    from clauthing.session_utils import get_last_assistant_message
-    reply = get_last_assistant_message(sf)
-    if not reply:
+    arg = ctx.args.strip()
+    n = 1
+    if arg:
+        if not arg.isdigit() or int(arg) < 1:
+            return ctx.stop("Usage: :pager [N]  (1=last, 2=penultimate, …)")
+        n = int(arg)
+    from clauthing.session_utils import get_assistant_messages
+    msgs = get_assistant_messages(sf)
+    if not msgs:
         return ctx.stop("No reply to show")
-    launch_text_pager(ctx.socket, reply, "last reply")
+    if n > len(msgs):
+        return ctx.stop(f"Only {len(msgs)} repl{'y' if len(msgs) == 1 else 'ies'} in this transcript")
+    reply = msgs[-n]
+    title = "last reply" if n == 1 else f"reply -{n}"
+    launch_text_pager(ctx.socket, reply, title)
+    return ctx.stop("")
+
+
+# Primary input field to paste for well-known tools (else the full input JSON).
+_TOOL_PRIMARY_FIELD = {
+    "Bash": "command", "Read": "file_path", "Edit": "file_path",
+    "Write": "file_path", "NotebookEdit": "notebook_path",
+    "Grep": "pattern", "Glob": "pattern",
+}
+
+
+def _tool_paste_text(tu):
+    """The text to paste for a tool use: the primary field for known tools,
+    else the input as compact JSON."""
+    inp = tu.get("input") or {}
+    field = _TOOL_PRIMARY_FIELD.get(tu.get("name"))
+    if field and isinstance(inp, dict) and inp.get(field):
+        return str(inp[field])
+    try:
+        return json.dumps(inp, ensure_ascii=False)
+    except Exception:
+        return str(inp)
+
+
+@command(':tools', independent=True)
+def cmd_tools(ctx):
+    """Browse this window's tool uses in an fzf picker (most recent first).
+
+    Each is summarized by tool name + primary input; ↑/↓ browse with a live
+    preview, Enter returns the selected tool's command/input as the stop
+    reason (shown in the terminal).
+    """
+    sf = _session_transcript_file(ctx)
+    if not sf or not sf.exists():
+        return ctx.stop("No transcript for this window yet")
+    from clauthing.session_utils import get_tool_uses
+    tools = get_tool_uses(sf)
+    if not tools:
+        return ctx.stop("No tool uses to show")
+
+    import tempfile
+    uid = os.getuid()
+    tmpdir = Path(tempfile.mkdtemp(prefix=f"cl-tools-{uid}-"))
+    tmp_out = Path(f"/tmp/cl-tools-{uid}-out.txt")
+    tmp_out.unlink(missing_ok=True)
+    fzf_lines = []
+    for i, tu in enumerate(tools):
+        paste = _tool_paste_text(tu)
+        (tmpdir / f"{i}.txt").write_text(f"{tu['name']}\n\n{paste}")
+        summary = " ".join(paste.split())[:80] or "(no input)"
+        fzf_lines.append(f"{i}\t{tu['name']}: {summary}")
+    fzf_lines.reverse()  # most recent tool use first
+    (tmpdir / "list.txt").write_text("\n".join(fzf_lines))
+    try:
+        subprocess.run([
+            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "85%", "-h", "85%",
+            f"cat {tmpdir}/list.txt | fzf --delimiter='\\t' --with-nth=2 "
+            f"--preview='cat {tmpdir}/{{1}}.txt' --preview-window=right:60%:wrap "
+            f"--header='tool uses — Enter pastes into the prompt' > {tmp_out}"
+        ])
+        sel = tmp_out.read_text().strip() if tmp_out.exists() else ""
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmpdir, ignore_errors=True)
+        tmp_out.unlink(missing_ok=True)
+    if not sel:
+        return ctx.stop("Cancelled")
+    try:
+        idx = int(sel.split("\t")[0])
+        selected = _tool_paste_text(tools[idx])
+    except (ValueError, IndexError):
+        return ctx.stop("❌ Could not select that tool use")
+    return ctx.stop(selected)
+
+
+@command(':replies', independent=True)
+def cmd_replies(ctx):
+    """Browse this window's replies in an fzf picker (most recent first).
+
+    Each reply is summarized by its first words; ↑/↓ browse with a live
+    preview of the full reply, Enter opens the selected reply in the pager.
+    """
+    sf = _session_transcript_file(ctx)
+    if not sf or not sf.exists():
+        return ctx.stop("No transcript for this window yet")
+    from clauthing.session_utils import get_assistant_messages
+    msgs = get_assistant_messages(sf)
+    if not msgs:
+        return ctx.stop("No replies to show")
+    if not ctx.socket:
+        return ctx.stop("\n".join(f"-{len(msgs) - i}  {' '.join(m.split())[:80]}"
+                                  for i, m in enumerate(msgs)))
+
+    import tempfile
+    uid = os.getuid()
+    tmpdir = Path(tempfile.mkdtemp(prefix=f"cl-replies-{uid}-"))
+    tmp_out = Path(f"/tmp/cl-replies-{uid}-out.txt")
+    tmp_out.unlink(missing_ok=True)
+    n = len(msgs)
+    fzf_lines = []
+    for i, reply in enumerate(msgs):
+        (tmpdir / f"{i}.txt").write_text(reply)
+        summary = " ".join(reply.split())[:80] or "(no text)"
+        fzf_lines.append(f"{i}\t-{n - i}  {summary}")
+    fzf_lines.reverse()  # most recent reply first
+    (tmpdir / "list.txt").write_text("\n".join(fzf_lines))
+    try:
+        subprocess.run([
+            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "85%", "-h", "85%",
+            f"cat {tmpdir}/list.txt | fzf --delimiter='\\t' --with-nth=2 "
+            f"--preview='cat {tmpdir}/{{1}}.txt' --preview-window=right:60%:wrap "
+            f"--header='replies — ↑/↓ to browse, Enter to open in pager' > {tmp_out}"
+        ])
+        sel = tmp_out.read_text().strip() if tmp_out.exists() else ""
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmpdir, ignore_errors=True)
+        tmp_out.unlink(missing_ok=True)
+    if not sel:
+        return ctx.stop("Cancelled")
+    try:
+        idx = int(sel.split("\t")[0])
+        reply = msgs[idx]
+    except (ValueError, IndexError):
+        return ctx.stop("❌ Could not open that reply")
+    rev = n - idx
+    launch_text_pager(ctx.socket, reply, "last reply" if rev == 1 else f"reply -{rev}")
     return ctx.stop("")
 
 

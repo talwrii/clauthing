@@ -441,6 +441,11 @@ def cmd_help(ctx):
 :resume-new [num|id] Resume in a new clauthing window
 :spawn [title]       Spawn new window (no arg: pick from history)
 :clear               Clear session and start fresh
+:rename <name>       Rename the current window
+:shortcuts           Show tmux keybindings (popup)
+:pager [N]           Show last reply full-screen (N=Nth-from-last)
+:replies             Browse replies in an fzf picker (preview + pager)
+:tools               Browse tool uses (fzf); Enter pastes into the prompt
 :reload              Reload Claude (pick up config changes)
 :cd <path>           Change directory and move session
 :cdpop               Return to previous directory

@@ -102,3 +102,64 @@ def get_last_assistant_message(session_file):
     except Exception:
         pass
     return last_message
+
+
+def get_assistant_messages(session_file):
+    """Return all assistant text replies in order (oldest first).
+
+    Each element is the concatenated text of one assistant turn; turns with no
+    text (pure tool calls) are skipped. Lets callers index from the end —
+    e.g. messages[-2] is the penultimate reply.
+    """
+    out = []
+    try:
+        with open(session_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get('type') != 'assistant':
+                    continue
+                content = entry.get('message', {}).get('content', [])
+                text_parts = [
+                    block.get('text', '')
+                    for block in content
+                    if isinstance(block, dict) and block.get('type') == 'text'
+                ]
+                if text_parts:
+                    out.append('\n'.join(text_parts))
+    except Exception:
+        pass
+    return out
+
+
+def get_tool_uses(session_file):
+    """Return all tool_use blocks in order (oldest first).
+
+    Each element is {"name": <tool name>, "input": <input dict>}.
+    """
+    out = []
+    try:
+        with open(session_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get('type') != 'assistant':
+                    continue
+                content = entry.get('message', {}).get('content', [])
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'tool_use':
+                        out.append({'name': block.get('name', '?'),
+                                    'input': block.get('input', {})})
+    except Exception:
+        pass
+    return out

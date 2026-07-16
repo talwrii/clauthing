@@ -906,6 +906,53 @@ def cmd_ask(ctx):
         return ctx.stop(f"Ask error: {str(e)}")
 
 
+@command(':shortcuts', independent=True)
+def cmd_shortcuts(ctx):
+    """Show the tmux keybindings, searchable with fzf."""
+    from clauthing.main import KEYBINDINGS_HELP
+    # Keep only the "  KEY   desc" lines (drop the ANSI header + blanks).
+    lines = [l.strip() for l in KEYBINDINGS_HELP.splitlines() if l.startswith("  ")]
+    if not ctx.socket:
+        return ctx.stop("\n".join(lines))
+    uid = os.getuid()
+    tmp_in = Path(f"/tmp/cl-shortcuts-{uid}.txt")
+    tmp_in.write_text("\n".join(lines))
+    try:
+        subprocess.run([
+            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "60%", "-h", "70%",
+            f"cat {tmp_in} | fzf --header='keybindings — type to filter, Esc to close'"
+        ], timeout=300)
+    except Exception as e:
+        return ctx.stop(f"❌ Could not show shortcuts: {e}")
+    finally:
+        tmp_in.unlink(missing_ok=True)
+    return ctx.stop("")
+
+
+@command(':rename')
+def cmd_rename(ctx):
+    """Rename the CURRENT window. Usage: :rename <new name>
+
+    Targets the current pane (via $TMUX_PANE), not whichever window the client
+    is viewing. The window-renamed tmux hook mirrors the new name into
+    clauthing's session metadata/state, so it persists across reloads.
+    """
+    new_name = ctx.args.strip()
+    if not new_name:
+        return ctx.stop("Usage: :rename <new name>")
+    pane = os.environ.get("TMUX_PANE")
+    target = ["-t", pane] if pane else []
+    try:
+        subprocess.run(
+            ["tmux", "-L", ctx.socket, "rename-window", *target, new_name],
+            check=True, timeout=5,
+        )
+    except Exception as e:
+        return ctx.stop(f"❌ Rename failed: {e}")
+    ctx.message(f"✓ Renamed to '{new_name}'")
+    return ctx.stop(f"✓ Renamed to '{new_name}'")
+
+
 @command(':checkpoint')
 def cmd_checkpoint(ctx):
     if not ctx.session_id:

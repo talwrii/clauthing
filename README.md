@@ -17,6 +17,7 @@ Only tested on Linux.
 * `:skill` SKILL to creeate a new school
 * `:reload` to restart claude at the same point with new features
 * `::skill new` to define a template to be *deterministally added to the context at this point* using ::new
+* `:edit` edit files
 * Various other features
 * Some experimental plugin features
 
@@ -53,7 +54,6 @@ If you are willing to spend more money you can use API based usage rather than s
 I have a mode of development where I cycle through a lot of separate x11 windows. I use `--one-tab` for this.
 
 ## Shorcuts
-
   Tab Switching
 
   - Alt+h - Switch to previous window
@@ -67,12 +67,27 @@ I have a mode of development where I cycle through a lot of separate x11 windows
   - Alt+r - reload the curent window
 
 ## Colon commands
+See motivation.
+
+These are deterministic command which can be run as `:command`. You can implement your own commands.
+
 There are some commands implemented with hooks. Type `:help` to see the commands.
 
 ## Doublecolon skills
 Claude has skills but they are stuck in the mindset of "allow claude to do the orchestration". Colon skills are a clauthing specific feature. If you type `::blah` the blah skill is immediately sent to claude.
 
 To create the skill `blah` you can use `::skill blah`.
+
+## Mcp servers
+A range of convenience features are implemented through MCP servers. 
+
+
+There is an MCP server to let claude's in MCP run clauthing commands with approval.
+
+## Alternative run command
+Claude's command command can be hard to read making review hard. An alternative optional command is provided by MCP.
+
+You can enable this with: `clauthing config run_mcp true`
 
 ## Session Storage
 Session metadata is stored in `~/.local/state/clauthing/sessions/` and open sessions are tracked in `~/.config/clauthing/open-sessions.json` (for debugging purposes only - liable to change).
