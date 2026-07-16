@@ -34,29 +34,44 @@ def get_roles_dir(profile):
     return get_config_dir(profile) / "mcp-roles"
 
 
+def _git_repo_root(cwd):
+    """The git-repo root of `cwd` — where Claude Code resolves .claude/ to —
+    or `cwd` itself if it isn't inside a repo."""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip())
+    except Exception:
+        pass
+    return Path(cwd)
+
+
 def gather_permissions(claude_data_dir, cwd):
-    """Gather all permissions from session settings + project settings.
-    Returns list of (rule, source_label, source_file_path).
+    """Gather allow rules the way Claude Code actually resolves them:
+    the session config-dir settings + the project settings at the GIT-REPO
+    ROOT (not the literal cwd). Returns list of (rule, source_label, file_path).
     """
     rules = []
 
-    settings_file = claude_data_dir / "settings.json"
-    if settings_file.exists():
+    def _add(path, label):
         try:
-            settings = json.loads(settings_file.read_text())
-            for rule in settings.get("permissions", {}).get("allow", []):
-                rules.append((rule, "session", str(settings_file)))
+            data = json.loads(Path(path).read_text())
         except (json.JSONDecodeError, OSError):
-            pass
+            return
+        for rule in data.get("permissions", {}).get("allow", []):
+            rules.append((rule, label, str(path)))
 
-    project_settings = Path(cwd) / ".claude" / "settings.local.json"
-    if project_settings.exists():
-        try:
-            proj = json.loads(project_settings.read_text())
-            for rule in proj.get("permissions", {}).get("allow", []):
-                rules.append((rule, "project", str(project_settings)))
-        except (json.JSONDecodeError, OSError):
-            pass
+    # Config-dir settings — clauthing's user scope (global to claude, provided
+    # by clauthing). Labelled [clauthing] rather than [session].
+    _add(claude_data_dir / "settings.json", "clauthing")
+    _add(claude_data_dir / "settings.local.json", "clauthing-local")
+
+    # Project settings, resolved to the git-repo root like Claude does — so
+    # `.claude/` in an ancestor is found even when cwd is a subdir / after :cd.
+    root = _git_repo_root(cwd)
+    _add(root / ".claude" / "settings.json", "project")
+    _add(root / ".claude" / "settings.local.json", "local")
 
     # Deduplicate preserving order
     seen = set()
