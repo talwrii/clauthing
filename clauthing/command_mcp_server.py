@@ -40,35 +40,49 @@ def get_state_dir():
     return Path.home() / ".local" / "state" / "clauthing"
 
 
-def confirm_popup(message, restore=True, width="80%", height="60%"):
+def confirm_popup(message, restore=True, width="80%", height="60%", reason_holder=None):
     """Show a tmux confirmation popup. Returns True if confirmed.
 
     restore=False: skip switching back to the previous window after the popup,
     so the caller can run commands on the origin window before restoring.
     Returns (approved, prev_window) when restore=False so the caller can
     restore later.
+
+    In the popup: Enter confirms, `q` cancels AND prompts for a reason, `Q`
+    (or Esc) just cancels. If `reason_holder` (a list) is given and the user
+    declined with a reason, the reason string is appended to it.
     """
     socket = get_tmux_socket()
     prev_window = focus_mcp_origin(socket)
     import tempfile
     msg_file = Path(tempfile.mktemp(prefix="cl-confirm-", suffix=".txt"))
+    reason_file = Path(tempfile.mktemp(prefix="cl-confirm-reason-", suffix=".txt"))
     sep = "─" * 46
     msg_file.write_text(f"{sep}\n  claude wants to run:\n{sep}\n{message}\n{sep}\n")
     # Show it in a small curses pager (clauthing.confirm_pager): scroll with the
-    # arrow keys / space, Enter confirms (exit 0), q cancels (exit 1). No
-    # external `less` — scroll and confirm live in one prompt.
+    # arrow keys / space, Enter confirms (exit 0), q cancels-with-reason, Q
+    # cancels silently (exit 1). No external `less`.
     try:
         result = subprocess.run(
             ["tmux", "-L", socket, "display-popup", "-E",
              "-w", width, "-h", height,
-             sys.executable, "-m", "clauthing.confirm_pager", str(msg_file)],
+             sys.executable, "-m", "clauthing.confirm_pager",
+             str(msg_file), str(reason_file)],
             capture_output=True, text=True, timeout=120,
         )
         approved = result.returncode == 0
     except subprocess.TimeoutExpired:
         approved = False
     finally:
+        if reason_holder is not None and not approved and reason_file.exists():
+            try:
+                r = reason_file.read_text().strip()
+                if r:
+                    reason_holder.append(r)
+            except Exception:
+                pass
         msg_file.unlink(missing_ok=True)
+        reason_file.unlink(missing_ok=True)
 
     if restore:
         _restore_window(socket, prev_window)
@@ -309,8 +323,14 @@ async def run_command_mcp_server(enable_commands=False):
             if not command:
                 return [mcp.TextContent(type="text", text="Error: command is required")]
             # ALWAYS confirm before typing into the user's terminal.
-            if not confirm_popup(f"Send to linked tmux window ({linked_window}):\n  {command}"):
-                return [mcp.TextContent(type="text", text="User denied sending the command.")]
+            reason = []
+            if not confirm_popup(
+                    f"Send to linked tmux window ({linked_window}):\n  {command}",
+                    reason_holder=reason):
+                text = "User denied sending the command."
+                if reason:
+                    text += f" Reason: {reason[0]}"
+                return [mcp.TextContent(type="text", text=text)]
             try:
                 subprocess.run(
                     ["tmux", "-L", "default", "send-keys", "-t", linked_window, "-l", command],

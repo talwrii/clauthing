@@ -52,6 +52,41 @@ def _build_rows(commands):
     return rows, segs
 
 
+def classify(segs, allow, deny):
+    """Set each segment's status (allow/ask/deny) from the rules — what the
+    colour is derived from. Mutates and returns `segs`."""
+    for s in segs:
+        s["status"] = bash_perms.seg_status(s["text"], allow, deny)
+    return segs
+
+
+def row_status(row, segs):
+    """The status a row is drawn with (→ its colour): the row's own segment, or
+    the parent segment for an ssh continuation line; None for labels/blanks."""
+    si = row["seg"] if row["seg"] is not None else row["detail"]
+    return None if si is None else segs[si]["status"]
+
+
+# status -> style name (see clauthing.curses_markup)
+_STATUS_STYLE = {"allow": "green", "ask": "yellow bold", "deny": "red"}
+
+
+def document(rows, segs, sel_ri=-1):
+    """Build the styled document for the confirm body — plain data, no curses,
+    so the colouring can be printed and tested. `sel_ri` is the selected row
+    index (gets a `>` cursor + bold). Each line is a single styled span."""
+    from clauthing.curses_markup import span
+    doc = []
+    for ri, row in enumerate(rows):
+        style = _STATUS_STYLE.get(row_status(row, segs))
+        text = row["text"]
+        if row["seg"] is not None and ri == sel_ri:
+            text = "> " + text[2:]                       # cursor in left margin
+            style = f"{style} bold" if style else "bold"
+        doc.append([span(text, style)])
+    return doc
+
+
 def _edit_line(stdscr, prompt, initial):
     """Bottom-line editor prefilled with `initial`. Returns text, or None (Esc).
 
@@ -117,16 +152,10 @@ def _edit_line(stdscr, prompt, initial):
 
 
 def _run(stdscr, data):
+    from clauthing import curses_markup as cm
     curses.curs_set(0)
     stdscr.keypad(True)
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_RED, -1)
-    curses.init_pair(2, curses.COLOR_GREEN, -1)
-    curses.init_pair(3, curses.COLOR_YELLOW, -1)
-    colour = {"deny": curses.color_pair(1),
-              "allow": curses.color_pair(2),
-              "ask": curses.color_pair(3) | curses.A_BOLD}
+    cm.init_styles()
 
     config_dir = data.get("config_dir")
     settings_file = data.get("settings_file")
@@ -135,8 +164,7 @@ def _run(stdscr, data):
 
     def reclassify():
         allow, deny = bash_perms.load_bash_permissions(config_dir, cwds)
-        for s in segs:
-            s["status"] = bash_perms.seg_status(s["text"], allow, deny)
+        classify(segs, allow, deny)
     reclassify()
 
     sel_rows = [ri for ri, r in enumerate(rows) if r["seg"] is not None]
@@ -156,21 +184,13 @@ def _run(stdscr, data):
         scroll = max(0, min(scroll, max(0, len(rows) - body_h)))
 
         stdscr.erase()
-        for ri in range(scroll, min(len(rows), scroll + body_h)):
-            row = rows[ri]
-            si = row["seg"] if row["seg"] is not None else row["detail"]
-            attr = colour.get(segs[si]["status"], curses.A_NORMAL) if si is not None else curses.A_NORMAL
-            if row["seg"] is not None and sel_rows and ri == sel_rows[sel]:
-                attr |= curses.A_REVERSE
-            try:
-                stdscr.addstr(ri - scroll, 0, row["text"][:w - 1], attr)
-            except curses.error:
-                pass
+        doc = document(rows, segs, sel_rows[sel] if sel_rows else -1)
+        cm.render(stdscr, doc, top=scroll, height=body_h)
         legend = "green=allowed  yellow=needs-approval  red=denied"
-        help_ = "↑/↓ select   a add-rule   Enter run   q cancel"
+        help_ = "↑/↓ select · a add-rule · Enter run · q cancel"
         try:
-            stdscr.addstr(h - 2, 0, (msg or legend)[:w - 1].ljust(w - 1), curses.A_DIM)
-            stdscr.addstr(h - 1, 0, help_[:w - 1].ljust(w - 1), curses.A_REVERSE)
+            stdscr.addstr(h - 2, 0, (msg or legend)[:w - 1], curses.A_DIM)
+            stdscr.addstr(h - 1, 0, help_[:w - 1], curses.A_DIM)
         except curses.error:
             pass
         stdscr.refresh()
