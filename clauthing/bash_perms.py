@@ -98,8 +98,15 @@ def ssh_remote(seg):
 
 
 def parse_bash_rule(rule):
-    """Extract the inner pattern of a Bash(...) rule, else None."""
-    m = re.match(r"Bash\((.*)\)\s*$", str(rule).strip())
+    """Extract the inner pattern of a Bash(...) rule, else None.
+
+    A bare `Bash` (or `Bash()`) — the whole-tool rule that allows/denies every
+    bash command in Claude Code — maps to `*` (match anything).
+    """
+    r = str(rule).strip()
+    if r in ("Bash", "Bash()"):
+        return "*"
+    m = re.match(r"Bash\((.*)\)\s*$", r)
     return m.group(1).strip() if m else None
 
 

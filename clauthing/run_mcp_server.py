@@ -66,6 +66,32 @@ def _launch_run_confirm(commands, config_dir, cwds, width="90%", height="80%"):
         _restore_window(socket, prev)
 
 
+def classify_batch(commands, allow, deny):
+    """Classify every sub-command of a batch against the rules.
+
+    Returns (denied, need_ask): `denied` is the list of sub-commands matching a
+    deny rule; `need_ask` is how many match no rule. An empty `denied` and
+    `need_ask == 0` means the whole batch is already allowed — it can run with
+    no popup.
+    """
+    denied, need_ask = [], 0
+    for c in commands:
+        for _op, seg in bash_perms.split_bash(c.get("command", "")):
+            st = bash_perms.seg_status(seg, allow, deny)
+            if st == "deny":
+                denied.append(seg)
+            elif st == "ask":
+                need_ask += 1
+    return denied, need_ask
+
+
+def format_result(i, label, command, code, out):
+    """Format one command's result block for the tool's text output."""
+    head = f"### {i}. {label}".rstrip()
+    status = "" if code == 0 else f"  [exit {code}]"
+    return f"{head}{status}\n$ {command}\n{out or '(no output)'}"
+
+
 def _run_one(command, cwd=None, timeout=60):
     try:
         r = subprocess.run(["bash", "-c", command], capture_output=True,
@@ -153,14 +179,7 @@ async def run_batch_mcp_server():
         config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
         cwds = {c.get("cwd") for c in commands if c.get("cwd")} or {os.getcwd()}
         allow, deny = bash_perms.load_bash_permissions(config_dir, cwds)
-        denied, need_ask = [], 0
-        for c in commands:
-            for _op, seg in bash_perms.split_bash(c.get("command", "")):
-                st = bash_perms.seg_status(seg, allow, deny)
-                if st == "deny":
-                    denied.append(seg)
-                elif st == "ask":
-                    need_ask += 1
+        denied, need_ask = classify_batch(commands, allow, deny)
         if denied:
             return [mcp.TextContent(
                 type="text",
@@ -172,12 +191,9 @@ async def run_batch_mcp_server():
         # else: every sub-command is already allowed — run without a popup.
         chunks = []
         for i, c in enumerate(commands, 1):
-            label = (c.get("label") or "").strip()
             cmd = c.get("command", "")
             code, out = _run_one(cmd, cwd=c.get("cwd"))
-            head = f"### {i}. {label}".rstrip()
-            status = "" if code == 0 else f"  [exit {code}]"
-            chunks.append(f"{head}{status}\n$ {cmd}\n{out or '(no output)'}")
+            chunks.append(format_result(i, (c.get("label") or "").strip(), cmd, code, out))
         return [mcp.TextContent(type="text", text="\n\n".join(chunks))]
 
     async with mcp.stdio_server() as (read_stream, write_stream):

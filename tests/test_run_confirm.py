@@ -161,3 +161,32 @@ def test_document_recolours_green_after_rule_added():
     assert nc_line() == "yellow bold"
     classify(segs, ["nc:*"], [])                            # user adds Bash(nc:*)
     assert nc_line() == "green"
+
+
+def test_add_rule_recolours_document_end_to_end(tmp_path):
+    """The full press-`a` path: add_allow_rule writes to the repo-root settings
+    file, load_bash_permissions re-reads it, and the document recolours the
+    matching line green while leaving others yellow. This is what the dialog
+    does on add-rule; it only works because write-target == re-read file."""
+    import subprocess
+    from clauthing import bash_perms
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    rows, segs = _build_rows([{"label": "x", "command": "grep foo | wc -l"}])
+
+    def recolour():                                   # == reclassify() in _run
+        allow, deny = bash_perms.load_bash_permissions(None, [str(sub)])
+        classify(segs, allow, deny)
+
+    def styles():
+        return {ln[0]["text"].strip(): ln[0]["style"] for ln in document(rows, segs)}
+
+    recolour()
+    assert styles()["grep foo"] == "yellow bold"
+
+    bash_perms.add_allow_rule(str(bash_perms.repo_settings_local(sub)), "Bash(grep:*)")
+    recolour()
+    s = styles()
+    assert s["grep foo"] == "green"        # the added rule recoloured it
+    assert s["| wc -l"] == "yellow bold"   # unaffected stage stays yellow

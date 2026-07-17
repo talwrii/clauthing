@@ -83,6 +83,28 @@ def test_parse_bash_rule():
     assert bash_perms.parse_bash_rule("Read") is None          # non-Bash ignored
 
 
+def test_bare_bash_rule_means_all_commands():
+    # `Bash` (whole tool) is how Claude Code allows/denies every bash command.
+    assert bash_perms.parse_bash_rule("Bash") == "*"
+    assert bash_perms.parse_bash_rule("Bash()") == "*"
+
+
+def test_whole_tool_allow_applies_to_any_command(tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps({"permissions": {"allow": ["Bash"]}}))
+    allow, deny = bash_perms.load_bash_permissions(None, files=[f])
+    assert allow == ["*"]
+    assert bash_perms.seg_status("anything --at all", allow, deny) == "allow"
+    assert bash_perms.seg_status("ssh user@router 'x'", allow, deny) == "allow"
+
+
+def test_whole_tool_deny_blocks_any_command(tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps({"permissions": {"deny": ["Bash"]}}))
+    allow, deny = bash_perms.load_bash_permissions(None, files=[f])
+    assert bash_perms.seg_status("ls", allow, deny) == "deny"
+
+
 def test_load_reads_allow_and_deny(tmp_path):
     f = tmp_path / "settings.json"
     f.write_text(json.dumps({"permissions": {

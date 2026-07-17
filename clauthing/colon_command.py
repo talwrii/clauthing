@@ -486,7 +486,19 @@ def cmd_help(ctx):
     # in an fzf popup. Enter returns the selected line; Esc cancels.
     cmd_lines = [l for l in help_text.splitlines()
                  if l.strip() and not l.startswith("clauthing colon")]
-    lines = cmd_lines + plugin_lines
+
+    # Guarantee completeness: append any registered command missing from the
+    # curated text above, described by its docstring's first line. So a new
+    # @command shows up in :help without also editing this string.
+    listed = {l.strip().split()[0] for l in cmd_lines if l.strip()}
+    auto = []
+    for name in sorted(COMMANDS):
+        if name in listed:
+            continue
+        doc = ((COMMANDS[name].__doc__ or "").strip().splitlines() or [""])[0].strip()
+        auto.append(f"{name:<20s} {doc}".rstrip())
+
+    lines = cmd_lines + auto + plugin_lines
 
     if not ctx.socket:
         return ctx.stop("\n".join(lines))
