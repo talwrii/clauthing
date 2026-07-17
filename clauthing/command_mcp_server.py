@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import shutil
+import sys
 from pathlib import Path
 
 from clauthing.tmux import focus_mcp_origin
@@ -51,27 +52,17 @@ def confirm_popup(message, restore=True, width="80%", height="60%"):
     prev_window = focus_mcp_origin(socket)
     import tempfile
     msg_file = Path(tempfile.mktemp(prefix="cl-confirm-", suffix=".txt"))
-    msg_file.write_text(message + "\n")
-    confirm_script = f"""
-clear
-echo
-echo '──────────────────────────────────────────────'
-echo '  claude wants to run:'
-echo '──────────────────────────────────────────────'
-cat {msg_file}
-echo '──────────────────────────────────────────────'
-echo
-echo '  [Enter] confirm   [q] cancel'
-read -n1 key
-[ "$key" = "q" ] && exit 1
-exit 0
-"""
+    sep = "─" * 46
+    msg_file.write_text(f"{sep}\n  claude wants to run:\n{sep}\n{message}\n{sep}\n")
+    # Show it in a small curses pager (clauthing.confirm_pager): scroll with the
+    # arrow keys / space, Enter confirms (exit 0), q cancels (exit 1). No
+    # external `less` — scroll and confirm live in one prompt.
     try:
         result = subprocess.run(
             ["tmux", "-L", socket, "display-popup", "-E",
              "-w", width, "-h", height,
-             "bash", "-c", confirm_script],
-            capture_output=True, text=True, timeout=30,
+             sys.executable, "-m", "clauthing.confirm_pager", str(msg_file)],
+            capture_output=True, text=True, timeout=120,
         )
         approved = result.returncode == 0
     except subprocess.TimeoutExpired:

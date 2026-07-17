@@ -4,71 +4,66 @@ that lists each command on its own line.
 
 Motivation: instead of cramming several inspection commands into a single
 bash call with `echo "=== label ==="` separators, Claude passes a list of
-{label, command}. The user sees each command on its own labelled line in a
-confirmation popup, approves the batch once, and gets structured per-command
-output back. The popup IS the permission gate.
+{label, command}. The user reviews each command on its own labelled line in an
+interactive confirmation popup (clauthing.run_confirm) and approves the batch,
+and gets structured per-command output back. The popup IS the permission gate.
+
+The run tool honours the same Bash(...) permission rules Claude Code uses
+(bash_perms): sub-commands already allowed run without a popup, denied ones are
+refused, and anything new is shown in the popup where you can approve it and/or
+add a rule for it.
 """
 import asyncio
+import json
+import os
 import subprocess
+import sys
+from pathlib import Path
 
+from clauthing import bash_perms
 from clauthing.mcp_lazy import get_mcp
-# Reuse the existing popup/socket helpers so behaviour matches the command MCP.
-from clauthing.command_mcp_server import confirm_popup
 
 
-def _split_bash(cmd):
-    """Split a shell command into (operator, segment) pairs on TOP-LEVEL
-    &&, ||, ;, | — respecting single/double/backtick quotes and $(...)/${...}/
-    (...) nesting so we never split inside them. Display-only, never executed.
-    The first pair's operator is ''. Empty segments are dropped.
-    """
-    pairs, seg, op = [], [], ""
-    quote = None      # active quote char: ' " or `
-    depth = 0         # nesting depth of (...) / {...}
-    i, n = 0, len(cmd)
-    while i < n:
-        c = cmd[i]
-        if quote:
-            seg.append(c)
-            if c == quote:
-                quote = None
-            i += 1
-            continue
-        if c == "\\" and i + 1 < n:
-            seg.append(c); seg.append(cmd[i + 1]); i += 2; continue
-        if c in ("'", '"', "`"):
-            quote = c; seg.append(c); i += 1; continue
-        if c in ("(", "{"):
-            depth += 1; seg.append(c); i += 1; continue
-        if c in (")", "}"):
-            depth = max(0, depth - 1); seg.append(c); i += 1; continue
-        if depth == 0:
-            two = cmd[i:i + 2]
-            if two in ("&&", "||"):
-                pairs.append((op, "".join(seg).strip())); seg = []; op = two; i += 2; continue
-            if c == ";":
-                pairs.append((op, "".join(seg).strip())); seg = []; op = ";"; i += 1; continue
-            if c == "|":  # lone pipe (|| handled above)
-                pairs.append((op, "".join(seg).strip())); seg = []; op = "|"; i += 1; continue
-            # a lone & (background) is left inline — rare and worth seeing whole
-        seg.append(c); i += 1
-    pairs.append((op, "".join(seg).strip()))
-    return [(o, s) for o, s in pairs if s]
+def _settings_write_file(cwds):
+    """Where new allow rules are written: <repo-root>/.claude/settings.local.json
+    for the commands' cwd — the same file Claude writes "don't ask again" Bash
+    rules to (and that :permissions / load_bash_permissions read), so a rule
+    added in the dialog is honoured by Claude's own Bash tool too."""
+    for d in cwds:
+        if d:
+            return str(bash_perms.repo_settings_local(d))
+    return None
 
 
-def _format_popup(commands):
-    """Build the popup body. Each command is labelled and its compound parts
-    are split onto their own lines (standard A). Every sub-command line shares
-    the same indent; the connecting operator leads the line, aligned with the
-    command text above it."""
-    lines = ["claude wants to run these commands:", ""]
-    for i, c in enumerate(commands, 1):
-        label = (c.get("label") or "").strip()
-        lines.append(f"{i}. {label}".rstrip())
-        for op, seg in _split_bash(c.get("command", "")):
-            lines.append("     " + (f"{op} {seg}" if op else seg))
-        lines.append("")
-    return "\n".join(lines).rstrip()
+def _launch_run_confirm(commands, config_dir, cwds, width="90%", height="80%"):
+    """Show the interactive confirm dialog (clauthing.run_confirm) in a tmux
+    popup. Returns True iff the user confirmed (Enter)."""
+    import tempfile
+    from clauthing.command_mcp_server import (
+        get_tmux_socket, focus_mcp_origin, _restore_window)
+    socket = get_tmux_socket()
+    payload = {
+        "config_dir": config_dir,
+        "settings_file": _settings_write_file(cwds),
+        "cwds": list(cwds),
+        "commands": [{"label": (c.get("label") or "").strip(),
+                      "command": c.get("command", "")} for c in commands],
+    }
+    f = Path(tempfile.mktemp(prefix="cl-runconfirm-", suffix=".json"))
+    f.write_text(json.dumps(payload))
+    prev = focus_mcp_origin(socket)
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", socket, "display-popup", "-E", "-w", width, "-h", height,
+             sys.executable, "-m", "clauthing.run_confirm", str(f)],
+            capture_output=True, text=True, timeout=600,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+    finally:
+        f.unlink(missing_ok=True)
+        _restore_window(socket, prev)
 
 
 def _run_one(command, cwd=None, timeout=60):
@@ -151,9 +146,30 @@ async def run_batch_mcp_server():
         commands = arguments.get("commands") or []
         if not commands:
             return [mcp.TextContent(type="text", text="Error: no commands given")]
-        # ONE popup listing every command on its own line — the permission gate.
-        if not confirm_popup(_format_popup(commands), width="90%", height="75%"):
-            return [mcp.TextContent(type="text", text="User denied the commands.")]
+
+        # Honour the same Bash(...) permission rules Claude Code uses: classify
+        # every sub-command. Denied → refuse; all allowed → run without a popup;
+        # any needing approval → interactive confirm dialog.
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        cwds = {c.get("cwd") for c in commands if c.get("cwd")} or {os.getcwd()}
+        allow, deny = bash_perms.load_bash_permissions(config_dir, cwds)
+        denied, need_ask = [], 0
+        for c in commands:
+            for _op, seg in bash_perms.split_bash(c.get("command", "")):
+                st = bash_perms.seg_status(seg, allow, deny)
+                if st == "deny":
+                    denied.append(seg)
+                elif st == "ask":
+                    need_ask += 1
+        if denied:
+            return [mcp.TextContent(
+                type="text",
+                text="Denied by Bash permissions (deny rule):\n  " +
+                     "\n  ".join(denied))]
+        if need_ask:
+            if not _launch_run_confirm(commands, config_dir, cwds):
+                return [mcp.TextContent(type="text", text="User denied the commands.")]
+        # else: every sub-command is already allowed — run without a popup.
         chunks = []
         for i, c in enumerate(commands, 1):
             label = (c.get("label") or "").strip()
