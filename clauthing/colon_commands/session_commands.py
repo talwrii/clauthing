@@ -45,6 +45,42 @@ def cmd_current_sessions(ctx):
                 continue
 
     from clauthing.session import get_clauthing_window
+
+    # Name each session by the window its PROCESS actually runs in. The windows
+    # state file's title goes stale (only refreshed on reload/rename), and
+    # @session_id can be stale or even duplicated across two windows — so the
+    # process tree is the only ground truth for "which window is this session".
+    pane_windows = {}
+    try:
+        r = run(["tmux", "-L", ctx.socket, "list-windows", "-F",
+                 "#{pane_pid}\t#{window_name}"],
+                capture_output=True, text=True)
+        for line in (r.stdout or "").splitlines():
+            pid_s, _, name = line.partition("\t")
+            if pid_s.isdigit():
+                pane_windows[int(pid_s)] = name
+    except Exception:
+        pass
+
+    def _window_for_pid(pid):
+        """Walk up the parent chain until we reach a pane we know."""
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return None
+        for _ in range(20):
+            if pid in pane_windows:
+                return pane_windows[pid]
+            if pid <= 1:
+                return None
+            try:
+                with open(f"/proc/{pid}/status") as f:
+                    pid = next(int(l.split()[1]) for l in f
+                               if l.startswith("PPid:"))
+            except Exception:
+                return None
+        return None
+
     now = time.time()
     lines = ["Currently running sessions:\n"]
     for i, sess in enumerate(sessions, 1):
@@ -52,10 +88,13 @@ def cmd_current_sessions(ctx):
         session_id = sess['session_id']
         cw = get_clauthing_window(session_id)
         pid = sess['pid']
-        title = (windows.get(session_id) or {}).get("title")
+        live = _window_for_pid(pid)
+        title = live or (windows.get(session_id) or {}).get("title")
         label = f"[{title}] " if title else ""
 
         tags = []
+        if not live:
+            tags.append("no window")   # running, but not attached to any window
         if cw and cw in attention:
             tags.append("urgent")
         n = unread.get(cw, 0) if cw else 0
@@ -967,8 +1006,9 @@ def cmd_send(ctx):
         return ctx.stop(f"❌ Error: {str(e)}")
 
 
-@command(':msgs')
-def cmd_msgs(ctx):
+@command(':msg-read')
+def cmd_msg_read(ctx):
+    """Read the next unread inbox message (same as :msg with no args)."""
     if not ctx.clauthing_window:
         return ctx.stop("No window id")
 
@@ -1015,6 +1055,32 @@ def cmd_msgs(ctx):
         return ctx.stop(f"📭 (all read) [{time_str}] {msg.get('from','unknown')}: {msg.get('message','')}")
     except Exception as e:
         return ctx.stop(f"❌ Error: {str(e)}")
+
+
+@command(':msgs', independent=True)
+def cmd_msgs(ctx):
+    """Show this window's whole inbox in a little curses UI you can reorder.
+
+    :msg hands back the oldest-unread by (priority, ts); here you reorder the
+    queue (J/K to move a message, s to save) and it saves priority = position.
+    """
+    if not ctx.clauthing_window:
+        return ctx.stop("No window id")
+    from clauthing.events import get_runtime_dir
+    inbox = get_runtime_dir() / "messages" / f"{ctx.clauthing_window}.jsonl"
+    if not inbox.exists():
+        return ctx.stop("📭 No messages in inbox")
+    if not ctx.socket:
+        return ctx.stop("No socket")
+    import sys as _sys
+    try:
+        subprocess.run([
+            "tmux", "-L", ctx.socket, "display-popup", "-E", "-w", "80%", "-h", "70%",
+            _sys.executable, "-m", "clauthing.msg_arrange", str(inbox),
+        ], timeout=300)
+    except Exception as e:
+        return ctx.stop(f"❌ Could not open arranger: {e}")
+    return ctx.stop("")
 
 
 def _resolve_session_by_window_name(socket, name):

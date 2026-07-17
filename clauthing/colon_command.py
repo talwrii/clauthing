@@ -442,15 +442,18 @@ def cmd_help(ctx):
 :spawn [title]       Spawn new window (no arg: pick from history)
 :clear               Clear session and start fresh
 :rename <name>       Rename the current window
+:blocked [window]    Mark this window blocked on another (no arg clears)
 :shortcuts           Show tmux keybindings (popup)
 :pager [N]           Show last reply full-screen (N=Nth-from-last)
 :replies             Browse replies in an fzf picker (preview + pager)
 :tools               Browse tool uses (fzf); Enter pastes into the prompt
-:reload              Reload Claude (pick up config changes)
+:reload [window]     Reload Claude (current window, or a named/indexed one)
 :cd <path>           Change directory and move session
 :cdpop               Return to previous directory
 :cd-tmux             Change to directory of tmux session 0
 :tmux                Link/switch to a tmux window on default server
+:tmux-focus          Focus this window's linked tmux window
+:tmuxnew             New window in default tmux (named after this window)
 :tmux-unlink         Unlink the associated tmux window
 :tmuxpath            Show path of linked tmux window
 :tmuxscreen          Capture content of linked tmux window
@@ -512,14 +515,15 @@ def cmd_help(ctx):
 def cmd_edit(ctx):
     """Open a file in vim in a popup (path relative to the window's cwd).
 
-    Reuses the edit_file MCP server's code path.
+    Launches the editor detached and returns immediately (claude does nothing
+    while you edit) — unlike the edit_file MCP tool, which blocks for the result.
     """
     raw = ctx.args.strip()
     if not raw:
         return ctx.stop("❌ Usage: :edit <path>")
     from clauthing.edit_mcp_server import edit_file_in_popup
-    ok, msg = edit_file_in_popup(raw, socket=ctx.socket, cwd=ctx.cwd)
-    return ctx.stop(msg)
+    ok, msg = edit_file_in_popup(raw, socket=ctx.socket, cwd=ctx.cwd, wait=False)
+    return ctx.stop(msg if not ok else "")
 
 
 def _move_window(socket, direction):
@@ -997,6 +1001,51 @@ def cmd_tmux_kill(ctx):
 @command(':tmux')
 def cmd_tmux(ctx):
     return ctx.stop(linked_tmux.toggle(ctx.clauthing_window, ctx.profile)[1])
+
+
+@command(':tmux-focus')
+def cmd_tmux_focus(ctx):
+    """Switch the default tmux server to this window's linked window."""
+    return ctx.stop(linked_tmux.focus(ctx.clauthing_window, ctx.profile)[1])
+
+
+@command(':tmuxnew', independent=True)
+def cmd_tmuxnew(ctx):
+    """Create a new window in the user's default tmux server, named after the
+    current clauthing window. Falls back to '<name>-tmux' if the name is taken;
+    errors if both are taken (or no default server is running)."""
+    pane = os.environ.get("TMUX_PANE")
+    pt = ["-t", pane] if pane else []
+    try:
+        r = subprocess.run(["tmux", "-L", ctx.socket, "display-message", *pt,
+                            "-p", "#{window_name}"],
+                           capture_output=True, text=True, timeout=5)
+        name = r.stdout.strip()
+    except Exception:
+        name = ""
+    if not name:
+        return ctx.stop("❌ Could not determine current window name")
+    try:
+        r = subprocess.run(["tmux", "-L", "default", "list-windows", "-a",
+                            "-F", "#{window_name}"],
+                           capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        return ctx.stop(f"❌ Could not query default tmux: {e}")
+    if r.returncode != 0:
+        return ctx.stop("❌ No default tmux server running")
+    existing = set(r.stdout.splitlines())
+    if name not in existing:
+        target_name = name
+    elif f"{name}-tmux" not in existing:
+        target_name = f"{name}-tmux"
+    else:
+        return ctx.stop(f"❌ Both '{name}' and '{name}-tmux' already exist in default tmux")
+    try:
+        subprocess.run(["tmux", "-L", "default", "new-window", "-n", target_name],
+                       check=True, timeout=5)
+    except Exception as e:
+        return ctx.stop(f"❌ Failed to create window: {e}")
+    return ctx.stop(f"✓ Created default-tmux window '{target_name}'")
 
 
 # ── cl-skills (double-colon commands) ────────────────────────────────────────

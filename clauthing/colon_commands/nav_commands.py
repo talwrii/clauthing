@@ -684,15 +684,44 @@ def cmd_first(ctx):
     return ctx.stop("✓ cycled to first")
 
 
+def _resolve_reload_target(socket, target):
+    """Resolve a window name/index to (window_id, pane_id, session_id, cwd)."""
+    try:
+        r = run(["tmux", "-L", socket, "list-windows", "-F",
+                 "#{window_index}\t#{window_name}\t#{window_id}\t#{pane_id}\t"
+                 "#{@session_id}\t#{pane_current_path}"],
+                capture_output=True, text=True)
+    except Exception:
+        return None
+    for line in (r.stdout or "").splitlines():
+        p = line.split("\t")
+        if len(p) >= 6 and target in (p[0], p[1]):
+            return p[2], p[3], p[4], p[5]
+    return None
+
+
 @command(':reload')
 def cmd_reload(ctx):
-    session_id = ctx.session_id
-    if not session_id:
-        return ctx.stop("❌ No session ID available")
-
+    """Reload Claude (pick up config changes). `:reload <window>` reloads a
+    named/indexed window instead of the current one."""
     socket = ctx.socket
-    current_dir = ctx.cwd
     profile = ctx.profile
+    target = ctx.args.strip()
+
+    if target:
+        info = _resolve_reload_target(socket, target)
+        if not info:
+            return ctx.stop(f"❌ No window matching '{target}'")
+        window_id, pane_id, session_id, current_dir = info
+        if not session_id:
+            return ctx.stop(f"❌ Window '{target}' has no session")
+    else:
+        session_id = ctx.session_id
+        if not session_id:
+            return ctx.stop("❌ No session ID available")
+        current_dir = ctx.cwd
+        window_id = None
+        pane_id = os.environ.get("TMUX_PANE") or None
 
     build_claude_md(profile)
 
@@ -714,9 +743,10 @@ def cmd_reload(ctx):
     save_auth_from_session(session_id, profile)
     session_config_dir = setup_session_config(session_id, profile)
 
+    win_target = ["-t", window_id] if window_id else []
     try:
         result = run(
-            ["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+            ["tmux", "-L", socket, "display-message", *win_target, "-p", "#{window_name}"],
             capture_output=True, text=True, check=True
         )
         window_name = result.stdout.strip()
@@ -726,31 +756,38 @@ def cmd_reload(ctx):
         window_name = None
         log(f"Error updating window: {e}", profile)
 
-    # Boomerang: replace in-place via @startup_command + respawn-pane.
+    # Boomerang: replace in-place via @startup_command + respawn-pane. Target
+    # the resolved window/pane so `:reload <window>` reloads THAT window.
     startup_cmd = f'SESSION_ID="{session_id}"; cd "{current_dir}"'
     try:
         subprocess.run(
-            ["tmux", "-L", socket, "set-option", "-w", "@startup_command", startup_cmd],
+            ["tmux", "-L", socket, "set-option", "-w", *win_target,
+             "@startup_command", startup_cmd],
             check=True, timeout=5
         )
-        try:
-            r = subprocess.run(
-                ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
-                capture_output=True, text=True, timeout=5
-            )
-            pane_id = r.stdout.strip()
-        except Exception:
-            pane_id = ""
+        if not pane_id:
+            try:
+                r = subprocess.run(
+                    ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                pane_id = r.stdout.strip()
+            except Exception:
+                pane_id = ""
         target_arg = f"-t {pane_id}" if pane_id else ""
         subprocess.Popen([
             "sh", "-c",
             f"sleep 0.5 && tmux -L {socket} respawn-pane -k {target_arg} 2>/dev/null"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
            start_new_session=True)
-        ctx.message("✓ Reloading...")
-        return ctx.stop("✓ Reloading...")
+        note = f"✓ Reloading {target}..." if target else "✓ Reloading..."
+        ctx.message(note)
+        return ctx.stop(note)
     except Exception as e:
         log(f":reload failed to set @startup_command: {e} — falling back", profile)
+
+    if target:
+        return ctx.stop(f"❌ Reload of '{target}' failed")
 
     if socket.startswith("cl1-"):
         claude_bin = get_claude_binary(profile)
@@ -927,6 +964,58 @@ def cmd_shortcuts(ctx):
     finally:
         tmp_in.unlink(missing_ok=True)
     return ctx.stop("")
+
+
+# A trailing "(other-window)" marks this window as blocked on that one.
+_BLOCKED_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+@command(':blocked', independent=True)
+def cmd_blocked(ctx):
+    """Mark this window as blocked on another — puts (window) in its name.
+
+    :blocked <window>   mark this window blocked on <window>
+    :blocked            clear the marker
+
+    Display only for now: the name shows what you're waiting on.
+    """
+    target = ctx.args.strip()
+    pane = os.environ.get("TMUX_PANE")
+    pt = ["-t", pane] if pane else []
+    try:
+        r = run(["tmux", "-L", ctx.socket, "display-message", *pt,
+                 "-p", "#{window_name}"], capture_output=True, text=True)
+        current = (r.stdout or "").strip()
+    except Exception:
+        current = ""
+    if not current:
+        return ctx.stop("❌ Could not read the current window name")
+
+    base = _BLOCKED_RE.sub("", current)      # drop any existing marker
+    if not target:
+        if base == current:
+            return ctx.stop(f"Not blocked ({current})")
+        new_name = base
+    else:
+        try:
+            r = run(["tmux", "-L", ctx.socket, "list-windows", "-F", "#{window_name}"],
+                    capture_output=True, text=True)
+            names = [n for n in (r.stdout or "").splitlines() if n]
+        except Exception:
+            names = []
+        # match either the literal name or its un-marked base
+        if target not in names and target not in {_BLOCKED_RE.sub("", n) for n in names}:
+            return ctx.stop(f"❌ No window matching '{target}'")
+        if target == base:
+            return ctx.stop("❌ A window can't be blocked on itself")
+        new_name = f"{base} ({target})"
+
+    try:
+        subprocess.run(["tmux", "-L", ctx.socket, "rename-window", *pt, new_name],
+                       check=True, timeout=5)
+    except Exception as e:
+        return ctx.stop(f"❌ Rename failed: {e}")
+    return ctx.stop(f"✓ {new_name}" if target else f"✓ Unblocked ({new_name})")
 
 
 @command(':rename')

@@ -36,12 +36,16 @@ def _file_summary(path: Path, max_head_lines: int = 10) -> str:
         return f"(could not read file: {e})"
 
 
-def edit_file_in_popup(raw_path, socket=None, cwd=None):
-    """Open `raw_path` in vim in a tmux popup; block until the user closes it.
+def edit_file_in_popup(raw_path, socket=None, cwd=None, wait=True):
+    """Open `raw_path` in vim in a tmux popup.
 
     Reusable by both the edit_file MCP tool and the :edit colon command. Path
-    may be absolute or relative to `cwd` (defaults to the process cwd). Returns
-    (ok: bool, message: str) — message is a post-edit summary on success.
+    may be absolute or relative to `cwd` (defaults to the process cwd).
+
+    wait=True (default, the MCP tool): block until the user closes vim and
+    return (ok, post-edit summary). wait=False (the :edit command): launch the
+    popup detached and return (True, "") immediately, so claude is freed and
+    does nothing while the user edits at their leisure.
     """
     raw_path = (raw_path or "").strip()
     if not raw_path:
@@ -62,6 +66,14 @@ def edit_file_in_popup(raw_path, socket=None, cwd=None):
         "-d", str(path.parent if path.parent.exists() else base),
         shell_cmd,
     ]
+    if not wait:
+        # Detached: the popup outlives this hook so :edit returns at once.
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except FileNotFoundError as e:
+            return False, f"Error: {e}"
+        return True, ""
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     except subprocess.TimeoutExpired:

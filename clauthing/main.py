@@ -2270,11 +2270,16 @@ def main():
                     pass
             resume_session_id = args.resume_session
             skip_restore = False
-            # Boomerang: when :cd respawns the pane, this fresh process reads
-            # @startup_command and uses it to resume the cloned session.
+            # Boomerang: when :cd / :reload respawns the pane, this fresh
+            # process reads @startup_command and uses it to resume the session.
+            # Read/clear it on THIS pane's window (-t $TMUX_PANE), not whichever
+            # window the client is viewing — so `:reload <other-window>` lands
+            # on the right window.
+            _pane = os.environ.get("TMUX_PANE")
+            _pt = ["-t", _pane] if _pane else []
             try:
                 result = subprocess.run(
-                    ["tmux", "-L", tmux_socket, "display-message", "-p", "#{@startup_command}"],
+                    ["tmux", "-L", tmux_socket, "display-message", *_pt, "-p", "#{@startup_command}"],
                     capture_output=True, text=True, timeout=5
                 )
                 cmd = result.stdout.strip()
@@ -2283,7 +2288,7 @@ def main():
             if cmd:
                 try:
                     subprocess.run(
-                        ["tmux", "-L", tmux_socket, "set-option", "-w", "@startup_command", ""],
+                        ["tmux", "-L", tmux_socket, "set-option", "-w", *_pt, "@startup_command", ""],
                         timeout=5
                     )
                 except Exception:

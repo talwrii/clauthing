@@ -94,6 +94,20 @@ def toggle(cw, profile=None):
         return False, "❌ Could not access default tmux server"
 
 
+def focus(cw, profile=None):
+    """:tmux-focus — switch to the linked window (never links a new one)."""
+    if not cw:
+        return False, "❌ No window id"
+    linked = get_linked_window(cw, profile)
+    if not linked:
+        return False, "No tmux window linked (use :tmux to link one)"
+    try:
+        _tmux("select-window", "-t", linked)
+        return True, f"✓ Focused tmux window {linked}"
+    except subprocess.CalledProcessError:
+        return False, f"❌ Linked window {linked} not found - use :tmux-unlink to reset"
+
+
 def unlink(cw, profile=None):
     if not cw:
         return False, "❌ No window id"
