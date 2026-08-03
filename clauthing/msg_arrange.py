@@ -12,6 +12,7 @@ since :msg skips them.
 
   j / ↓   k / ↑      move the cursor
   J        K          move the selected message DOWN / UP (unread only)
+  d                   toggle read/unread (unread -> done, done -> queue)
   a                   toggle showing done messages
   s / Enter           save the new order
   q / Esc             cancel (no change)
@@ -93,7 +94,7 @@ def _run(stdscr, msgs, done, path):
                               marker + f"{i + 1:2}. " + _label(visible[i], w - 8), attr)
             except curses.error:
                 pass
-        help_ = status or "j/k cursor · J/K move · a all · s save · q cancel"
+        help_ = status or "j/k cursor · J/K move · d read/unread · a all · Enter/s save · q cancel"
         count = f"{len(msgs)} unread" + (f" · {len(done)} done" if show_all else "")
         try:
             stdscr.addstr(h - 2, 0, help_[:w - 1], curses.A_DIM)
@@ -129,6 +130,18 @@ def _run(stdscr, msgs, done, path):
             msgs[sel], msgs[sel - 1] = msgs[sel - 1], msgs[sel]
             sel -= 1
             status = "moved up"
+        elif c in (ord("d"), ord("x")) and visible:
+            if sel < len(msgs):                    # unread -> mark read (to done)
+                m = msgs.pop(sel)
+                m["read"] = True
+                done.append(m)
+                status = "marked read"
+                sel = min(sel, len(visible) - 2) if len(visible) > 1 else 0
+            else:                                  # done -> mark unread (to queue)
+                m = done.pop(sel - len(msgs))
+                m["read"] = False
+                msgs.append(m)
+                status = "marked unread"
 
 
 def main(argv=None):

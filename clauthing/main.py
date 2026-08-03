@@ -1187,6 +1187,21 @@ def rename_session(session_id, new_name, profile, tmux_socket):
     from clauthing.colon_command import record_title
     record_title(new_name, profile)
 
+    # Inboxes are keyed by window NAME, so carry this window's messages (and its
+    # durable id) across the rename — otherwise they'd be stranded under the old
+    # name and the window would look like it had lost its history.
+    try:
+        from clauthing.session import (get_session_name, rename_inbox,
+                                       get_clauthing_window, remember_window_id)
+        prev_name = get_session_name(session_id)
+        if prev_name and prev_name != new_name:
+            rename_inbox(prev_name, new_name, profile)
+            cw = get_clauthing_window(session_id)
+            if cw:
+                remember_window_id(tmux_socket, new_name, cw, profile)
+    except Exception as e:
+        log(f"Error carrying inbox across rename: {e}", profile)
+
     # Update session metadata
     state_dir = get_state_dir()
     metadata_file = state_dir / "sessions" / f"{session_id}.json"

@@ -93,7 +93,7 @@ def test_whole_tool_allow_applies_to_any_command(tmp_path):
     f = tmp_path / "settings.json"
     f.write_text(json.dumps({"permissions": {"allow": ["Bash"]}}))
     allow, deny = bash_perms.load_bash_permissions(None, files=[f])
-    assert allow == ["*"]
+    assert allow == [("bash", "*")]
     assert bash_perms.seg_status("anything --at all", allow, deny) == "allow"
     assert bash_perms.seg_status("ssh user@router 'x'", allow, deny) == "allow"
 
@@ -110,8 +110,8 @@ def test_load_reads_allow_and_deny(tmp_path):
     f.write_text(json.dumps({"permissions": {
         "allow": ["Bash(ls:*)", "Read"], "deny": ["Bash(rm:*)"]}}))
     allow, deny = bash_perms.load_bash_permissions(None, files=[f])
-    assert allow == ["ls:*"]        # the Read rule is not a Bash rule
-    assert deny == ["rm:*"]
+    assert allow == [("bash", "ls:*")]   # the Read rule is not a Bash rule
+    assert deny == [("bash", "rm:*")]
 
 
 def test_load_ignores_missing_and_malformed(tmp_path):
@@ -150,7 +150,7 @@ def test_load_finds_rules_at_repo_root_from_a_subdir(tmp_path):
     (repo / ".claude" / "settings.local.json").write_text(
         json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}}))
     allow, _ = bash_perms.load_bash_permissions(None, [str(sub)])
-    assert "ls:*" in allow
+    assert ("bash", "ls:*") in allow
 
 
 def test_repo_settings_local_points_at_repo_root(tmp_path):
@@ -187,6 +187,61 @@ def test_a_broad_rule_recolours_several_segments(tmp_path):
     assert bash_perms.seg_status("git status", allow, deny) == "allow"
     assert bash_perms.seg_status("git log -1", allow, deny) == "allow"
     assert bash_perms.seg_status("curl x", allow, deny) == "ask"
+
+
+# ── BetterBash pattern language ──────────────────────────────────────────────
+
+def test_parse_rule_distinguishes_bash_and_betterbash():
+    assert bash_perms.parse_rule("Bash(ls:*)") == ("bash", "ls:*")
+    assert bash_perms.parse_rule("Bash") == ("bash", "*")
+    assert bash_perms.parse_rule("BetterBash(git ...)") == ("better", "git ...")
+    assert bash_perms.parse_rule("Read(x)") is None
+
+
+def test_better_match_exact():
+    assert bash_perms.better_match("git status", "git status")
+    assert not bash_perms.better_match("git status", "git status --short")
+    assert not bash_perms.better_match("git status", "git")
+
+
+def test_better_match_ellipsis_is_zero_or_more_args():
+    assert bash_perms.better_match("git ...", "git")
+    assert bash_perms.better_match("git ...", "git status")
+    assert bash_perms.better_match("git ...", "git log -1 --oneline")
+
+
+def test_better_match_underscore_is_exactly_one_arg():
+    assert bash_perms.better_match("git _", "git status")
+    assert not bash_perms.better_match("git _", "git")
+    assert not bash_perms.better_match("git _", "git log -1")
+
+
+def test_better_match_single_star_stays_in_one_path_segment():
+    assert bash_perms.better_match("ls ~/mine/*", "ls ~/mine/clauthing")
+    assert not bash_perms.better_match("ls ~/mine/*", "ls ~/mine/a/b")
+
+
+def test_better_match_double_star_crosses_path_segments():
+    assert bash_perms.better_match("cat ~/mine/**", "cat ~/mine/a/b/c.txt")
+    assert bash_perms.better_match("cat ~/mine/**", "cat ~/mine/x")
+
+
+def test_better_match_underscore_then_ellipsis():
+    assert bash_perms.better_match("git _ ...", "git commit -m hi")
+    assert not bash_perms.better_match("git _ ...", "git")
+
+
+def test_seg_status_uses_betterbash_rules():
+    allow = [("better", "git ...")]
+    assert bash_perms.seg_status("git push --force", allow, []) == "allow"
+    assert bash_perms.seg_status("rm -rf /", allow, []) == "ask"
+
+
+def test_betterbash_deny_beats_allow():
+    allow = [("better", "git ...")]
+    deny = [("better", "git push ...")]
+    assert bash_perms.seg_status("git status", allow, deny) == "allow"
+    assert bash_perms.seg_status("git push origin", allow, deny) == "deny"
 
 
 def test_add_allow_rule_is_idempotent(tmp_path):

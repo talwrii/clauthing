@@ -360,7 +360,7 @@ def clone_session_and_change_directory(target_dir, current_dir, ctx):
 
 # ── Commands ─────────────────────────────────────────────────────────────────
 
-@command(':cd')
+@command(':cd', local_only=False)   # self-contained on whichever machine runs it
 def cmd_cd(ctx):
     target_dir = ctx.args.strip()
     if not target_dir:
@@ -536,11 +536,12 @@ def cmd_before(ctx):
     return _move_relative(ctx, target_name, -1, "before")
 
 
-@command(':close')
+@command(':close', independent=True)
 def cmd_close(ctx):
-    """Close a window by index or name.
+    """Close a window; with no argument, close the CURRENT one.
 
     Usage:
+        :close           close the current (active) window
         :close <index>   close window at index N
         :close <name>    close window by name (must be unique)
 
@@ -548,33 +549,39 @@ def cmd_close(ctx):
     open-sessions so it won't be restored on the next launch.
     """
     arg = ctx.args.strip()
-    if not arg:
-        return ctx.stop("Usage: :close <index|name>")
     socket = ctx.socket
     try:
         out = subprocess.run(
             ["tmux", "-L", socket, "list-windows",
-             "-F", "#{window_index}\t#{window_name}\t#{window_id}\t#{@session_id}"],
+             "-F", "#{window_active}\t#{window_index}\t#{window_name}\t#{window_id}\t#{@session_id}"],
             capture_output=True, text=True, check=True, timeout=5,
         ).stdout
     except Exception as e:
         return ctx.stop(f"❌ tmux list-windows failed: {e}")
 
     windows = []  # (idx, name, wid, session_id)
+    active = None
     for line in out.splitlines():
         parts = line.split("\t")
-        if len(parts) != 4:
+        if len(parts) != 5:
             continue
         try:
-            idx = int(parts[0])
+            idx = int(parts[1])
         except ValueError:
             continue
-        windows.append((idx, parts[1], parts[2], parts[3]))
+        w = (idx, parts[2], parts[3], parts[4])
+        windows.append(w)
+        if parts[0] == "1":
+            active = w
 
     if len(windows) <= 1:
         return ctx.stop("❌ refusing to close the last window")
 
-    if arg.isdigit():
+    if not arg:
+        target = active
+        if not target:
+            return ctx.stop("❌ could not determine the current window")
+    elif arg.isdigit():
         idx_arg = int(arg)
         target = next((w for w in windows if w[0] == idx_arg), None)
         if not target:
@@ -975,6 +982,8 @@ def cmd_blocked(ctx):
     """Mark this window as blocked on another — puts (window) in its name.
 
     :blocked <window>   mark this window blocked on <window>
+    :blocked manual     mark this window blocked on reality (no window to
+                        validate — you'll switch to the thing yourself)
     :blocked            clear the marker
 
     Display only for now: the name shows what you're waiting on.
@@ -996,6 +1005,10 @@ def cmd_blocked(ctx):
         if base == current:
             return ctx.stop(f"Not blocked ({current})")
         new_name = base
+    elif target == "manual":
+        # blocked on reality: there's no window to switch to, so skip the
+        # window check — you'll switch back to the thing yourself.
+        new_name = f"{base} (manual)"
     else:
         try:
             r = run(["tmux", "-L", ctx.socket, "list-windows", "-F", "#{window_name}"],

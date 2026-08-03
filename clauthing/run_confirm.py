@@ -3,9 +3,13 @@
 
 Shows the batch with each sub-command COLOURED by Bash-permission status
 (green = already allowed, yellow = needs approval, red = denied). Scroll and
-select a sub-command; press 'a' to add a Bash(...) allow rule for it (prefilled
-with the exact command, editable) — the rule is written and the colours update
-live. Enter runs the batch (exit 0); q / Esc cancels (exit 1).
+select a sub-command, then add an allow rule for it (prefilled with the exact
+command, editable; you type the closing ')' yourself):
+  'a' → a Bash(...) rule       (Claude's own prefix language: foo:*)
+  'A' → a BetterBash(...) rule (our language: _ one arg, ... more args,
+                                */** path globs)
+The rule is written and the colours update live. Enter runs the batch (exit 0);
+q / Esc cancels (exit 1).
 
 Input JSON (argv[1]):
   {"config_dir", "settings_file", "cwds": [...],
@@ -87,13 +91,46 @@ def document(rows, segs, sel_ri=-1):
     return doc
 
 
-def _edit_line(stdscr, prompt, initial):
+def _paren_depth(s):
+    """Net unquoted paren depth of `s` (opens minus closes), floored at -inf so
+    a stray close shows negative. Quotes are ignored — good enough to detect the
+    user closing the rule's own bracket."""
+    depth = 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+    return depth
+
+
+def _swap_head(buf, heads):
+    """If `buf` starts with one of `heads`, swap it for the other and return the
+    signed change in length (to keep the cursor over the same inner char). No-op
+    (returns 0) if it starts with neither."""
+    s = "".join(buf)
+    for a, b in (heads, heads[::-1]):
+        if s.startswith(a):
+            buf[:len(a)] = list(b)
+            return len(b) - len(a)
+    return 0
+
+
+def _edit_line(stdscr, prompt, initial, submit_on_balanced=False, heads=None):
     """Bottom-line editor prefilled with `initial`. Returns text, or None (Esc).
 
     Scrolls horizontally so a pattern longer than the popup stays editable
     (the prefill is the full command, which is routinely wider than the box).
 
-      ←/→ move    ^A/Home start    ^E/End end
+    With `submit_on_balanced`, the prefill opens a bracket (e.g. `Bash(ls`) and
+    the editor returns the moment the user types the `)` that balances it — so
+    they close the rule themselves rather than us appending it.
+
+    With `heads=(a, b)` (e.g. `("Bash(", "BetterBash(")`), Tab flips the leading
+    head between the two, and the prompt shows the current mode + the Tab hint —
+    so the BetterBash option is discoverable while adding a rule.
+
+      Tab switch rule kind    ←/→ move    ^A/Home start    ^E/End end
       Backspace / Del delete    ^U clear line    ^W delete word back
       Enter accept    Esc cancel
     """
@@ -103,14 +140,22 @@ def _edit_line(stdscr, prompt, initial):
     try:
         while True:
             h, w = stdscr.getmaxyx()
-            avail = max(1, w - 1 - len(prompt))
+            pr = prompt
+            if heads:
+                s = "".join(buf)
+                cur = heads[0] if s.startswith(heads[0]) else (
+                    heads[1] if s.startswith(heads[1]) else "")
+                other = heads[1] if cur == heads[0] else heads[0]
+                mode = cur.rstrip("(") or "?"
+                pr = f"{prompt}[{mode}] Tab→{other.rstrip('(')} Esc✗ "
+            avail = max(1, w - 1 - len(pr))
             start = pos - avail if pos > avail else 0    # keep cursor visible
             shown = "".join(buf[start:start + avail])
             stdscr.move(h - 1, 0)
             stdscr.clrtoeol()
             try:
-                stdscr.addstr(h - 1, 0, (prompt + shown)[:w - 1])
-                stdscr.move(h - 1, min(len(prompt) + (pos - start), w - 1))
+                stdscr.addstr(h - 1, 0, (pr + shown)[:w - 1])
+                stdscr.move(h - 1, min(len(pr) + (pos - start), w - 1))
             except curses.error:
                 pass
             stdscr.refresh()
@@ -120,7 +165,11 @@ def _edit_line(stdscr, prompt, initial):
                 return "".join(buf)
             if c == 27:
                 return None
-            elif c == curses.KEY_LEFT:
+            if c == 9 and heads:                         # Tab: switch rule kind
+                delta = _swap_head(buf, heads)
+                pos = max(0, min(len(buf), pos + delta))
+                continue
+            if c == curses.KEY_LEFT:
                 pos = max(0, pos - 1)
             elif c == curses.KEY_RIGHT:
                 pos = min(len(buf), pos + 1)
@@ -147,6 +196,9 @@ def _edit_line(stdscr, prompt, initial):
             elif 32 <= c < 127:
                 buf.insert(pos, chr(c))
                 pos += 1
+                if submit_on_balanced and c == ord(")") and "(" in buf \
+                        and _paren_depth(buf) == 0:
+                    return "".join(buf)
     finally:
         curses.curs_set(0)
 
@@ -187,7 +239,7 @@ def _run(stdscr, data):
         doc = document(rows, segs, sel_rows[sel] if sel_rows else -1)
         cm.render(stdscr, doc, top=scroll, height=body_h)
         legend = "green=allowed  yellow=needs-approval  red=denied"
-        help_ = "↑/↓ select · a add-rule · Enter run · q cancel"
+        help_ = "↑/↓ select · a add-rule (Tab: Bash/BetterBash) · Enter run · q cancel"
         try:
             stdscr.addstr(h - 2, 0, (msg or legend)[:w - 1], curses.A_DIM)
             stdscr.addstr(h - 1, 0, help_[:w - 1], curses.A_DIM)
@@ -213,15 +265,23 @@ def _run(stdscr, data):
             scroll -= body_h - 1
         elif c in (ord("a"), ord("A")) and sel_rows:
             si = rows[sel_rows[sel]]["seg"]
-            inner = _edit_line(stdscr, "add allow rule → Bash(", segs[si]["text"])
-            if inner and inner.strip():
-                rule = f"Bash({inner.strip()})"
+            head = "BetterBash(" if c == ord("A") else "Bash("
+            # Prefill the open bracket + command; the user types the closing ')'
+            # themselves (submit_on_balanced returns when it balances). Tab flips
+            # between Bash and BetterBash so both are discoverable here.
+            rule = _edit_line(stdscr, "add allow rule ",
+                              head + segs[si]["text"], submit_on_balanced=True,
+                              heads=("Bash(", "BetterBash("))
+            if rule and rule.strip():
+                rule = rule.strip()
                 try:
                     bash_perms.add_allow_rule(settings_file, rule)
                     reclassify()
                     msg = f"added {rule}"
                 except Exception as e:
                     msg = f"failed to add rule: {e}"
+            else:
+                msg = "rule not added (cancelled)"
 
 
 def main(argv=None):

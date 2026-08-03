@@ -7,13 +7,13 @@ from pathlib import Path
 
 
 def _unread_counts(profile=None):
-    """Return {clauthing_window: unread_count} for windows with pending messages.
+    """Return {window_name_slug: unread_count} for windows with pending messages.
 
-    Inboxes are keyed by clauthing_window, so the inbox stem is the window id.
+    Inboxes are keyed by window NAME, so the inbox stem is the slugged name.
     """
     try:
-        from clauthing.events import get_runtime_dir
-        msgs_dir = get_runtime_dir(profile) / "messages"
+        from clauthing.session import get_messages_dir
+        msgs_dir = get_messages_dir(profile)
     except Exception:
         return {}
     if not msgs_dir.exists():
@@ -92,7 +92,8 @@ def get_window_display(line_num, socket="clauthing", profile=None):
             name = parts[1]
             sess_id = parts[2] if len(parts) > 2 else ""
 
-            count = unread.get(sess_id, 0) if sess_id else 0
+            from clauthing.session import inbox_slug
+            count = unread.get(inbox_slug(name), 0) if name else 0
             suffix = f" ({count})" if count else ""
             label = f"{idx}:{name}{suffix}"
 

@@ -209,9 +209,15 @@ COMMANDS = {}
 # (M-; popup) without going through claude's hook pipeline. They must not
 # rely on stdin's hook payload or modify claude's running state.
 INDEPENDENT_COMMANDS = set()
+# Commands are LOCAL-ONLY by default: when driving a remote clauthing over ssh
+# (:ssh), a colon command may only be forwarded to the far side if ALL the
+# state it touches lives there. Commands opt into that with `local_only=False`;
+# those go here. Everything else stays local (never forwarded) — the safe
+# default, since most commands touch this fleet's local tmux/session state.
+REMOTE_OK_COMMANDS = set()
 
 
-def command(prefix, *, independent=False):
+def command(prefix, *, independent=False, local_only=True):
     """Register a colon command handler.
 
     Args:
@@ -220,11 +226,17 @@ def command(prefix, *, independent=False):
             and can run without round-tripping through claude. Use for
             commands that only read/write external state or other tmux
             windows — NOT for ones that touch the current claude session.
+        local_only: When True (default) the command is never forwarded to a
+            remote clauthing over :ssh — it touches local/fleet state. Set
+            False only for commands whose effect is entirely self-contained on
+            whichever machine runs them (e.g. :cd), so they can be forwarded.
     """
     def decorator(fn):
         COMMANDS[prefix] = fn
         if independent:
             INDEPENDENT_COMMANDS.add(prefix)
+        if not local_only:
+            REMOTE_OK_COMMANDS.add(prefix)
         return fn
     return decorator
 
@@ -319,7 +331,12 @@ def run_independent(prompt):
         pass
 
     input_data = {"session_id": session_id, "clauthing_window": clauthing_window, "cwd": cwd}
-    claude_data_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    # Match the hook's claude_data_dir: a Path (not a bare string), falling back
+    # to the shared claude-data dir so path-using commands (:skills, :rules)
+    # work when invoked independently from the M-; popup.
+    config_env = os.environ.get("CLAUDE_CONFIG_DIR")
+    claude_data_dir = (Path(config_env) if config_env
+                       else Path.home() / ".config" / "clauthing" / "claude-data")
     ctx = CommandContext(prompt, input_data, socket, claude_data_dir)
     try:
         result = COMMANDS[matched](ctx)
@@ -442,7 +459,8 @@ def cmd_help(ctx):
 :spawn [title]       Spawn new window (no arg: pick from history)
 :clear               Clear session and start fresh
 :rename <name>       Rename the current window
-:blocked [window]    Mark this window blocked on another (no arg clears)
+:blocked [window|manual]  Mark this window blocked on another window, or on
+                     reality (`manual`); no arg clears
 :shortcuts           Show tmux keybindings (popup)
 :pager [N]           Show last reply full-screen (N=Nth-from-last)
 :replies             Browse replies in an fzf picker (preview + pager)
@@ -536,6 +554,25 @@ def cmd_edit(ctx):
     from clauthing.edit_mcp_server import edit_file_in_popup
     ok, msg = edit_file_in_popup(raw, socket=ctx.socket, cwd=ctx.cwd, wait=False)
     return ctx.stop(msg if not ok else "")
+
+
+@command(':files', independent=True)
+def cmd_files(ctx):
+    """Browse files in a vifm popup (vim-like file manager).
+
+    Opens in the window's cwd (or :files <path>). vifm's own keys: e edits in
+    vim, yy/dd + p copy/cut/paste to move things, cw renames, Tab switches pane,
+    q quits. Uses clauthing's shipped config (never touches ~/.config/vifm).
+    """
+    if not shutil.which("vifm"):
+        return ctx.stop("❌ vifm is not installed (try: apt install vifm)")
+    start = ctx.args.strip() or ctx.cwd or os.getcwd()
+    start = os.path.expanduser(start)
+    cfg = Path(__file__).resolve().parent / "vifm"
+    launch = f"VIFM={shlex.quote(str(cfg))} vifm {shlex.quote(start)}"
+    subprocess.run(["tmux", "-L", ctx.socket, "display-popup", "-E",
+                    "-w", "90%", "-h", "90%", "-d", start, launch])
+    return ctx.stop("")
 
 
 def _move_window(socket, direction):
@@ -720,18 +757,71 @@ def cmd_time(ctx):
     return ctx.stop(msg)
 
 
-@command(':skills')
+@command(':skills', independent=True)
 def cmd_skills(ctx):
-    skills_dir = ctx.claude_data_dir / "skills"
-    if not skills_dir.exists() or not any(skills_dir.iterdir()):
-        return ctx.stop("No skills installed.\n\nSkills can be added to .claude/skills/ in your project.")
-    skills = []
-    for skill_dir in sorted(skills_dir.iterdir()):
-        if skill_dir.is_dir():
-            name = skill_dir.name
-            skills.append(f"  /{name} (project)" if skill_dir.is_symlink() else f"  /{name}")
-    ctx.message(f"📋 Found {len(skills)} skills")
-    return ctx.stop("Available slash commands:\n\n" + "\n".join(skills) if skills else "No skills found.")
+    """List skills grouped by tag. `:skills <tag>` shows only that tag.
+
+    Tags live in each SKILL.md frontmatter; set them with :skilltag.
+    """
+    from clauthing import skill_meta
+    skills_dir = Path(ctx.claude_data_dir) / "skills"
+    skills = skill_meta.list_skills(skills_dir)
+    if not skills:
+        return ctx.stop("No skills installed.\n\n"
+                        "Skills can be added to .claude/skills/ in your project.")
+
+    def fmt(s):
+        proj = " (project)" if s["symlink"] else ""
+        return f"  /{s['name']}{proj}"
+
+    filt = ctx.args.strip()
+    if filt:
+        matched = [s for s in skills if filt in s["tags"]]
+        if not matched:
+            tags = sorted({t for s in skills for t in s["tags"]})
+            return ctx.stop(f"No skills tagged '{filt}'.\n\n"
+                            f"Tags in use: {', '.join(tags) or '(none)'}")
+        ctx.message(f"📋 {len(matched)} skill(s) tagged '{filt}'")
+        return ctx.stop(f"Skills tagged '{filt}':\n\n" + "\n".join(fmt(s) for s in matched))
+
+    groups = skill_meta.group_by_tag(skills)
+    out = []
+    for tag, members in groups.items():
+        out.append(f"[{tag}]")
+        out += [fmt(s) for s in members]
+        out.append("")
+    ctx.message(f"📋 {len(skills)} skills")
+    return ctx.stop("Available skills by tag:\n\n" + "\n".join(out).rstrip())
+
+
+@command(':skilltag', independent=True)
+def cmd_skilltag(ctx):
+    """Tag a skill.
+
+      :skilltag <skill>              show current tags
+      :skilltag <skill> a b          set tags to exactly a, b (replace)
+      :skilltag <skill> +a -b        add a, remove b (keep the rest)
+      :skilltag <skill> --clear      remove all tags
+    """
+    from clauthing import skill_meta
+    parts = ctx.args.split()
+    if not parts:
+        return ctx.stop("Usage: :skilltag <skill> [+add|-remove|tag...|--clear]")
+    name, ops = parts[0], parts[1:]
+    skills_dir = Path(ctx.claude_data_dir) / "skills"
+    if not skill_meta.skill_md(skills_dir / name).exists():
+        return ctx.stop(f"❌ No skill '{name}'")
+
+    cur = skill_meta.read_skill(skills_dir / name)["tags"]
+    if not ops:
+        return ctx.stop(f"/{name} tags: {', '.join(cur) or '(none)'}")
+
+    new = skill_meta.apply_tag_ops(cur, ops)
+    try:
+        skill_meta.set_skill_tags(skills_dir, name, new)
+    except Exception as e:
+        return ctx.stop(f"❌ Could not tag '{name}': {e}")
+    return ctx.stop(f"✓ /{name} tags: {', '.join(new) or '(none)'}")
 
 
 @command(':rules')
@@ -1058,6 +1148,116 @@ def cmd_tmuxnew(ctx):
     except Exception as e:
         return ctx.stop(f"❌ Failed to create window: {e}")
     return ctx.stop(f"✓ Created default-tmux window '{target_name}'")
+
+
+# A tab running an ssh session is named "ssh:<host>" so remote tabs are
+# identifiable at a glance (and listable via :remotes).
+_REMOTE_PREFIX = "ssh:"
+
+
+def _origin_profile():
+    """Profile name that namespaces a remote clauthing to who's driving it:
+    this machine's short hostname + user (e.g. 'gaendamaskine-bruger')."""
+    import re
+    hostname = os.uname().nodename.split(".")[0]
+    user = os.environ.get("USER") or "user"
+    return re.sub(r"[^A-Za-z0-9_-]", "-", f"{hostname}-{user}")
+
+
+# Remote venvs live under here, one per origin (machine+user) so multiple
+# controllers don't share a venv. clauthing is installed from PyPI.
+_REMOTE_VENV_BASE = "$HOME/.local/clauthing-venvs"
+
+
+def _local_version():
+    """Version of clauthing running here — the target the remote should match."""
+    try:
+        import importlib.metadata as md
+        return md.version("clauthing")
+    except Exception:
+        return ""
+
+
+@command(':ssh', independent=True)
+def cmd_ssh(ctx):
+    """Open a remote clauthing session in a new tab of THIS tmux server.
+
+    :ssh <host>   ssh to <host>, install clauthing from PyPI into a per-origin
+                  venv (first time), keeping the remote's version in lockstep
+                  with ours — reinstalling whenever the version differs — then
+                  exec `clauthing --new-claude` (the same in-window launcher
+                  :new uses) so a single claude runs right in this tab, under
+                  a profile named for this machine+user (e.g. gaendamaskine-bruger).
+
+    The tab is named `ssh:<host>` so it lists as a remote tab (see :remotes).
+    (Bridging colon commands across the ssh link isn't wired up yet.)
+    """
+    if not ctx.socket:
+        return ctx.stop("❌ :ssh needs a clauthing tmux server (no socket)")
+    host = ctx.args.strip()
+    if not host:
+        return ctx.stop("❌ Usage: :ssh <host>")
+    if " " in host:
+        return ctx.stop("❌ Usage: :ssh <host>  (host only — no extra args yet)")
+
+    origin = _origin_profile()             # safe chars only ([A-Za-z0-9_-])
+    venv = f"{_REMOTE_VENV_BASE}/{origin}"  # keeps $HOME to expand on the remote
+    target = _local_version()
+    spec = f"clauthing=={target}" if target else "clauthing"
+    # Idempotent + version-aware: read the remote's installed version and only
+    # (re)install when it differs from ours (or when TARGET is unknown), then
+    # exec the entry point. No network hit once versions already match.
+    remote = (
+        f'VENV="{venv}"; TARGET="{target}"; '
+        'CUR="$("$VENV/bin/python" -c '
+        "'import importlib.metadata as m; print(m.version(\"clauthing\"))' 2>/dev/null)\"; "
+        'if [ -z "$TARGET" ] || [ "$CUR" != "$TARGET" ]; then '
+        '  [ -d "$VENV" ] || python3 -m venv "$VENV" || exit 1; '
+        f'  echo "Installing {spec} (was: ${{CUR:-none}})..."; '
+        f'  "$VENV/bin/pip" install -qU "{spec}" || '
+        '    { echo "clauthing install failed" >&2; exit 1; }; '
+        'fi; '
+        # --new-claude is the in-window launcher (what :new's windows run):
+        # it sets up the session and execs claude in THIS tty. No kitty, no
+        # tmux-server needed — its tmux calls degrade gracefully over bare ssh.
+        f'exec "$VENV/bin/clauthing" --profile {origin} --new-claude'
+    )
+    # Keep the tab open if it fails: tmux closes a window when its command
+    # exits, so a bad host / failed install / crash would otherwise vanish
+    # before you can read the error. Pause on non-zero exit; close on success.
+    inner = f"ssh -t {shlex.quote(host)} {shlex.quote(remote)}"
+    ssh_cmd = (
+        f'{inner}; code=$?; '
+        'if [ "$code" -ne 0 ]; then '
+        'echo; echo "[:ssh exited $code — press Enter to close]"; read _; fi'
+    )
+    win_name = f"{_REMOTE_PREFIX}{host}"
+    try:
+        subprocess.run(["tmux", "-L", ctx.socket, "new-window", "-n", win_name, ssh_cmd],
+                       check=True, timeout=5)
+    except Exception as e:
+        return ctx.stop(f"❌ Failed to open ssh tab: {e}")
+    return ctx.stop(f"✓ Opened remote clauthing tab '{win_name}' "
+                    f"(profile {origin}, clauthing {target or 'latest'})")
+
+
+@command(':remotes', independent=True)
+def cmd_remotes(ctx):
+    """List the remote (ssh) tabs in this clauthing tmux server."""
+    if not ctx.socket:
+        return ctx.stop("❌ :remotes needs a clauthing tmux server (no socket)")
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", ctx.socket, "list-windows",
+             "-F", "#{window_index}: #{window_name}"],
+            capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        return ctx.stop(f"❌ Could not list windows: {e}")
+    remotes = [l for l in r.stdout.splitlines()
+               if l.split(": ", 1)[-1].startswith(_REMOTE_PREFIX)]
+    if not remotes:
+        return ctx.stop("No remote tabs.")
+    return ctx.stop("Remote tabs:\n" + "\n".join(remotes))
 
 
 # ── cl-skills (double-colon commands) ────────────────────────────────────────

@@ -1,0 +1,43 @@
+" clauthing's vifm config — shipped with the tool, pointed at via $VIFM by the
+" :files colon command so it never touches your global ~/.config/vifm.
+"
+" What you get: vim everywhere, and vim-style move/copy/rename.
+"   e            edit the file under the cursor in vim
+"   Enter / l    open (dirs: enter; files: vim, via the {*} association below)
+"   yy / dd / p  copy / cut / paste  (this is how you "move stuff")
+"   cw           rename;  :mkdir foo  makes a dir
+"   v            visual-select multiple, then dd to cut them as a batch
+"   Tab          switch pane — cut in one, Tab, paste in the other
+"   ,m           jump to ~/mine (where the code lives)
+"   ,h           jump to home
+"   q            quit
+
+" ── editor: vim for everything ───────────────────────────────────────────────
+set vicmd=vim
+" open ANY file under the cursor in vim (Enter / l), not just known types
+filetype {*} {edit in vim} vim
+
+" ── file operations: safe + vim-ish ──────────────────────────────────────────
+set syscalls          " use system calls for copy/move (progress + correctness)
+set trash             " deletes go to the trash dir, recoverable
+set undolevels=100    " undo file operations
+set sortnumbers       " foo2 before foo10
+
+" ── searching / ui ───────────────────────────────────────────────────────────
+set ignorecase
+set smartcase
+set incsearch
+set wildmenu
+set scrolloff=4
+set history=100
+set nofollowlinks
+
+" two panes, so moving between dirs is Tab-and-paste
+if &columns > 100
+    only
+    vsplit
+endif
+
+" ── quick jumps ──────────────────────────────────────────────────────────────
+nnoremap ,m :cd ~/mine<cr>
+nnoremap ,h :cd ~<cr>

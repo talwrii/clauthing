@@ -852,7 +852,14 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
     if needs_restore and not skip_restore:
         log("Bootstrap restore: needs-restore sentinel present", profile)
         try:
-            open_sessions = get_open_sessions(profile)
+            # Prune first: open-sessions.json only loses entries on a clean
+            # claude exit, so a killed tmux server leaves dead sessions in it
+            # forever. Restoring the raw list opened duplicate windows for the
+            # same name and tried to resume long-gone sessions.
+            from clauthing.session import prune_open_sessions
+            open_sessions, dropped = prune_open_sessions(profile)
+            if dropped:
+                log(f"Restore: pruned {len(dropped)} stale/duplicate sessions", profile)
             log(f"Restore: Found {len(open_sessions)} open sessions: {open_sessions}", profile)
             
             if open_sessions:
@@ -1030,11 +1037,30 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
     except Exception:
         pass
 
+    # The window option dies with the tmux server (kitty restart / reboot), so
+    # fall back to the on-disk name->id map before minting: otherwise every
+    # window gets a fresh id on restart and every inbox is stranded.
+    cur_name = None
+    try:
+        cur_name = (run(["tmux", "-L", socket, "display-message", "-p", "#{window_name}"],
+                        capture_output=True, text=True, profile=profile).stdout.strip()
+                    or None)
+    except Exception:
+        pass
+
     if existing_cw:
         clauthing_window = existing_cw
         set_clauthing_window(session_id, existing_cw)  # record on the session
     else:
-        clauthing_window = ensure_clauthing_window(session_id)
+        from clauthing.session import recall_window_id
+        recalled = recall_window_id(socket, cur_name, profile)
+        if recalled:
+            clauthing_window = recalled
+            set_clauthing_window(session_id, recalled)
+            log(f"restored clauthing_window {recalled} for window '{cur_name}' "
+                f"(tmux option was lost)", profile)
+        else:
+            clauthing_window = ensure_clauthing_window(session_id)
 
     # Uniqueness guard: a clauthing_window must be unique per window. If this id
     # is already live on a DIFFERENT window (e.g. it got carried across a :cd
@@ -1067,6 +1093,13 @@ def new_window(profile=None, resume_session_id=None, socket="clauthing", skip_re
             stderr=subprocess.DEVNULL,
             profile=profile
         )
+    except Exception:
+        pass
+
+    # Back the identity up off-tmux so it survives the server dying.
+    try:
+        from clauthing.session import remember_window_id
+        remember_window_id(socket, cur_name, clauthing_window, profile)
     except Exception:
         pass
 

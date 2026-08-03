@@ -12,6 +12,7 @@ permissions.deny. `<pattern>` is matched against a sub-command string:
 """
 import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -110,6 +111,86 @@ def parse_bash_rule(rule):
     return m.group(1).strip() if m else None
 
 
+# ── BetterBash: a saner pattern language (opt-in, our run tool only) ──────────
+#
+#   BetterBash(git status)      exact — git status and nothing more
+#   BetterBash(git ...)         git followed by any number of args
+#   BetterBash(git _)           git + exactly one arg (any single token)
+#   BetterBash(cat ~/mine/**)   cat + a path under ~/mine (any depth)
+#   BetterBash(ls ~/mine/*)     ls + a path one level under ~/mine
+#   BetterBash(git _ ...)       git + one specific arg + more
+#
+# `_` = any one token, `...` = zero-or-more tokens, and within a token `*`
+# matches anything but `/`, `**` matches anything including `/`. No implicit
+# prefixing — a trailing `...` is how you opt into "and more args".
+
+
+def parse_rule(rule):
+    """Parse a permission rule string into (kind, pattern), or None.
+
+    kind is "better" for BetterBash(...) rules, else "bash" (Bash(...) / bare
+    Bash). Non-Bash rules (Read, mcp__…) return None.
+    """
+    r = str(rule).strip()
+    m = re.match(r"BetterBash\((.*)\)\s*$", r)
+    if m:
+        return ("better", m.group(1).strip())
+    p = parse_bash_rule(r)
+    return ("bash", p) if p is not None else None
+
+
+def _glob_token(pat, s):
+    """Match one token: `**` matches any run incl `/`, `*` matches any run but
+    `/`, everything else literal."""
+    rx, i = [], 0
+    while i < len(pat):
+        if pat[i:i + 2] == "**":
+            rx.append(".*")
+            i += 2
+        elif pat[i] == "*":
+            rx.append("[^/]*")
+            i += 1
+        else:
+            rx.append(re.escape(pat[i]))
+            i += 1
+    return re.fullmatch("".join(rx), s) is not None
+
+
+def _token_match(pat_tok, cmd_tok):
+    if pat_tok == "_":
+        return True
+    if "*" in pat_tok:
+        return _glob_token(pat_tok, cmd_tok)
+    return pat_tok == cmd_tok
+
+
+def _match_tokens(pat, cmd):
+    if not pat:
+        return not cmd
+    if pat[0] == "...":                       # zero-or-more tokens
+        return (_match_tokens(pat[1:], cmd)
+                or (bool(cmd) and _match_tokens(pat, cmd[1:])))
+    if not cmd:
+        return False
+    return _token_match(pat[0], cmd[0]) and _match_tokens(pat[1:], cmd[1:])
+
+
+def better_match(pattern, command):
+    """Does `command` match a BetterBash `pattern` (token wildcards + globs)?"""
+    try:
+        cmd_tokens = shlex.split(command)
+    except Exception:
+        cmd_tokens = command.split()
+    return _match_tokens(pattern.split(), cmd_tokens)
+
+
+def matches(kind, pattern, seg):
+    """Does sub-command `seg` match a (kind, pattern) rule?"""
+    if kind == "better":
+        return better_match(pattern, seg)
+    return rule_matches(seg.strip(), pattern)
+
+
 def settings_files(config_dir, cwds=()):
     """The Claude settings files that apply, in read order: the session config
     dir's settings(.local).json plus any project .claude/settings(.local).json
@@ -139,13 +220,13 @@ def load_bash_permissions(config_dir, cwds=(), files=None):
         except Exception:
             continue
         for rule in perms.get("allow", []) or []:
-            p = parse_bash_rule(rule)
-            if p is not None:
-                allow.append(p)
+            kp = parse_rule(rule)
+            if kp is not None:
+                allow.append(kp)
         for rule in perms.get("deny", []) or []:
-            p = parse_bash_rule(rule)
-            if p is not None:
-                deny.append(p)
+            kp = parse_rule(rule)
+            if kp is not None:
+                deny.append(kp)
     return allow, deny
 
 
@@ -161,11 +242,18 @@ def rule_matches(seg, pattern):
     return seg == pattern
 
 
+def _norm(rule):
+    """A rule may be a (kind, pattern) tuple (from load) or a bare pattern
+    string (from older callers/tests) — normalise to (kind, pattern)."""
+    return rule if isinstance(rule, tuple) else ("bash", rule)
+
+
 def seg_status(seg, allow, deny):
-    """'deny' | 'allow' | 'ask' for a sub-command (deny wins)."""
-    if any(rule_matches(seg, p) for p in deny):
+    """'deny' | 'allow' | 'ask' for a sub-command (deny wins). `allow`/`deny`
+    entries may be (kind, pattern) tuples or bare bash pattern strings."""
+    if any(matches(k, p, seg) for k, p in map(_norm, deny)):
         return "deny"
-    if any(rule_matches(seg, p) for p in allow):
+    if any(matches(k, p, seg) for k, p in map(_norm, allow)):
         return "allow"
     return "ask"
 

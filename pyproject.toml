@@ -18,6 +18,8 @@ email = "your.email@example.com"
 clauthing = "clauthing.main:main"
 clauthing-workflow = "clauthing.workflow:main"
 clauthing-api = "clauthing.api:main"
+clauthing-convos = "clauthing.convos:main"
+clauthing-sessions = "clauthing.sessions_db:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/clauthing"

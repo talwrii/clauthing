@@ -190,3 +190,55 @@ def test_add_rule_recolours_document_end_to_end(tmp_path):
     s = styles()
     assert s["grep foo"] == "green"        # the added rule recoloured it
     assert s["| wc -l"] == "yellow bold"   # unaffected stage stays yellow
+
+
+# ── BetterBash rules colour the same lines ───────────────────────────────────
+
+def test_betterbash_rule_colours_segment_green():
+    """A BetterBash(...) allow rule (kind, pattern) drives the colour exactly
+    like a Bash one — this is what 'A' add-rule writes."""
+    from clauthing import bash_perms
+    painted = _painted([{"label": "x", "command": "git push --force"}],
+                       allow=[("better", "git ...")])
+    assert _status_of(painted, "git push --force") == "allow"
+
+
+def test_betterbash_underscore_is_one_arg_only():
+    from clauthing import bash_perms
+    one = _painted([{"label": "x", "command": "git status"}],
+                   allow=[("better", "git _")])
+    two = _painted([{"label": "x", "command": "git log -1"}],
+                   allow=[("better", "git _")])
+    assert _status_of(one, "git status") == "allow"
+    assert _status_of(two, "git log -1") == "ask"
+
+
+# ── add-rule editor: user types the closing ')' themselves ───────────────────
+
+def test_paren_depth_tracks_balance():
+    from clauthing.run_confirm import _paren_depth
+    assert _paren_depth("Bash(ls") == 1            # open, not yet closed
+    assert _paren_depth("Bash(ls)") == 0           # user typed the close
+    assert _paren_depth("Bash(echo $(date))") == 0  # nested, balanced
+    assert _paren_depth("Bash(echo $(date)") == 1   # nested, one still open
+
+
+def test_swap_head_toggles_rule_kind_and_reports_shift():
+    """Tab in the rule editor flips Bash(⇄BetterBash( in place, returning the
+    length delta so the cursor can track the same inner char."""
+    from clauthing.run_confirm import _swap_head
+    heads = ("Bash(", "BetterBash(")
+    buf = list("Bash(git status")
+    delta = _swap_head(buf, heads)
+    assert "".join(buf) == "BetterBash(git status"
+    assert delta == len("BetterBash(") - len("Bash(")
+    back = _swap_head(buf, heads)
+    assert "".join(buf) == "Bash(git status"
+    assert back == -delta
+
+
+def test_swap_head_noop_when_no_known_head():
+    from clauthing.run_confirm import _swap_head
+    buf = list("ls /tmp")
+    assert _swap_head(buf, ("Bash(", "BetterBash(")) == 0
+    assert "".join(buf) == "ls /tmp"
