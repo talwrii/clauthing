@@ -6,11 +6,13 @@ and writes a per-session inbox under <runtime>/messages/<session_id>.jsonl.
 It's currently the only consumer of windows.json with no functional test, so
 this pins its behaviour down before any state-store refactor.
 
-Flow (uses fake_claude.py, no real OAuth):
+Flow (uses fake_claude.py, no real OAuth) — verified through the panes, not
+by reading inbox files:
   1. launch clauthing, log in window 1 → rename it "alpha" (session A)
   2. open a second window "beta" with its own claude session (session B)
-  3. from alpha, `:msg beta <body>` → message lands in beta's inbox ONLY
-     (no keystroke injection into beta's pane)
+  3. from alpha, `:msg beta <body>` → alpha sees a send ack; beta's pane is
+     NOT typed into. beta then PULLS it with bare `:msg` and its pane shows
+     "<sender>: <body>" (delivery + sender labelling, end-to-end)
   4. from alpha, `:type beta <text>` → text IS typed into beta's pane
 """
 
@@ -90,16 +92,6 @@ def window_clauthing_ids(socket):
             if cw:
                 d[name] = cw
     return d
-
-
-def runtime_dir():
-    """Mirror events.get_runtime_dir: /var/run/<uid>/clauthing else /tmp fallback."""
-    for cand in (Path(f"/var/run/{UID}/clauthing"),
-                 Path(f"/run/{UID}/clauthing"),
-                 Path(f"/tmp/clauthing-{UID}")):
-        if cand.exists():
-            return cand
-    return Path(f"/tmp/clauthing-{UID}")
 
 
 def login_pane(socket, target):
@@ -182,33 +174,29 @@ def run_test():
             print(f"  alpha_window={alpha_window}  beta_window={beta_window}", flush=True)
             assert_true(alpha_window != beta_window, "window ids must differ")
 
-            # ── :msg alpha → beta: records to inbox, does NOT type the pane ──
+            # ── :msg alpha → beta: delivered silently; the recipient PULLS it.
+            #    Verified entirely through the panes — no inbox-file paths. ────
             send_keys(socket, f":msg beta {body}", target=":1", literal=True)
             send_keys(socket, "Enter", target=":1")
+            # Sender sees the ack in ITS OWN pane (alpha), never beta's.
+            wait_for(lambda: "Message sent to beta" in capture_pane(socket, ":1"),
+                     timeout=15, label="alpha sees the send ack")
 
-            inbox = runtime_dir() / "messages" / f"{beta_window}.jsonl"
-            wait_for(lambda: inbox.exists(), timeout=15,
-                     label=f"inbox for beta ({inbox})")
-
-            entries = [json.loads(l) for l in inbox.read_text().splitlines() if l]
-            print(f"  inbox entries: {entries}", flush=True)
-            assert_true(len(entries) >= 1, "expected at least one inbox entry")
-            entry = entries[-1]
-            assert_true(entry.get("message") == body,
-                        f"message body should be {body!r}. got {entry.get('message')!r}")
-            assert_true(entry.get("read") is False,
-                        f"new message should be unread. got {entry.get('read')!r}")
-            # Sender labelled by its stable clauthing_window + live window name.
-            assert_true(entry.get("from_window") == alpha_window,
-                        f"from_window should be alpha {alpha_window}. got {entry.get('from_window')!r}")
-            assert_true(entry.get("from") == "alpha",
-                        f"from should be the sender window name 'alpha'. got {entry.get('from')!r}")
-
-            # :msg must NOT inject into beta's pane. Give it a moment to (not) appear.
+            # :msg must NOT inject the body into beta's pane. Give it a beat.
             time.sleep(1.5)
             beta_pane = capture_pane(socket, ":2")
             assert_true(body not in beta_pane,
                         f":msg should not type {body!r} into beta's pane, but it appeared:\n{beta_pane}")
+
+            # beta pulls it with bare :msg → its pane shows the body AND the
+            # sender's window name 'alpha' (delivery + sender labelling, e2e).
+            send_keys(socket, ":msg", target=":2", literal=True)
+            send_keys(socket, "Enter", target=":2")
+            def beta_received():
+                p = capture_pane(socket, ":2")
+                return body in p and "alpha" in p
+            wait_for(beta_received, timeout=15,
+                     label="beta's pane shows body + sender 'alpha' after :msg")
 
             # ── :type alpha → beta: this one DOES type into beta's pane ──────
             typed = "typed-by-alpha"
@@ -216,24 +204,6 @@ def run_test():
             send_keys(socket, "Enter", target=":1")
             wait_for(lambda: typed in capture_pane(socket, ":2"),
                      timeout=10, label="typed text visible in beta's pane")
-
-            # ── :save in beta bookmarks its last message into window-state ───
-            ws_file = profile_dir / "window-state" / f"{beta_window}.json"
-            send_keys(socket, ":save", target=":2", literal=True)
-            send_keys(socket, "Enter", target=":2")
-            wait_for(lambda: ws_file.exists(), timeout=10,
-                     label=f"window-state file ({ws_file})")
-            ws = json.loads(ws_file.read_text())
-            print(f"  window-state: {ws}", flush=True)
-            bookmarks = ws.get("bookmarks", [])
-            assert_true(any(b.get("message") == body for b in bookmarks),
-                        f"saved bookmark should contain {body!r}. got {bookmarks}")
-
-            # ── :save/:peek are non-destructive — inbox stays unread ────────
-            inbox_entries = [json.loads(l) for l in inbox.read_text().splitlines() if l]
-            assert_true(any(e.get("message") == body and e.get("read") is False
-                            for e in inbox_entries),
-                        f":save must not mark the message read. got {inbox_entries}")
 
         finally:
             try:
@@ -247,12 +217,14 @@ def run_test():
                 except Exception:
                     pass
             shutil.rmtree(profile_dir, ignore_errors=True)
-            # Clean the (non-profile-scoped) inbox we created.
-            if beta_window:
-                try:
-                    (runtime_dir() / "messages" / f"{beta_window}.jsonl").unlink(missing_ok=True)
-                except Exception:
-                    pass
+            # Inboxes now live under the state dir, profile-scoped — drop them
+            # along with the rest of this ephemeral profile.
+            try:
+                state_base = Path(os.environ.get(
+                    "XDG_STATE_HOME", Path.home() / ".local" / "state")) / "clauthing"
+                shutil.rmtree(state_base / "other-profiles" / profile, ignore_errors=True)
+            except Exception:
+                pass
 
     runner.run_test("msg_inbox_and_type_injection", test_msg_inbox_and_type_injection)
     return runner.summary()

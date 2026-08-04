@@ -156,10 +156,14 @@ def main():
         if not prompt:
             continue
 
-        cont, _stop_reason = fire_hook(hooks_cfg, "UserPromptSubmit", {
+        cont, stop_reason = fire_hook(hooks_cfg, "UserPromptSubmit", {
             "session_id": session_id, "cwd": cwd, "prompt": prompt,
         })
         if not cont:
+            # Real Claude Code surfaces a blocking hook's reason to the user;
+            # mirror that so a colon command's output is observable in the pane.
+            if stop_reason:
+                print(stop_reason, flush=True)
             continue
 
         # Append user + assistant turns to session file
